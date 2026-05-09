@@ -3,12 +3,12 @@ import { strictFormat } from '../utils/text.js';
 
 export class LMStudio {
     static prefix = 'lmstudio';
-    constructor(model_name, url, params) {
+    constructor(model_name, url, params, apiKey) {
         this.model_name = model_name;
         this.params = params;
         this.openai = new OpenAIApi({
-            baseURL: url || 'http://localhost:1234/v1',
-            apiKey: 'lm-studio', // LM Studio ignores this but the client requires a non-empty value
+            baseURL: url || 'http://localhost:1235/v1',
+            apiKey: apiKey || 'lm-studio',
         });
     }
 
