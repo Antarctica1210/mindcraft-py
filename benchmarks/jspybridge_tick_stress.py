@@ -18,10 +18,15 @@ Pass criteria:
 """
 import argparse
 import json
+import logging
 import statistics
 import sys
 import time
 from pathlib import Path
+
+from src.logging_config import setup_logging
+
+setup_logging(level=logging.INFO)
 
 # ── Test with mock (no real Minecraft server) ──
 

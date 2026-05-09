@@ -15,11 +15,9 @@ import logging
 import time
 
 from mc import EventRegistry, create_bot, get_pathfinder
+from src.logging_config import setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-)
+setup_logging(level=logging.INFO)
 logger = logging.getLogger("echo_bot")
 
 
