@@ -184,7 +184,93 @@ Phase 3 只定义"记忆操作系统"的契约：
 - [ ] skill 写入边界：自动更新统计字段，步骤/失败模式变更进入候选变更或人工确认
 - [ ] 后台反思队列：前台记录事件，后台批量调用 LLM 总结并提交 policy gate
 
-**产出：`src/memory/models.py`, `src/memory/store.py`, `src/memory/service.py`, `src/memory/policies.py`**
+**Session History 三层模型（普通 action/对话历史的归宿）：**
+
+`conversation.py` 当前的 `compress_history` 把超窗口的旧 turn 直接丢弃，没有落盘 sink；Phase 4a 的目录也只列了 `places/feedback/facts/`，没有"按时间发生过什么"的存放位置。后续 Phase 5 skill 候选、Phase 6 TaskRun、Phase 7b world facts 都需要从一条 raw trace 上切片，所以这层必须在 Phase 3 收敛接口时一起定义。
+
+| 层 | 位置 | 写入时机 | 寿命 | 用途 |
+|---|---|---|---|---|
+| **L0 Working** | 内存 ring buffer（`Conversation.compress_history` 的窗口内容） | 每 turn / 每 action | 当前 session | 直接注入 prompt，前台决策 |
+| **L1 Raw Trace** | `bots/<name>/sessions/<date>/<session_id>.ndjson` append-only | 每个 event 实时落盘 | 滚动 TTL（默认 30 天）后归档/删除 | reflection worker 的输入；调试回放；TaskRun / skill 候选的切片来源 |
+| **L2 Episodic Summary** | `bots/<name>/memory/episodic/*.md`（沿用 Phase 4a YAML frontmatter + body） | session 结束 / 任务完成 / 失败 / 时间窗触发 reflection | 长期，Phase 4b 上线后建索引 | `MemoryService.recall()` 召回，注入 prompt |
+
+**核心原则：** L1 是 truth source，L0 / L2 都是加速或衍生层；reflection 跑错可从 L1 重放，L2 损坏可重建。前台**只允许召回 L2 摘要注入 prompt**，永远不要把 L1 raw 直接回灌（体积大且会反复污染上下文）。
+
+L1 NDJSON 每行一个事件，schema 建议：
+
+```json
+{"ts":"2026-05-11T14:30:12.345Z","session_id":"...","world_id":"main","type":"llm_turn|action_call|action_result|world_event|player_msg|safety_interrupt","payload":{...}}
+```
+
+session_id 按"自然中断"切（玩家离线 / bot 重连 / 任务完成 / 安全死亡），不按固定时长，便于 TaskRun 和 skill 提取对齐。
+
+实现内容（补充到上面的清单）：
+
+- [ ] `MemoryService.record_event(event)`：fire-and-forget，前台不阻塞，直接 append 到 L1 NDJSON
+- [ ] `EventSink` 协议：`Conversation.compress_history` 改造为先经 sink 再丢弃，老 turn 走 L1
+- [ ] `BackgroundReflectionWorker`：消费 L1 切片，调用 LLM 生成 L2 候选 → 经 `MemoryPolicy` → 写入 `memory/episodic/`
+- [ ] L1 滚动 TTL 与归档策略（默认 30 天），归档目录可压缩
+- [ ] 写入风险分级：L1 raw = 低风险自动追加；L2 summary = 中风险走 policy；晋升到 `places/feedback/facts/` 复用 Phase 4 普通记忆规则；晋升到 skill 复用 Phase 5 高风险确认
+- [ ] 注入策略：L0 全量原样注入；老历史只通过 `recall()` 拿 L2 摘要
+
+下游消费关系（仅记录，具体实现放对应 Phase）：
+
+- **Phase 5 skill 候选**：从 L1 找"重复 N 次成功的 action 序列"作为 candidate skill
+- **Phase 6 TaskRun**：一次任务对应 L1 的一个时间切片，复盘压缩为 TaskRun JSON + learned_rules
+- **Phase 7b world facts**：从 L1 的 `world_event` 去重提炼坐标/库存/危险区域等事实
+
+**Working Memory 契约：**
+
+`working` namespace 不写盘，纯内存对象，承担"当前一刻 bot 应该知道什么"。范围限定：
+
+- 当前对话窗口（L0 ring buffer，沿用 `Conversation.compress_history`）
+- 当前目标 / 当前计划（来自 AgentLoop）
+- 当前 skill 上下文（被激活的 skill 文件内容 + 局部状态）
+- 近期世界状态快照（BotState 最新切片：position / health / inventory / nearby_entities）
+
+接口与责任：
+
+- [ ] `MemoryService.get_working_context() -> WorkingContext`：唯一聚合入口，`MessageBuilder` 调它拿结构化对象，按 token 预算注入 prompt
+- [ ] `WorkingContext` Pydantic 模型：明确字段，避免散落在 `BotState` / `Conversation` / `AgentLoop` 各处自由拼接
+- [ ] 可选 crash-recovery 快照：`sessions/<sid>/working_snapshot.json`，每 N 秒或关键事件后写一次；重启时读回并校验有效性，失败则丢弃
+- [ ] working 内容**不参与 recall()**：长期记忆走 episodic/semantic/procedural，working 只在 prompt 拼接阶段直接注入
+
+**Reflection 触发与失败语义：**
+
+- [ ] 触发条件（满足任一）：session 结束 / 任务完成 / 任务失败 / idle ≥ N 分钟（默认 5） / L1 累积 ≥ N 条（默认 200） / L1 体积 ≥ token 阈值
+- [ ] 模型选择：默认轻量 LLM（cheap fast），仅在 high-stakes consolidation（晋升 feedback / 修 skill 候选）时升级到主 LLM
+- [ ] token 预算：单次 reflection ≤ T tokens，超出则按 session_id 切片分批
+- [ ] 失败处理：reflection 失败**不回写 L2**，但保留 L1；同一 session 失败 ≥ N 次（默认 3）→ 标记 `reflection_pending`，进 review queue，不阻塞新 session
+- [ ] L1 归档锁：未完成 reflection 的 session 不可归档/删除，TTL 暂停
+- [ ] 幂等性：同一 L1 切片重复 reflection 必须产出一致 candidate（写入前按 content hash 去重）
+
+**Forgetting / Conflict 统一 Evaluator：**
+
+`MemoryEvaluator` 作为周期任务（独立于 reflection worker），统一处理记忆生命周期：
+
+- [ ] TTL 过期 → forget
+- [ ] `invalid_when` 条件满足 → 降 confidence 或 forget
+- [ ] confidence 衰减：未被 recall 命中的记忆按 half-life 衰减，命中则刷新
+- [ ] 冲突检测：同 namespace + 同实体 + 互斥事实 → 触发 conflict resolution
+- [ ] Conflict resolution 策略（按优先级）：
+  1. 静态知识 > 世界事实（沿用 Phase 7b 原则）
+  2. source 权重：`player_confirmed` > `player_marked` > `bot_observed` > `llm_reflected`
+  3. recency × confidence 加权打分
+  4. 无法决断 → 进 review queue，双方 confidence 同步降级
+- [ ] Forget 持久性（tombstone / deny-list）：
+  - `forget()` 同步写 `bots/<name>/memory/.tombstones.json`
+  - Reflection 写入前先查 tombstone，被 forget 的实体/事实不得回写
+  - 玩家可显式解除（`unforget <name>`）
+
+**`semantic` / `facts/` / `KnowledgeGraph` 关系澄清：**
+
+- `semantic` namespace 是**逻辑层**，由两个 backend 组成：
+  - **Static backend**：Phase 7a `KnowledgeGraph`（minecraft-data 只读），无 record 写入
+  - **Dynamic backend (World Facts)**：Phase 7b 写入 `memory/facts/`，对应 `MemoryRecord` 子类型
+- `recall(namespace="semantic", ...)` 内部按需查两个 backend；冲突时 static 优先（见上）
+- 玩家偏好、对话事实（非世界事实）单独放 `memory/facts/players.md` 等，仍属 `semantic` 但不进 KnowledgeGraph
+
+**产出：`src/memory/models.py`, `src/memory/store.py`, `src/memory/service.py`, `src/memory/policies.py`, `src/memory/session_sink.py`, `src/memory/reflection_worker.py`, `src/memory/working.py`, `src/memory/evaluator.py`, `src/memory/tombstones.py`**
 
 ### Phase 7a: Static Knowledge 只读版 — minecraft-data 结构化查询 (1-2 天)
 
@@ -257,6 +343,9 @@ Phase 7a 只处理 Static Knowledge，不写 MemoryLayer：
 ```
 bots/<bot_name>/memory/
 ├── MEMORY.md              ← 索引文件，始终加载（每行 <150 字符，上限 200 行）
+├── episodic/              ← Phase 3 L2 episodic summary（按 session/任务压缩后的摘要）
+│   ├── 2026-05-10_mining_run.md
+│   └── 2026-05-10_night_death.md
 ├── places/
 │   ├── base.md            ← 命名位置：基地坐标
 │   └── diamond_mine.md    ← 命名位置：钻石矿坐标
@@ -526,6 +615,14 @@ Phase 6 的定位：
 - 多次成功、结构稳定的 task subtree，可通过 policy 晋升为 Phase 5a skill
 - 失败复盘中的稳定教训写入 `memory/feedback/`，而不是直接修改 skill 步骤
 
+**与 Phase 3 episodic 的边界（避免双写）：**
+
+L1 切片在 reflection 阶段按是否归属已知 `task_id` 分流：
+
+- **属于某 task_id** → 生成 / 更新 `bots/<name>/tasks/<task_id>.json`（TaskRun，含 trace summary / learned_rules / used_memories / used_skills），**不**再写 `memory/episodic/`
+- **不属于任何 task** → 探索、自由活动、闲聊等，写 `memory/episodic/*.md`
+- 召回时两类都可被检索，`MemoryService.recall()` 内部按需聚合；同一 trace 不允许同时出现两份 artifact
+
 实现内容：
 
 - [ ] `TaskNode` 数据结构：goal + subtasks + dependencies + executions + learned_rules + outcome
@@ -601,7 +698,12 @@ Phase 7b 只处理 World Facts，不重复实现 Phase 7a 的静态知识：
 
 - [ ] 端到端回归测试：采集、合成、建造、战斗
 - [ ] MemoryLayer 回归测试：写入、检索、压缩、命名空间隔离、schema migration
-- [ ] TaskTree 回归测试：任务复盘、模板检索、candidate skill 晋升
+- [ ] **记忆 determinism 测试**：fixture L1 NDJSON → 多次运行 reflection → L2 候选必须稳定（剔除时间戳后 content hash 一致）
+- [ ] **记忆老化测试**：TTL 过期、confidence half-life 衰减、`invalid_when` 触发——用快进时间夹具验证 `MemoryEvaluator` 行为
+- [ ] **Forget 持久性测试**：`forget(X)` → 同 L1 trace 重放 reflection → 不得回写 X；`unforget(X)` 后恢复
+- [ ] **Conflict resolution 测试**：构造静态/世界事实冲突、source 权重冲突、recency 冲突场景，验证 evaluator 决策路径
+- [ ] **Working Memory 测试**：crash-recovery 快照写入/读回/失效场景；`get_working_context()` 在 token 预算下的截断行为
+- [ ] TaskTree 回归测试：任务复盘、模板检索、candidate skill 晋升、**与 episodic 不双写**
 - [ ] KnowledgeGraph 回归测试：配方查询、工具链校验、采集路径查询
 - [ ] World Facts 回归测试：世界事实写入/过期、库存事实复用、静态知识冲突处理
 - [ ] 多 bot 并发测试（Deferred，Phase 8 启用后再做）
@@ -657,11 +759,16 @@ mindcraft-py/
 │   │   ├── conversation.py    # 对话管理
 │   │   └── modes.py           # 行为模式状态机
 │   ├── memory/
-│   │   ├── models.py          # MemoryRecord / MemoryQuery / MemoryResult
+│   │   ├── models.py          # MemoryRecord / MemoryQuery / MemoryResult / WorkingContext
 │   │   ├── store.py           # MemoryStore 接口
 │   │   ├── file_store.py      # Phase 4a: 文件系统实现（MEMORY.md 索引 + .md 记忆文件）
 │   │   ├── index.py           # Phase 4a: MEMORY.md 索引读写
 │   │   ├── sqlite_store.py    # Phase 3b: SQLite 结构化索引/查询层（可推迟）
+│   │   ├── session_sink.py    # Phase 3: L1 NDJSON append-only sink（record_event + EventSink 协议）
+│   │   ├── reflection_worker.py # Phase 3: 后台 worker，消费 L1 → 生成 L2 episodic 候选
+│   │   ├── working.py         # Phase 3: WorkingContext 聚合（对话窗口 + 当前目标/计划/skill/世界快照）
+│   │   ├── evaluator.py       # Phase 3: TTL / confidence 衰减 / invalid_when / conflict resolution
+│   │   ├── tombstones.py      # Phase 3: forget deny-list 持久化（防 reflection 回写）
 │   │   ├── service.py         # 统一读写、检索、压缩入口
 │   │   └── policies.py        # 写入、晋升、遗忘、注入策略
 │   ├── skills/
@@ -691,9 +798,15 @@ mindcraft-py/
 ├── bots/<name>/               # 每个 bot 的数据持久化
 │   ├── memory/
 │   │   ├── MEMORY.md           # 记忆索引
+│   │   ├── .tombstones.json    # Phase 3: forget deny-list（防 reflection 回写）
+│   │   ├── episodic/           # Phase 3: L2 episodic summary（非任务的 session 摘要）
 │   │   ├── places/             # 命名位置
 │   │   ├── feedback/           # 经验教训
-│   │   └── facts/              # 世界事实
+│   │   └── facts/              # 世界事实（Phase 7b 写入；属 semantic dynamic backend）
+│   ├── sessions/               # Phase 3: L1 raw trace，append-only NDJSON
+│   │   └── 2026-05-11/
+│   │       ├── 1430-mining.ndjson
+│   │       └── 1430-mining.working_snapshot.json  # 可选 crash-recovery 快照
 │   ├── skills/
 │   │   ├── mine_diamonds.md    # 技能模板
 │   │   └── build_shelter.md
