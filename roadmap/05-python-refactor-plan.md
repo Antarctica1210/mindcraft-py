@@ -5,7 +5,7 @@
 | 层 | 技术 | 理由 |
 |---|---|---|
 | Minecraft 协议 | Mineflayer (Node.js) via JSPyBridge | 官方 examples/python/ 已支持，无需重写 |
-| 桥接 | `pip install javascript` (JSPyBridge) | 一行 `require('mineflayer')`，替代 WebSocket |
+| 桥接 | TCP Socket (JSON-line 协议) | 自建 Node.js TCP 服务端包裹 Mineflayer + Python async 客户端，替代 JSPyBridge |
 | 类型系统 | Pydantic v2 + mypy | 所有数据结构建模，运行时校验 |
 | LLM 调用 | litellm / 保留现有 provider adapter | 统一 20+ provider 接口，Python 生态更强 |
 | 向量检索 | FAISS + rank-bm25 | 替代手写 cosine 排序，双层混合检索 |
@@ -35,32 +35,37 @@
 │  │ ral mem  │ │ compact  │ │ + conversation   │ │
 │  └──────────┘ └──────────┘ └──────────────────┘ │
 │                                                  │
-│       │ JSPyBridge (from javascript import)      │
+│       │ TCP Socket (JSON-line, localhost:9090)   │
 │       ▼                                          │
 │  ┌──────────────────────────────────────────┐   │
-│  │ Mineflayer (Node.js 运行时)               │   │
+│  │ Mineflayer Socket Server (Node.js)       │   │
 │  │ ├── bot 连接管理                          │   │
 │  │ ├── pathfinder / collectBlock / pvp      │   │
-│  │ ├── 事件系统 (chat, spawn, tick...)      │   │
-│  │ └── skills.js 动作执行                    │   │
+│  │ ├── 事件系统 (chat, spawn, end...)       │   │
+│  │ └── 请求分发 (observe, move, chat...)    │   │
 │  └──────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────┘
 ```
 
 ## 分层迁移步骤
 
-### Phase 0: 基础设施搭建 (2-3 天)
+### Phase 0: 基础设施搭建 (2-3 天) ✅ 已完成（TCP Socket 方案）
 
-**目标：Python 能控制 Mineflayer，跑通一个 echo bot，并尽早验证桥接性能上限。**
+**目标：Python 能控制 Mineflayer，跑通一个 echo bot。**
 
-- [ ] 初始化 Python 项目结构 (`pyproject.toml`, `uv.lock`)
-- [ ] `pip install javascript` 验证 JSPyBridge 可用
-- [ ] 编写 `mc_bridge.py`：封装 `require('mineflayer')` 及插件加载
-- [ ] 编写 `bot_events.py`：`@On(bot, "spawn")` / `@On(bot, "chat")` 事件注册
-- [ ] 跑通 basic.py 级别的 echo bot，确认事件回调正常
-- [ ] JSPyBridge 高频 tick 场景压测，确认是否保留 JSPyBridge 或退回 WebSocket/IPC 桥接
+- [x] 初始化 Python 项目结构 (`pyproject.toml`, `uv.lock`)
+- [x] ~~`pip install javascript` 验证 JSPyBridge 可用~~ → 因 JSON 序列化崩溃废弃
+- [x] 编写 `socket_server.js`：Node.js TCP 服务端包裹 Mineflayer，JSON-line 协议
+- [x] 编写 `socket_bridge.py`：Python async 客户端，请求-响应 + 事件推送
+- [x] 跑通 echo bot，确认事件回调和命令执行正常
+- [x] 端到端测试 `tests/test_e2e.py` 使用 SocketBridge 替代 JSPyBridge
 
-**产出：`src/mc/bridge.py`, `src/mc/events.py`**
+**最终方案选择：TCP Socket（自建 JSON-line 桥接）**
+- 理由：JSPyBridge 的 `json_patch.py` 存在无法修复的 JSON 序列化 bug（Thread-3 崩溃），Kafka/RabbitMQ 对单 bot 控制场景严重过度设计
+- 延迟：<1ms（本地回环）
+- 序列化完全可控，不存在 `__json__` 兼容性问题
+
+**产出：`src/mc/socket_server.js`, `src/mc/socket_bridge.py`, `src/mc/__init__.py`**
 
 ### Phase 1: LLM 模型层迁移 (3-5 天)
 
@@ -197,8 +202,8 @@
 
 | 风险 | 概率 | 影响 | 缓解措施 |
 |---|---|---|---|
-| JSPyBridge 高频事件性能瓶颈 | 中 | 高 | Phase 0 即做 tick 压测，不通过则退回 WebSocket 方案 |
-| JSPyBridge 跨语言调试困难 | 高 | 中 | 统一日志层，Python 侧捕获 JS 异常栈 |
+| ~~JSPyBridge 高频事件性能瓶颈~~ | ~~中~~ | ~~高~~ | **已解决** — 改用 TCP Socket 桥接，JSON-line 协议 |
+| ~~JSPyBridge 跨语言调试困难~~ | ~~高~~ | ~~中~~ | **已解决** — Socket 协议可独立抓包调试 |
 | litellm 覆盖不全某些 provider | 低 | 中 | 保留自定义 adapter 扩展能力 |
 | 记忆层过早复杂化 | 中 | 中 | Phase 3 只实现稳定接口 + SQLite 原型，Postgres/pgvector 保持可替换但不提前引入 |
 | 多套记忆重复写入导致上下文污染 | 中 | 高 | 统一通过 MemoryLayer policy 写入，记录 source/confidence/tags/ttl，定期 compact |
@@ -226,8 +231,10 @@ mindcraft-py/
 ├── uv.lock
 ├── src/
 │   ├── mc/
-│   │   ├── bridge.py          # JSPyBridge 封装
-│   │   └── events.py          # Mineflayer 事件注册
+│   │   ├── socket_server.js   # Node.js TCP 服务端 (Mineflayer 包裹)
+│   │   ├── socket_bridge.py   # Python async TCP 客户端
+│   │   ├── bridge.py          # [已废弃] JSPyBridge 封装
+│   │   └── events.py          # [已废弃] JSPyBridge 事件注册
 │   ├── llm/
 │   │   ├── prompter.py        # LLM 调用统一接口
 │   │   ├── message_builder.py # Prompt 拼接

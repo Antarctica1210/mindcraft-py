@@ -16,14 +16,17 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Mirrors JS regex: /!(\w+)(?:\((...params...)\))?/
+# Matches !command(args) where args are either positional or keyword.
+#   Positional: !moveTo(642, 71, 481)
+#   Keyword:    !moveTo(x=642, y=71, z=481)
+#   Mixed:      !collectBlocks("oak_log", count=5)
 # Captures: group 1 = command name, group 2 = optional args string
+_SIMPLE_VAL = r'(?:-?\d+(?:\.\d+)?|true|false|"[^"]*")'
+_KW_VAL = r'(?:\w+=(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))'
+_ARG = rf'(?:{_KW_VAL}|{_SIMPLE_VAL})'
 _COMMAND_PATTERN = re.compile(
-    r'!(\w+)'
-    r'(?:\(('
-    r'(?:-?\d+(?:\.\d+)?|true|false|"[^"]*")'
-    r'(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*'
-    r')\))?'
+    rf'!([\w:]+)'
+    rf'(?:\(({_ARG}(?:\s*,\s*{_ARG})*)\))?'
 )
 
 
@@ -57,6 +60,12 @@ def parse_legacy(response_text: str) -> list[CommandCall]:
     for match in _COMMAND_PATTERN.finditer(response_text):
         name = match.group(1)
         args_str = match.group(2)
+
+        # Strip action_ / action: prefix (tool-calling convention)
+        if name.startswith("action_"):
+            name = name[7:]
+        elif name.startswith("action:"):
+            name = name[7:]
 
         args: list[Any] = []
         if args_str:
@@ -152,21 +161,21 @@ def has_command(response_text: str) -> bool:
 def _parse_args(args_str: str) -> list[Any]:
     """Parse comma-separated arguments from the regex capture group.
 
-    Handles: integers, floats, booleans, quoted strings.
-
-    Examples:
-        '"oak_log", 5' → ['oak_log', 5]
-        '"steve", 3, true' → ['steve', 3, True]
-        '1.5, -10' → [1.5, -10]
+    Handles two formats:
+        Positional:  '"oak_log", 5'         → ['oak_log', 5]
+        Keyword:     'x=642, y=71, z=481'   → [642, 71, 481]
     """
     args: list[Any] = []
-    # Split by comma, respecting quoted strings
     parts = re.findall(r'(?:"[^"]*"|[^,]+)', args_str)
 
     for part in parts:
         part = part.strip()
         if not part:
             continue
+
+        # Strip keyword prefix: "x=642" → "642"
+        if "=" in part and not part.startswith('"'):
+            part = part.split("=", 1)[1].strip()
 
         # Quoted string
         if part.startswith('"') and part.endswith('"'):

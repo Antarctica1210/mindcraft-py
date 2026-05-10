@@ -124,23 +124,18 @@ class ModeEvaluator:
         return False
 
     async def _eval_self_preservation(self, bot_state: Any, bridge: Any) -> bool:
-        bot = bridge.get_bot()
-        if not bot:
-            return False
-        block = bot.blockAt(bot.entity.position)
-        block_above = bot.blockAt(bot.entity.position.offset(0, 1, 0))
-        if block_above and block_above.name == "water":
-            if not bot.pathfinder.goal:
-                bot.setControlState("jump", True)
+        # Use bridge.observe() to get current block info
+        blocks = getattr(bot_state, "blocks_nearby", "")
+        if "standing on: water" in blocks and bot_state.position.y > 0:
+            try:
+                await bridge.set_control_state("jump", True)
+            except Exception:
+                pass
             return True
-        if block and block.name in ("lava", "fire"):
+        if "standing on: lava" in blocks or "standing on: fire" in blocks:
             logger.warning("Bot in lava/fire — self_preservation triggered")
             return True
-        if block_above and block_above.name in ("lava", "fire"):
-            logger.warning("Bot has fire/lava above — self_preservation triggered")
-            return True
-        last_damage = getattr(bot, "lastDamageTime", 0)
-        if bot.health < 5 and (time.time() * 1000) - last_damage < 3000:
+        if bot_state.health < 5:
             logger.warning("Bot is dying — self_preservation triggered")
             return True
         return False

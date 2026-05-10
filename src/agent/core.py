@@ -106,82 +106,36 @@ class Agent:
         """Gracefully shut down the agent."""
         self._running = False
         if self._bridge:
-            bot = self._bridge.get_bot()
-            if bot:
-                bot.clearControlStates()
+            try:
+                await self._bridge.stop()
+            except Exception:
+                pass
         logger.info("Agent %s stopped", self.name)
 
     # ── Observation ─────────────────────────────────────────────────
 
     async def observe(self) -> BotState:
-        """Gather the current bot state from the Mineflayer bridge."""
+        """Gather the current bot state from the bridge."""
         bridge = self._bridge
         if bridge is None:
             return BotState()
 
-        bot = bridge.get_bot()
-        if bot is None:
+        try:
+            s = await bridge.observe()
+        except Exception:
+            logger.debug("observe() failed", exc_info=True)
             return BotState()
 
-        pos = bot.entity.position
-        position = Position(x=pos.x, y=pos.y, z=pos.z)
-
-        # Gather nearby entities
-        entities_str = ""
-        try:
-            entities = bot.entities or {}
-            parts = []
-            for _eid, entity in list(entities.items())[:10]:
-                if entity.name and entity.name != "player":
-                    dist = 0.0
-                    if hasattr(entity, "position") and entity.position:
-                        dist = position.distance_to(
-                            Position(entity.position.x, entity.position.y, entity.position.z)
-                        )
-                    parts.append(f"  {entity.name} ({dist:.0f}m)")
-            entities_str = "\n".join(parts)
-        except Exception:
-            logger.debug("Failed to enumerate entities", exc_info=True)
-
-        # Gather nearby blocks (if blockAt is available)
-        blocks_str = ""
-        try:
-            block = bot.blockAt(bot.entity.position)
-            if block:
-                blocks_str = f"standing on: {block.name}"
-        except Exception:
-            logger.debug("Failed to read current block", exc_info=True)
-
-        time_of_day = ""
-        try:
-            tod = bot.time.timeOfDay
-            hour = tod / 1000
-            if hour < 6:
-                time_of_day = "night"
-            elif hour < 7:
-                time_of_day = "sunrise"
-            elif hour < 12:
-                time_of_day = "day"
-            elif hour < 13:
-                time_of_day = "noon"
-            elif hour < 18:
-                time_of_day = "afternoon"
-            elif hour < 19:
-                time_of_day = "sunset"
-            else:
-                time_of_day = "night"
-        except Exception:
-            pass
-
+        p = s.get("position", {})
         return BotState(
-            health=bot.health or 20,
-            food=bot.food or 20,
-            position=position,
-            gamemode=getattr(bot.game, "gameMode", "survival"),
-            time_of_day=time_of_day,
-            biome="",
-            entities_nearby=entities_str,
-            blocks_nearby=blocks_str,
+            health=s.get("health", 20),
+            food=s.get("food", 20),
+            position=Position(x=p.get("x", 0), y=p.get("y", 0), z=p.get("z", 0)),
+            gamemode=s.get("gamemode", "survival"),
+            time_of_day=s.get("time_of_day", ""),
+            biome=s.get("biome", ""),
+            entities_nearby=s.get("entities_nearby", ""),
+            blocks_nearby=s.get("blocks_nearby", ""),
         )
 
     # ── Planning ────────────────────────────────────────────────────
@@ -202,7 +156,7 @@ class Agent:
             blocks_nearby=bot_state.blocks_nearby,
         )
 
-        inventory = self._format_inventory()
+        inventory = await self._format_inventory()
 
         command_docs = self._msg_builder.build_command_docs(
             blocked_actions=set(self._config.blocked_actions)
@@ -325,9 +279,12 @@ class Agent:
 
                 # Update stuck tracking
                 if self._bridge is not None and self._modes.is_active(BehaviorMode.UNSTUCK):
-                    bot = self._bridge.get_bot()
-                    if bot and bot.pathfinder.goal is None:
-                        self._modes.release(BehaviorMode.UNSTUCK)
+                    try:
+                        goal = await self._bridge.get_goal()
+                        if goal and "No current" in goal:
+                            self._modes.release(BehaviorMode.UNSTUCK)
+                    except Exception:
+                        pass
 
             except Exception:
                 logger.exception("Error in agent loop tick %d", self._tick_count)
@@ -336,22 +293,17 @@ class Agent:
 
     # ── Internal helpers ────────────────────────────────────────────
 
-    def _format_inventory(self) -> str:
+    async def _format_inventory(self) -> str:
         """Format the bot's inventory for the $INVENTORY placeholder."""
         if self._bridge is None:
             return "INVENTORY: empty"
-        bot = self._bridge.get_bot()
-        if bot is None:
-            return "INVENTORY: empty"
         try:
-            items = bot.inventory.items()
+            items = await self._bridge.get_inventory()
             if not items:
                 return "INVENTORY: empty"
             lines = ["INVENTORY:"]
             for item in items[:20]:
-                name = getattr(item, "name", "unknown")
-                count = getattr(item, "count", 0)
-                lines.append(f"  {name} x{count}")
+                lines.append(f"  {item['name']} x{item['count']}")
             return "\n".join(lines)
         except Exception:
             return "INVENTORY: unavailable"

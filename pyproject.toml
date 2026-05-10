@@ -10,7 +10,6 @@ name = "mindcraft-py"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "javascript>=1.0.0",       # JSPyBridge — Python ↔ Node.js bridge
     "pydantic>=2.0",
     "numpy>=1.26",
     "litellm>=1.50",            # Unified LLM interface (100+ providers)

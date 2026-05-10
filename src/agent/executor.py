@@ -62,49 +62,32 @@ class ActionExecutor:
     # ── Built-in commands ───────────────────────────────────────────
 
     @staticmethod
-    def _cmd_stop(bridge: Any, *_args: Any) -> str:
-        bot = bridge.get_bot()
-        if bot:
-            bot.collectBlock.cancelTask()
-            bot.pathfinder.stop()
-            bot.pvp.stop()
-            bot.clearControlStates()
-        return "All actions stopped."
+    async def _cmd_stop(bridge: Any, *_args: Any) -> Any:
+        return await bridge.stop()
 
     @staticmethod
-    def _cmd_stats(bridge: Any, *_args: Any) -> str:
-        bot = bridge.get_bot()
-        if not bot:
-            return "Bot not connected."
-        pos = bot.entity.position
+    async def _cmd_stats(bridge: Any, *_args: Any) -> str:
+        state = await bridge.observe()
+        p = state["position"]
         return (
-            f"Health: {bot.health:.0f}/20, Food: {bot.food:.0f}/20, "
-            f"Position: ({pos.x:.0f}, {pos.y:.0f}, {pos.z:.0f}), "
-            f"Gamemode: {bot.game.gameMode}"
+            f"Health: {state['health']:.0f}/20, Food: {state['food']:.0f}/20, "
+            f"Position: ({p['x']:.0f}, {p['y']:.0f}, {p['z']:.0f}), "
+            f"Gamemode: {state['gamemode']}"
         )
 
     @staticmethod
-    def _cmd_inventory(bridge: Any, *_args: Any) -> str:
-        bot = bridge.get_bot()
-        if not bot:
-            return "Bot not connected."
-        items = bot.inventory.items()
+    async def _cmd_inventory(bridge: Any, *_args: Any) -> str:
+        items = await bridge.get_inventory()
         if not items:
             return "Inventory empty."
         lines = ["Inventory:"]
         for item in items:
-            lines.append(f"  {item.name} x{item.count}")
+            lines.append(f"  {item['name']} x{item['count']}")
         return "\n".join(lines)
 
     @staticmethod
-    def _cmd_goal(bridge: Any, *_args: Any) -> str:
-        bot = bridge.get_bot()
-        if not bot:
-            return "Bot not connected."
-        goal = bot.pathfinder.goal
-        if not goal:
-            return "No current pathfinding goal."
-        return f"Current goal: {type(goal).__name__}"
+    async def _cmd_goal(bridge: Any, *_args: Any) -> Any:
+        return await bridge.get_goal()
 
     def _register_builtins(self) -> None:
         """Register the minimal set of unblockable commands."""

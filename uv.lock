@@ -594,15 +594,6 @@ wheels = [
 ]
 
 [[package]]
-name = "javascript"
-version = "1!1.2.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1d/e5/782b7cfba2491e96ff463e24fadb4486ce2bc226f2071e493a9caa07f345/javascript-1!1.2.6.tar.gz", hash = "sha256:442e885b54dd9a6afe797dd6d5c3c575ec38da02a7d16749bf315aad0fa620c9", size = 38508, upload-time = "2025-09-25T11:15:44.411Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/95/4f/43e4b0bd6b76930e921cf5d9357cefb8ace9a2615bf53c05ff2e314ec434/javascript-1!1.2.6-py3-none-any.whl", hash = "sha256:0c68af196d450715bb74e9a25f11db67435070d91ceaff5ef28c4b4c95235ebf", size = 34802, upload-time = "2025-09-25T11:15:42.142Z" },
-]
-
-[[package]]
 name = "jinja2"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -885,7 +876,6 @@ name = "mindcraft-py"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "javascript" },
     { name = "litellm" },
     { name = "numpy" },
     { name = "pydantic" },
@@ -918,7 +908,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "faiss-cpu", marker = "extra == 'retrieval'", specifier = ">=1.8" },
-    { name = "javascript", specifier = ">=1.0.0" },
     { name = "litellm", specifier = ">=1.50" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "networkx", marker = "extra == 'graph'", specifier = ">=3.3" },
