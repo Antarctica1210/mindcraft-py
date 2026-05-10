@@ -121,33 +121,236 @@
 
 **产出：`src/memory/models.py`, `src/memory/store.py`, `src/memory/service.py`, `src/memory/policies.py`**
 
-### Phase 4: Roadmap P1 — 双层检索系统接入 MemoryLayer (2-3 天)
+### Phase 4a: 文件型记忆系统 — 参考 Claude Code MEMORY.md 模式 (1-2 天)
 
-**目标：FAISS + BM25 混合检索替换手写 cosine 排序。**
+**目标：用文件系统实现记忆读写，先跑通再升级，避免过早引入 FAISS 依赖。**
+
+设计参考 Claude Code 的记忆系统（`~/.claude/projects/<project>/memory/`）：
+
+```
+bots/<bot_name>/memory/
+├── MEMORY.md              ← 索引文件，始终加载（每行 <150 字符，上限 200 行）
+├── places/
+│   ├── base.md            ← 命名位置：基地坐标
+│   └── diamond_mine.md    ← 命名位置：钻石矿坐标
+├── feedback/
+│   ├── night_mining.md    ← 教训：夜间采矿死亡
+│   └── creeper_combat.md  ← 教训：苦力怕近战策略
+├── facts/
+│   ├── players.md         ← 玩家偏好、关系
+│   └── world_facts.md     ← 世界事实（传送门位置等）
+└── skills/
+    ├── mine_diamonds.md   ← 技能模板（见 Phase 5a）
+    └── build_shelter.md
+```
+
+记忆文件格式（YAML frontmatter + markdown body）：
+
+```markdown
+---
+name: base_location
+description: 主基地坐标
+type: place
+created: 2026-05-10T12:00:00Z
+updated: 2026-05-10T14:00:00Z
+confidence: high          # high / medium / low
+ttl: null                 # null = 永不过期
+---
+
+基地坐标: (-150, 64, 320)
+维度: overworld
+标志物: 橡木大屋旁边，有围墙
+```
+
+**Why →  How to apply 模式（核心设计）：**
+每条记忆必须包含"为什么"和"适用范围"，而不是仅存事实。这让 LLM 能判断边界情况：
+
+```markdown
+---
+name: avoid_night_caving
+type: feedback
+---
+
+不要在夜间去洞穴挖矿。
+
+**Why:** 2026-05-08 夜间下洞穴被 3 只骷髅同时射击死亡。
+bot 当时只有石剑，没有盾牌和远程武器。
+
+**How to apply:**
+- time_of_day=night 且 inventory 中没有 shield 或 bow 时，跳过洞穴相关指令
+- 如果 bot 后来拿到盾牌或弓，此规则可能不再适用
+- 地面上夜间挖矿（非洞穴）不受此限制
+```
+
+实现内容：
+
+- [ ] `MemoryFile` Pydantic 模型：解析 YAML frontmatter + body
+- [ ] `MemoryIndex`：读写 `MEMORY.md` 索引，保证不超过 200 行
+- [ ] `MemoryStore` 文件实现：`put(path, memory)` → 写 .md 文件 + 更新索引
+- [ ] `MemoryQuery`：按 type / tag / keyword 过滤，按 confidence / updated_at 排序
+- [ ] `MemoryService`：统一 `remember()` / `recall()` / `forget()` 接口
+- [ ] 注入策略：索引始终注入 system prompt，详情文件在匹配时按需加载（渐进式披露）
+- [ ] 验证钩子：`recall("diamond_mine")` 返回坐标后，bot 先检查坐标是否仍可达再行动
+- [ ] 与 Phase 3 MemoryStore 接口对齐，后续可无痛切换到 SQLite/FAISS 后端
+
+**产出：`src/memory/file_store.py`, `src/memory/index.py`, `bots/<name>/memory/` 示例**
+
+**设计决策：**
+| 问题 | 选择 | 理由 |
+|---|---|---|
+| 为什么不用 FAISS 做 v1 | 文件系统先跑通 | 初期记忆量 <200 条，索引全文注入比向量检索更快更准；零依赖 |
+| 为什么用 YAML frontmatter | LLM 原生可读 | markdown 文件可直接 grep/edit，调试不需要工具 |
+| 为什么强制 Why 字段 | 防止记忆腐烂 | 上下文变了（bot 有了新装备），LLM 能自行判断规则是否还适用 |
+| 何时升级到 Phase 4b | 记忆条目 >500 或索引 >200 行 | 文件扫描变慢时引入 FAISS 加速检索，但文件层保留为可读备份 |
+
+---
+
+### Phase 4b: Roadmap P1 — FAISS + BM25 双层检索 (2-3 天，可推迟）
+
+**目标：当记忆规模增长后，用向量检索替换文件扫描。**
+
+> 前置条件：Phase 4a 已稳定运行，记忆条目 >500 或检索延迟 >100ms。
+> Phase 4a 的文件层保留作为**可读备份**——FAISS 是加速层而非替代层。
 
 对应 `roadmap/02-dual-retrieval.md`：
 
-- [ ] FAISS 向量索引：启动时加载缓存，增量更新
+- [ ] FAISS 向量索引：启动时从文件缓存加载，增量更新
 - [ ] BM25 稀疏索引 (`rank-bm25`)
 - [ ] RRF (Reciprocal Rank Fusion) 融合打分
-- [ ] 向量缓存持久化 (`embedding_cache.json`)
-- [ ] 替换 `examples.js` 和 `skill_library.js` 的检索逻辑
-- [ ] 将检索能力注册为 MemoryLayer 的 `search` backend，供 episodic/semantic/procedural 共用
+- [ ] 向量缓存持久化（从 .md 文件自动生成，不额外维护两份数据）
+- [ ] 替换文件扫描逻辑，保留 MemoryStore 接口不变
+- [ ] 将检索能力注册为 MemoryLayer 的 `search` backend
 
 **产出：`src/retrieval/faiss_index.py`, `src/retrieval/bm25_index.py`, `src/retrieval/fusion.py`**
 
-### Phase 5: Roadmap P0 — ProceduralMemory 动作-状态转移图 (3-4 天)
+---
 
-**目标：高频动作路径免 LLM，毫秒级响应。**
+### Phase 5a: 文件型动作图 — 参考 Claude Code skill.md 渐进式披露 (1-2 天)
+
+**目标：用独立 skill 文件存储动作-状态转移，按需加载，避免全图注入 prompt。**
+
+核心思路来自 Claude Code 的 Skill 系统：每个 skill 是一个独立的 .md 文件，只在用户触发 `/skill-name` 时才加载对应指令到上下文。对 bot 而言：
+
+- 不是把整个动作图序列化进 prompt
+- 而是当前状态匹配到哪个 skill，就只加载那个 skill 的 .md 文件
+- 类似"工具书"——不需要背下整本书，翻到当前需要的那一页即可
+
+**Skill 文件格式：**
+
+```markdown
+<!-- bots/<name>/skills/mine_diamonds.md -->
+---
+name: mine_diamonds
+description: 寻找并挖掘钻石矿
+triggers:
+  - situation: "玩家要求挖钻石"
+  - state: "inventory 有 iron_pickaxe，pos.y > 0"
+requires: [iron_pickaxe_or_better, torches]
+confidence: 0.92
+success_count: 15
+fail_count: 2
+last_used: 2026-05-10T15:00:00Z
+---
+
+## 前置检查
+1. 确认背包有铁镐或更好的镐
+2. 确认有至少 16 个火把
+3. 确认饱食度 > 10
+
+## 执行步骤
+1. !goToSurface() — 先到地面定位
+2. !digDown(distance=60) — 挖到 Y=-58
+3. !stay(seconds=2) — 等待方块更新
+4. 开 2x1 通道，每 8 格放火把
+5. 遇到钻石矿 → !collectBlocks(diamond_ore, 1)
+
+## 失败模式
+- "No iron_pickaxe in inventory" → 先执行 craft_iron_pickaxe skill
+- "Lava detected" → 切换到 block_lava skill
+- "Health < 5" → 中断，执行 emergency_escape skill
+
+## 为什么有效
+- 钻石在 Y=-58 密度最高（minecraft wiki 验证）
+- 2x1 通道防止头顶掉岩浆
+- 铁镐是挖掘钻石的最低要求
+
+## 什么时候不适用
+- 背包满时先清背包
+- 附近有 warden 声波时绝不执行
+- peaceful 难度无需钻石装备时跳过
+```
+
+**为什么渐进式披露对动作图很重要：**
+
+传统的图查询（embedding → 最近节点 → 最高权重边）有一个问题：即使你只匹配到 1 个节点，图的序列化可能包含邻接节点和边信息，导致 prompt 膨胀。Claude Code 的做法是：匹配到什么就只加载什么，不加载邻接内容。
+
+对 bot 的好处：
+1. **上下文精简**：当前是"挖矿"场景，就不会加载"战斗""交易"的 skill 文件
+2. **失败链式回退**：skill A 失败 → 自动触发 skill B（如 `mine_diamonds` 失败 → `craft_iron_pickaxe`），形成自然的 sub-skill 调用
+3. **人工可编辑**：玩家可以直接编辑 .md 文件优化 bot 行为，不需要重新训练或重建索引
+4. **版本控制友好**：git diff 就能看到技能变更
+
+**触发匹配策略（无需 embedding）：**
+
+```python
+def match_skill(situation: str, state: BotState, skills_dir: Path) -> Skill | None:
+    """按优先级匹配：精确触发词 → 状态条件 → 默认回退"""
+    for skill_file in sorted(skills_dir.glob("*.md")):
+        skill = parse_skill(skill_file)
+        # 1. 触发词匹配
+        if any(trigger in situation for trigger in skill.triggers_situation):
+            # 2. 状态条件检查
+            if all(check_state(cond, state) for cond in skill.triggers_state):
+                return skill
+    return None
+```
+
+初期（<50 个 skill）连 embedding 都不需要，关键词 + 状态条件匹配就足够。
+
+**skill.md 渐进式披露 vs 传统图查询对比：**
+
+| 维度 | skill.md 文件方案（Phase 5a） | networkx 图方案（Phase 5b） |
+|---|---|---|
+| skill < 50 个 | 关键词匹配 + 状态条件，零依赖，零延迟 | 图构建成本 > 收益 |
+| skill 50-100 个 | 仍可用，但触发词歧义开始出现 | 可建立图索引辅助消歧，文件仍是数据源 |
+| skill > 100 个 | 需图来管理转移关系、去重、合并相似 skill | 图的价值明确，从文件自动建图 |
+| 前置条件是布尔值（有无铁镐） | **优于** embedding——条件检查不会漂移 | — |
+| 前置条件是模糊的（"附近比较危险"） | 差于 embedding——无法泛化到新场景 | embedding 相似度更有优势 |
+| 上下文膨胀 | **不会**——只加载匹配到的单个 skill 文件 | 可能——图序列化包含邻接节点和边 |
+| 调试 | **可解释**——匹配到哪个文件、哪个条件失败一目了然 | 黑盒——需导出/可视化向量才知道为什么匹配 |
+| 人工编辑 | 打开 .md 文件直接改 | 需修改图数据或重新导入 |
+| 版本控制 | git diff 即可查看技能变更 | 图序列化文件不可读，diff 无意义 |
+
+**关键设计原则：** 文件是 truth source（数据源），图是索引层（加速器）。这和 Claude Code 的 MEMORY.md（索引）+ .md 文件（数据）是同一哲学——索引可以换，数据源永远保留。
+
+实现内容：
+
+- [ ] `SkillFile` Pydantic 模型：解析 YAML frontmatter + 步骤/失败模式
+- [ ] `SkillIndex`：扫描 `skills/` 目录，建立触发词 → 文件映射
+- [ ] `SkillMatcher`：给定 situation + BotState → 返回最佳匹配 skill
+- [ ] 权重自动更新：每次执行后更新 `success_count / fail_count / confidence`
+- [ ] 失败链式回退：skill 执行失败 → 读取 `失败模式` 列表 → 触发对应 sub-skill
+- [ ] 与 `ActionExecutor` 集成：高 confidence（>0.9）的 skill 直接执行，低 confidence 走 LLM
+
+**产出：`src/skills/loader.py`, `src/skills/matcher.py`, `bots/<name>/skills/` 示例**
+
+---
+
+### Phase 5b: Roadmap P0 — 图数据库动作图 (2-3 天，可推迟）
+
+**目标：当 skill 文件 >100 个后，用 networkx 图结构管理 skill 间的转移关系。**
+
+> 前置条件：Phase 5a 已稳定运行，skill 文件 >100 个，关键词匹配开始出现歧义。
+> Phase 5a 的文件层保留——图数据库是索引层，文件是数据源。
 
 对应 `roadmap/01-action-state-graph.md`：
 
-- [ ] `StateNode`：库存快照 + 附近实体 + embedding
-- [ ] `ActionEdge`：命令 + 参数 + 成功率 + 前置条件 + 副作用
-- [ ] 图查询：当前状态 embedding → 最近节点 → 最高权重边
-- [ ] 权重更新：成功/失败计数 + 遗忘因子 (0.99)
+- [ ] 从 skill 文件自动构建 `StateNode` 和 `ActionEdge`
+- [ ] `StateNode`：从 skill 的 `triggers.state` 字段自动提取
+- [ ] `ActionEdge`：从 skill 的 `失败模式` 字段自动构建转移边
+- [ ] 图查询：当前状态 → 候选边 → 按 confidence 排序
+- [ ] 权重更新：执行后更新 skill 文件的 success/fail 计数
 - [ ] 阈值控制：高于 threshold 直接执行，低于走 LLM
-- [ ] 动作边与状态节点通过 MemoryLayer 持久化，支持按 bot/world/version 命名空间隔离
 
 **产出：`src/graph/action_graph.py`**
 
@@ -213,15 +416,15 @@
 ## 时间线
 
 ```
-Week 1:  Phase 0 (基础设施) + Phase 1 (LLM 层)
-Week 2:  Phase 2 (Agent 核心) 
-Week 3:  Phase 3 (MemoryLayer) + Phase 4 (P1 检索)
-Week 4:  Phase 5 (P0 动作图) + Phase 6 (P2 任务树)
-Week 5:  Phase 7 (P3 知识图谱) + Phase 8 (NPC)
+Week 1:  Phase 0 (基础设施) ✅ + Phase 1 (LLM 层) ✅ + Phase 2 (Agent 核心) ✅
+Week 2:  Phase 3 (MemoryLayer 接口) + Phase 4a (文件型记忆 MEMORY.md)
+Week 3:  Phase 5a (文件型动作图 skill.md) + Phase 6 (P2 任务树)
+Week 4:  Phase 7 (P3 知识图谱) + Phase 8 (NPC)
+Week 5:  Phase 4b (FAISS 检索，按需) + Phase 5b (图数据库，按需)
 Week 6:  Phase 9 (集成测试与性能验证)
 ```
 
-**总计：约 6 周（单人在 AI 辅助下）。新增 MemoryLayer 会多花约 1 周，但能显著降低后续记忆系统返工风险。**
+**总计：约 6 周。Phase 4a/5a 用文件系统先跑通，比原计划节省约 1 周，且降低了过早抽象的返工风险。4b/5b 推迟到规模真正需要时引入。**
 
 ## 目录结构（目标）
 
@@ -247,15 +450,20 @@ mindcraft-py/
 │   │   └── modes.py           # 行为模式状态机
 │   ├── memory/
 │   │   ├── models.py          # MemoryRecord / MemoryQuery / MemoryResult
-│   │   ├── store.py           # MemoryStore 接口与 SQLite 实现
+│   │   ├── store.py           # MemoryStore 接口
+│   │   ├── file_store.py      # Phase 4a: 文件系统实现（MEMORY.md 索引 + .md 记忆文件）
+│   │   ├── index.py           # Phase 4a: MEMORY.md 索引读写
 │   │   ├── service.py         # 统一读写、检索、压缩入口
 │   │   └── policies.py        # 写入、晋升、遗忘、注入策略
+│   ├── skills/
+│   │   ├── loader.py          # Phase 5a: Skill 文件解析（YAML frontmatter + markdown）
+│   │   └── matcher.py         # Phase 5a: 触发词 + 状态条件匹配器
 │   ├── retrieval/
-│   │   ├── faiss_index.py     # 稠密向量索引
-│   │   ├── bm25_index.py      # 稀疏关键词索引
-│   │   └── fusion.py          # RRF 融合
+│   │   ├── faiss_index.py     # Phase 4b: 稠密向量索引（可推迟）
+│   │   ├── bm25_index.py      # Phase 4b: 稀疏关键词索引（可推迟）
+│   │   └── fusion.py          # Phase 4b: RRF 融合（可推迟）
 │   ├── graph/
-│   │   ├── action_graph.py    # P0: 动作-状态图
+│   │   ├── action_graph.py    # Phase 5b: 动作-状态图（从 skill 文件自动构建，可推迟）
 │   │   └── knowledge_graph.py # P3: 知识图谱
 │   ├── task/
 │   │   └── task_tree.py       # P2: 任务树
@@ -268,8 +476,16 @@ mindcraft-py/
 │   ├── test_memory/
 │   ├── test_retrieval/
 │   └── test_integration/
-├── bots/                      # 各 bot 数据持久化
-└── nodejs/                    # 保留的 Node.js 层
+├── bots/<name>/               # 每个 bot 的数据持久化
+│   ├── memory/
+│   │   ├── MEMORY.md           # 记忆索引
+│   │   ├── places/             # 命名位置
+│   │   ├── feedback/           # 经验教训
+│   │   └── facts/              # 世界事实
+│   └── skills/
+│       ├── mine_diamonds.md    # 技能模板
+│       └── build_shelter.md
+├── node_modules/              # Node.js 依赖（socket_server.js）
     ├── skills.js              # 动作执行（退化版）
     └── world.js               # 世界状态查询
 ```

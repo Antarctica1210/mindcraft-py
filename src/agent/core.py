@@ -321,28 +321,63 @@ class Agent:
 
 
 def _command_defs() -> dict[str, CommandDef]:
-    """Return the default set of bot command definitions.
+    """Return the full set of bot command definitions for the LLM prompt.
 
-    These populate the $COMMAND_DOCS section of the system prompt.
-    Extended by downstream modules.
+    Mirrors the JS command list in ``src/agent/commands/``.
     """
     return {
+        # ── Control ─────────────────────────────────────────────────
         "stop": CommandDef(
             name="stop",
-            description="Stop all current actions (movement, mining, combat).",
+            description="Stop all current actions (movement, mining, combat, following).",
         ),
+        "stfu": CommandDef(
+            name="stfu",
+            description="Stop chatting and self-narration, but continue current actions.",
+        ),
+        "restart": CommandDef(
+            name="restart",
+            description="Restart the agent process (clean shutdown).",
+        ),
+        "clearChat": CommandDef(
+            name="clearChat",
+            description="Clear the conversation history.",
+        ),
+        # ── Observation ─────────────────────────────────────────────
         "stats": CommandDef(
             name="stats",
-            description="Report current health, food, position, and gamemode.",
+            description="Report current health, food, position, gamemode, biome, time, "
+            "weather, and nearby players.",
         ),
         "inventory": CommandDef(
             name="inventory",
-            description="List all items currently in the bot's inventory.",
+            description="List all items in the bot's inventory with counts.",
         ),
         "goal": CommandDef(
             name="goal",
             description="Report the current pathfinding goal, if any.",
         ),
+        "entities": CommandDef(
+            name="entities",
+            description="List nearby players and entities with positions and types.",
+        ),
+        "nearbyBlocks": CommandDef(
+            name="nearbyBlocks",
+            description="List block types near the bot.",
+        ),
+        "craftable": CommandDef(
+            name="craftable",
+            description="List all items craftable with current inventory.",
+        ),
+        "help": CommandDef(
+            name="help",
+            description="List all available commands.",
+        ),
+        "modes": CommandDef(
+            name="modes",
+            description="Show all available behavior modes and their status.",
+        ),
+        # ── Movement ────────────────────────────────────────────────
         "moveTo": CommandDef(
             name="moveTo",
             description="Move the bot to the given coordinates.",
@@ -352,15 +387,325 @@ def _command_defs() -> dict[str, CommandDef]:
                 "z": {"type": "float", "description": "Z coordinate"},
             },
         ),
+        "goToPlayer": CommandDef(
+            name="goToPlayer",
+            description="Navigate to the given player.",
+            params={
+                "player_name": {"type": "string", "description": "Player name to go to"},
+                "closeness": {"type": "float", "description": "How close to get (default 3)"},
+            },
+        ),
+        "followPlayer": CommandDef(
+            name="followPlayer",
+            description="Continuously follow a player.",
+            params={
+                "player_name": {"type": "string", "description": "Player name to follow"},
+                "follow_dist": {"type": "float", "description": "Following distance (default 4)"},
+            },
+        ),
+        "goToCoordinates": CommandDef(
+            name="goToCoordinates",
+            description="Move to specific x, y, z coordinates.",
+            params={
+                "x": {"type": "float", "description": "X coordinate"},
+                "y": {"type": "float", "description": "Y coordinate"},
+                "z": {"type": "float", "description": "Z coordinate"},
+                "closeness": {"type": "float", "description": "How close to get (default 2)"},
+            },
+        ),
+        "searchForBlock": CommandDef(
+            name="searchForBlock",
+            description="Find and navigate to the nearest block of the given type.",
+            params={
+                "block_type": {"type": "string", "description": "Block type, e.g. oak_log"},
+                "search_range": {"type": "float", "description": "Search radius (default 64)"},
+            },
+        ),
+        "searchForEntity": CommandDef(
+            name="searchForEntity",
+            description="Find and navigate to the nearest entity of the given type.",
+            params={
+                "entity_type": {"type": "string", "description": "Entity type, e.g. cow"},
+                "search_range": {"type": "float", "description": "Search radius (default 64)"},
+            },
+        ),
+        "moveAway": CommandDef(
+            name="moveAway",
+            description="Move in a random direction by the given distance.",
+            params={
+                "distance": {"type": "float", "description": "Distance to move (default 16)"},
+            },
+        ),
+        "goToBed": CommandDef(
+            name="goToBed",
+            description="Find the nearest bed and sleep in it.",
+        ),
+        "goToSurface": CommandDef(
+            name="goToSurface",
+            description="Navigate upward to the surface.",
+        ),
+        "digDown": CommandDef(
+            name="digDown",
+            description="Dig straight down, stopping at lava/water/bedrock.",
+            params={
+                "distance": {"type": "int", "description": "Max distance to dig (default 10)"},
+            },
+        ),
+        "stay": CommandDef(
+            name="stay",
+            description="Stay in place. Pauses all modes.",
+            params={
+                "seconds": {"type": "int", "description": "Seconds to stay (-1 = indefinite)"},
+            },
+        ),
+        # ── Combat ──────────────────────────────────────────────────
+        "attack": CommandDef(
+            name="attack",
+            description="Attack and kill the nearest hostile entity of the given type.",
+            params={
+                "entity_type": {"type": "string", "description": "Entity type, e.g. zombie"},
+            },
+        ),
+        "attackPlayer": CommandDef(
+            name="attackPlayer",
+            description="Attack a specific player until they die or flee.",
+            params={
+                "player_name": {"type": "string", "description": "Player name to attack"},
+            },
+        ),
+        # ── Inventory ───────────────────────────────────────────────
+        "equip": CommandDef(
+            name="equip",
+            description="Equip an item to the given body slot.",
+            params={
+                "item_name": {"type": "string", "description": "Item to equip, e.g. diamond_sword"},
+            },
+        ),
+        "consume": CommandDef(
+            name="consume",
+            description="Eat or drink the given item.",
+            params={
+                "item_name": {"type": "string", "description": "Item to consume, e.g. cooked_beef"},
+            },
+        ),
+        "discard": CommandDef(
+            name="discard",
+            description="Discard items from inventory.",
+            params={
+                "item_name": {"type": "string", "description": "Item to discard"},
+                "num": {"type": "int", "description": "Number to discard (-1 = all)"},
+            },
+        ),
+        "givePlayer": CommandDef(
+            name="givePlayer",
+            description="Navigate to a player and give them items.",
+            params={
+                "player_name": {"type": "string", "description": "Player to give to"},
+                "item_name": {"type": "string", "description": "Item to give"},
+                "num": {"type": "int", "description": "Number to give (default 1)"},
+            },
+        ),
+        # ── Block Interaction ───────────────────────────────────────
+        "placeHere": CommandDef(
+            name="placeHere",
+            description="Place a block from inventory at the current position.",
+            params={
+                "block_type": {"type": "string", "description": "Block type to place"},
+            },
+        ),
+        "activateBlock": CommandDef(
+            name="activateBlock",
+            description="Right-click / activate the nearest block of the given type.",
+            params={
+                "block_type": {"type": "string", "description": "Block type, e.g. lever"},
+            },
+        ),
         "collectBlocks": CommandDef(
             name="collectBlocks",
             description="Mine and collect blocks of the specified type.",
             params={
-                "blockType": {
-    "type": "string",
-    "description": "Block type to collect, e.g. oak_log",
-},
-                "count": {"type": "int", "description": "Number of blocks to collect"},
+                "blockType": {"type": "string", "description": "Block type, e.g. oak_log"},
+                "count": {"type": "int", "description": "Number to collect"},
+            },
+        ),
+        "useOn": CommandDef(
+            name="useOn",
+            description="Use a tool on a target entity or block.",
+            params={
+                "tool_name": {"type": "string", "description": "Tool to use, e.g. bucket"},
+                "target": {
+                    "type": "string",
+                    "description": "Target entity/block or 'nothing'/'hand'",
+                },
+            },
+        ),
+        # ── Chest ───────────────────────────────────────────────────
+        "viewChest": CommandDef(
+            name="viewChest",
+            description="Show contents of the nearest chest.",
+        ),
+        "putInChest": CommandDef(
+            name="putInChest",
+            description="Store items in the nearest chest.",
+            params={
+                "item_name": {"type": "string", "description": "Item to store"},
+                "num": {"type": "int", "description": "Number to store (-1 = all)"},
+            },
+        ),
+        "takeFromChest": CommandDef(
+            name="takeFromChest",
+            description="Take items from the nearest chest.",
+            params={
+                "item_name": {"type": "string", "description": "Item to take"},
+                "num": {"type": "int", "description": "Number to take (-1 = all)"},
+            },
+        ),
+        # ── Crafting / Smelting ─────────────────────────────────────
+        "craftRecipe": CommandDef(
+            name="craftRecipe",
+            description="Craft a recipe using available materials.",
+            params={
+                "recipe_name": {"type": "string", "description": "Item to craft, e.g. stick"},
+                "num": {"type": "int", "description": "Number to craft (default 1)"},
+            },
+        ),
+        "smeltItem": CommandDef(
+            name="smeltItem",
+            description="Smelt items in a furnace.",
+            params={
+                "item_name": {"type": "string", "description": "Item to smelt, e.g. raw_iron"},
+                "num": {"type": "int", "description": "Number to smelt (default 1)"},
+            },
+        ),
+        "clearFurnace": CommandDef(
+            name="clearFurnace",
+            description="Clear all items from the nearest furnace.",
+        ),
+        # ── Villager ────────────────────────────────────────────────
+        "showVillagerTrades": CommandDef(
+            name="showVillagerTrades",
+            description="Show trades for a villager by entity ID.",
+            params={
+                "villager_id": {"type": "int", "description": "Villager entity ID"},
+            },
+        ),
+        "tradeWithVillager": CommandDef(
+            name="tradeWithVillager",
+            description="Execute a trade with a villager.",
+            params={
+                "villager_id": {"type": "int", "description": "Villager entity ID"},
+                "trade_index": {"type": "int", "description": "Trade number (1-based)"},
+                "count": {"type": "int", "description": "Number of trades to execute"},
+            },
+        ),
+        # ── Look ────────────────────────────────────────────────────
+        "lookAtPlayer": CommandDef(
+            name="lookAtPlayer",
+            description="Look at a player or in the same direction as a player.",
+            params={
+                "player_name": {"type": "string", "description": "Player to look at"},
+            },
+        ),
+        "lookAtPosition": CommandDef(
+            name="lookAtPosition",
+            description="Look at specific coordinates.",
+            params={
+                "x": {"type": "float", "description": "X coordinate"},
+                "y": {"type": "float", "description": "Y coordinate"},
+                "z": {"type": "float", "description": "Z coordinate"},
+            },
+        ),
+        # ── Mode / Goal ─────────────────────────────────────────────
+        "setMode": CommandDef(
+            name="setMode",
+            description="Enable or disable a behavior mode.",
+            params={
+                "mode_name": {"type": "string", "description": "Mode name"},
+                "on": {"type": "bool", "description": "True to enable, False to disable"},
+            },
+        ),
+        "setGoal": CommandDef(
+            name="setGoal",
+            description="Set a goal message for persistent self-prompting.",
+            params={
+                "self_prompt": {"type": "string", "description": "Goal message for self-prompting"},
+            },
+        ),
+        "endGoal": CommandDef(
+            name="endGoal",
+            description="End the current goal and stop self-prompting.",
+        ),
+        # ── Skills ──────────────────────────────────────────────────
+        "pickupNearbyItems": CommandDef(
+            name="pickupNearbyItems",
+            description="Pick up all nearby dropped items on the ground.",
+            params={
+                "distance": {"type": "float", "description": "Pickup radius (default 8)"},
+            },
+        ),
+        "tillAndSow": CommandDef(
+            name="tillAndSow",
+            description="Till the ground at coordinates and optionally plant seeds.",
+            params={
+                "x": {"type": "float", "description": "X coordinate to till"},
+                "y": {"type": "float", "description": "Y coordinate to till"},
+                "z": {"type": "float", "description": "Z coordinate to till"},
+                "seed_type": {
+                    "type": "string",
+                    "description": "Seed type to plant, e.g. wheat_seeds (optional)",
+                },
+            },
+        ),
+        "useDoor": CommandDef(
+            name="useDoor",
+            description="Open a door, walk through it, and close it.",
+            params={
+                "x": {
+                    "type": "float",
+                    "description": "X coordinate of door (optional, finds nearest)",
+                },
+                "y": {"type": "float", "description": "Y coordinate of door (optional)"},
+                "z": {"type": "float", "description": "Z coordinate of door (optional)"},
+            },
+        ),
+        "getCraftingPlan": CommandDef(
+            name="getCraftingPlan",
+            description="Get a detailed crafting plan showing required ingredients and steps.",
+            params={
+                "target_item": {
+                    "type": "string",
+                    "description": "The item to craft, e.g. diamond_sword",
+                },
+                "quantity": {
+                    "type": "int",
+                    "description": "Quantity to craft (default 1)",
+                },
+            },
+        ),
+        "searchWiki": CommandDef(
+            name="searchWiki",
+            description="Search the Minecraft Wiki for info about an item, block, or mechanic.",
+            params={
+                "query": {
+                    "type": "string",
+                    "description": "The search query, e.g. 'enchanting table'",
+                },
+            },
+        ),
+        # ── Conversation ────────────────────────────────────────────
+        "startConversation": CommandDef(
+            name="startConversation",
+            description="Start a conversation with another player.",
+            params={
+                "player_name": {"type": "string", "description": "Player to talk to"},
+                "message": {"type": "string", "description": "Message to send"},
+            },
+        ),
+        "endConversation": CommandDef(
+            name="endConversation",
+            description="End the current conversation.",
+            params={
+                "player_name": {"type": "string", "description": "Player to stop talking to"},
             },
         ),
     }

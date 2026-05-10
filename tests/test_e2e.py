@@ -85,23 +85,24 @@ class E2EHarness:
 
     def __init__(self, bridge: Any, llm_enabled: bool = True):
         from agent.conversation import ConversationManager
+        from agent.core import _build_tool_defs
+        from agent.core import _command_defs as get_cmd_defs
         from agent.executor import ActionExecutor
         from agent.modes import ModeEvaluator
-        from llm.message_builder import MessageBuilder
+        from llm.message_builder import MessageBuilder  # noqa: I001
 
         self._bridge = bridge
         self._llm_enabled = llm_enabled
 
         self._executor = ActionExecutor(bridge=bridge)
         self._executor._register_builtins()
-        self._register_move_commands()
         self._convo_mgr = ConversationManager()
         self._modes = ModeEvaluator()
         self._history: list[ConversationTurn] = []
 
         self._msg_builder = MessageBuilder(
             bot_name=settings.bot.name,
-            commands=list(_command_defs().values()),
+            commands=list(get_cmd_defs().values()),
             self_prompt="",
         )
 
@@ -245,18 +246,6 @@ class E2EHarness:
         self._history = self._convo_mgr.compress_history(self._history)
         print(f"[HISTORY] {len(self._history)} turns after compression")
 
-    def _register_move_commands(self) -> None:
-        """Register moveTo and collectBlocks using bridge methods."""
-
-        async def _move_to(bridge: Any, x: float, y: float, z: float) -> Any:
-            return await bridge.move_to(x, y, z)
-
-        async def _collect_blocks(bridge: Any, block_type: str, count: int = 1) -> Any:
-            return await bridge.collect_blocks(block_type, count)
-
-        self._executor.register("moveTo", _move_to)
-        self._executor.register("collectBlocks", _collect_blocks)
-
     async def _check_manual_command(self, sender: str, message: str) -> None:
         """When LLM is disabled, check for manual !command syntax."""
         from llm.tool_parser import has_command, parse_response
@@ -349,74 +338,6 @@ def main() -> None:
         print("\n[DONE]")
     finally:
         stop_socket_server()
-
-
-# ── Internal: command defs + tool defs ──────────────────────────────
-
-
-def _command_defs() -> dict[str, Any]:
-    from llm.message_builder import CommandDef
-
-    return {
-        "stop": CommandDef(
-            name="stop", description="Stop all current actions.",
-        ),
-        "stats": CommandDef(
-            name="stats", description="Report health, food, position, and gamemode.",
-        ),
-        "inventory": CommandDef(
-            name="inventory", description="List all items in the bot's inventory.",
-        ),
-        "goal": CommandDef(
-            name="goal", description="Report the current pathfinding goal.",
-        ),
-        "moveTo": CommandDef(
-            name="moveTo", description="Move the bot to the given coordinates.",
-            params={
-                "x": {"type": "float", "description": "X coordinate"},
-                "y": {"type": "float", "description": "Y coordinate"},
-                "z": {"type": "float", "description": "Z coordinate"},
-            },
-        ),
-        "collectBlocks": CommandDef(
-            name="collectBlocks",
-            description="Mine and collect blocks of the specified type.",
-            params={
-                "blockType": {"type": "string", "description": "Block type, e.g. oak_log"},
-                "count": {"type": "int", "description": "Number to collect"},
-            },
-        ),
-    }
-
-
-def _build_tool_defs(handlers: dict[str, Any]) -> list[dict[str, Any]] | None:
-    cmd_defs = _command_defs()
-    tools = []
-    for name in handlers:
-        if name not in cmd_defs:
-            continue
-        cmd = cmd_defs[name]
-        props = {}
-        required = []
-        for pname, pinfo in cmd.params.items():
-            props[pname] = {
-                "type": pinfo.get("type", "string"),
-                "description": pinfo.get("description", ""),
-            }
-            required.append(pname)
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": f"action:{name}",
-                "description": cmd.description,
-                **(
-                    {"parameters": {
-                        "type": "object", "properties": props, "required": required,
-                    }} if props else {}
-                ),
-            },
-        })
-    return tools or None
 
 
 if __name__ == "__main__":

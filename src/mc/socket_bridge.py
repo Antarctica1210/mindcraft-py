@@ -101,59 +101,244 @@ class SocketBridge:
 
     # ── Bot API ─────────────────────────────────────────────────────
 
+    # ── Lifecycle ───────────────────────────────────────────────────
     async def create_bot(
-        self,
-        host: str = "127.0.0.1",
-        port: int = 25565,
-        username: str = "SocketBot",
-        **kwargs: Any,
+        self, host: str = "127.0.0.1", port: int = 25565,
+        username: str = "SocketBot", **kwargs: Any,
     ) -> Any:
-        """Create a Mineflayer bot and wait for spawn.
-
-        Returns a dict with ``username``, ``host``, ``port`` on success.
-        """
+        """Create a Mineflayer bot and wait for spawn."""
         return await self._request("create_bot", {
             "host": host, "port": port, "username": username, **kwargs,
         })
 
-    async def observe(self) -> Any:
-        """Gather current bot state.
+    async def close_server(self) -> Any:
+        """Tell the socket server to shut down."""
+        return await self._request("close")
 
-        Returns a dict with keys: health, food, position (x/y/z),
-        gamemode, time_of_day, biome, entities_nearby, blocks_nearby,
-        players_nearby.
-        """
+    # ── Observation ─────────────────────────────────────────────────
+    async def observe(self) -> Any:
+        """Gather current bot state (health, food, position, etc.)."""
         return await self._request("observe")
 
+    async def get_entities(self) -> Any:
+        """Return all nearby entities with positions and types."""
+        return await self._request("get_entities")
+
+    async def get_nearby_blocks(self, distance: int = 16) -> Any:
+        """Return list of nearby block type names."""
+        return await self._request("get_nearby_blocks", {"distance": distance})
+
+    async def get_craftable(self) -> Any:
+        """Return list of craftable item names given current inventory."""
+        return await self._request("get_craftable")
+
+    # ── Communication ───────────────────────────────────────────────
     async def chat(self, message: str) -> None:
         """Send a chat message from the bot."""
         await self._request("chat", {"message": message})
 
+    # ── Movement ────────────────────────────────────────────────────
     async def move_to(self, x: float, y: float, z: float) -> Any:
         """Move the bot to the given coordinates."""
         return await self._request("move_to", {"x": x, "y": y, "z": z})
 
+    async def go_to_player(self, player_name: str, closeness: float = 3) -> Any:
+        """Navigate to a nearby player."""
+        return await self._request("go_to_player", {
+            "player_name": player_name, "closeness": closeness,
+        })
+
+    async def follow_player(self, player_name: str, follow_dist: float = 4) -> Any:
+        """Continuously follow a player."""
+        return await self._request("follow_player", {
+            "player_name": player_name, "follow_dist": follow_dist,
+        })
+
+    async def move_away(self, distance: float = 16) -> Any:
+        """Move in a random direction by the given distance."""
+        return await self._request("move_away", {"distance": distance})
+
+    async def search_for_block(self, block_type: str, search_range: float = 64) -> Any:
+        """Find and navigate to the nearest block of the given type."""
+        return await self._request("search_for_block", {
+            "block_type": block_type, "search_range": search_range,
+        })
+
+    async def search_for_entity(self, entity_type: str, search_range: float = 64) -> Any:
+        """Find and navigate to the nearest entity of the given type."""
+        return await self._request("search_for_entity", {
+            "entity_type": entity_type, "search_range": search_range,
+        })
+
+    async def go_to_bed(self) -> Any:
+        """Find the nearest bed and sleep in it."""
+        return await self._request("go_to_bed")
+
+    async def go_to_surface(self) -> Any:
+        """Navigate to the surface from underground."""
+        return await self._request("go_to_surface")
+
+    async def dig_down(self, distance: int = 10) -> Any:
+        """Dig straight down, stopping at lava/water/bedrock."""
+        return await self._request("dig_down", {"distance": distance})
+
+    async def stay(self, seconds: int = -1) -> Any:
+        """Stay in place. -1 means indefinitely."""
+        return await self._request("stay", {"seconds": seconds})
+
+    async def set_control_state(self, control: str, state: bool = True) -> None:
+        """Set a control state: 'jump', 'sprint', 'sneak', etc."""
+        await self._request("set_control_state", {"control": control, "state": state})
+
+    # ── Combat ──────────────────────────────────────────────────────
+    async def attack(self, entity_type: str, range_val: float = 16) -> Any:
+        """Attack the nearest hostile entity of the given type."""
+        return await self._request("attack", {
+            "entity_type": entity_type, "range": range_val,
+        })
+
+    async def attack_player(self, player_name: str) -> Any:
+        """Attack a specific player."""
+        return await self._request("attack_player", {"player_name": player_name})
+
+    # ── Inventory ───────────────────────────────────────────────────
+    async def get_inventory(self) -> Any:
+        """Return inventory as a list of {name, count} dicts."""
+        return await self._request("get_inventory")
+
+    async def get_goal(self) -> Any:
+        """Return the current pathfinding goal."""
+        return await self._request("get_goal")
+
+    async def equip(self, item_name: str, destination: str = "hand") -> Any:
+        """Equip an item to the given body slot."""
+        return await self._request("equip", {
+            "item_name": item_name, "destination": destination,
+        })
+
+    async def consume(self, item_name: str) -> Any:
+        """Eat/drink the named item."""
+        return await self._request("consume", {"item_name": item_name})
+
+    async def discard(self, item_name: str, num: int = -1) -> Any:
+        """Discard items from inventory. -1 = all."""
+        return await self._request("discard", {"item_name": item_name, "num": num})
+
+    # ── Block interaction ───────────────────────────────────────────
+    async def place_block(self, block_type: str) -> Any:
+        """Place a block from inventory at the current position."""
+        return await self._request("place_block", {"block_type": block_type})
+
+    async def activate_block(self, block_type: str) -> Any:
+        """Right-click the nearest block of the given type."""
+        return await self._request("activate_block", {"block_type": block_type})
+
+    async def use_on(self, tool_name: str, target: str) -> Any:
+        """Use a tool on a target entity or block."""
+        return await self._request("use_on", {
+            "tool_name": tool_name, "target": target,
+        })
+
     async def collect_blocks(self, block_type: str, count: int = 1) -> Any:
-        """Mine and collect blocks of the specified type."""
+        """Mine and collect blocks."""
         return await self._request("collect_blocks", {
             "block_type": block_type, "count": count,
         })
 
+    # ── Chest operations ────────────────────────────────────────────
+    async def view_chest(self) -> Any:
+        """Show contents of the nearest chest."""
+        return await self._request("view_chest")
+
+    async def put_in_chest(self, item_name: str, num: int = -1) -> Any:
+        """Store items in the nearest chest."""
+        return await self._request("put_in_chest", {"item_name": item_name, "num": num})
+
+    async def take_from_chest(self, item_name: str, num: int = -1) -> Any:
+        """Take items from the nearest chest."""
+        return await self._request("take_from_chest", {"item_name": item_name, "num": num})
+
+    # ── Crafting / Smelting ─────────────────────────────────────────
+    async def craft_recipe(self, recipe_name: str, num: int = 1) -> Any:
+        """Craft a recipe the given number of times."""
+        return await self._request("craft_recipe", {"recipe_name": recipe_name, "num": num})
+
+    async def smelt_item(self, item_name: str, num: int = 1) -> Any:
+        """Smelt items in a furnace."""
+        return await self._request("smelt_item", {"item_name": item_name, "num": num})
+
+    async def clear_furnace(self) -> Any:
+        """Clear all items from the nearest furnace."""
+        return await self._request("clear_furnace")
+
+    # ── Villager trading ────────────────────────────────────────────
+    async def show_villager_trades(self, villager_id: int) -> Any:
+        """List trades for a villager by entity ID."""
+        return await self._request("show_villager_trades", {"villager_id": villager_id})
+
+    async def trade_with_villager(
+        self, villager_id: int, trade_index: int = 1, count: int = 1,
+    ) -> Any:
+        """Execute a trade with a villager."""
+        return await self._request("trade_with_villager", {
+            "villager_id": villager_id, "trade_index": trade_index, "count": count,
+        })
+
+    # ── Look ────────────────────────────────────────────────────────
+    async def look_at_player(self, player_name: str) -> Any:
+        """Look at a specific player."""
+        return await self._request("look_at_player", {"player_name": player_name})
+
+    async def look_at_position(self, x: float, y: float, z: float) -> Any:
+        """Look at specific coordinates."""
+        return await self._request("look_at_position", {"x": x, "y": y, "z": z})
+
+    # ── Give ────────────────────────────────────────────────────────
+    async def give_to_player(self, player_name: str, item_name: str, num: int = 1) -> Any:
+        """Navigate to a player and give them items."""
+        return await self._request("give_to_player", {
+            "player_name": player_name, "item_name": item_name, "num": num,
+        })
+
+    # ── Skills ──────────────────────────────────────────────────────
+    async def pickup_nearby_items(self, distance: float = 8) -> Any:
+        """Pick up all nearby dropped items on the ground."""
+        return await self._request("pickup_nearby_items", {"distance": distance})
+
+    async def should_place_torch(self) -> Any:
+        """Check whether a torch should be placed (dark area, torch in inventory)."""
+        return await self._request("should_place_torch")
+
+    async def place_torch(self) -> Any:
+        """Place a torch at the bot's current position."""
+        return await self._request("place_torch")
+
+    async def till_and_sow(self, x: float, y: float, z: float, seed_type: str | None = None) -> Any:
+        """Till the ground at (x,y,z) and optionally plant seeds."""
+        return await self._request("till_and_sow", {
+            "x": x, "y": y, "z": z,
+            "seed_type": seed_type,
+        })
+
+    async def use_door(
+        self, x: float | None = None, y: float | None = None, z: float | None = None,
+    ) -> Any:
+        """Open a door and walk through it. If no coordinates given, uses nearest door."""
+        params: dict[str, Any] = {}
+        if x is not None and y is not None and z is not None:
+            params = {"x": x, "y": y, "z": z}
+        return await self._request("use_door", params)
+
+    async def get_crafting_plan(self, target_item: str, quantity: int = 1) -> Any:
+        """Get a detailed crafting plan for the target item given current inventory."""
+        return await self._request("get_crafting_plan", {
+            "target_item": target_item, "quantity": quantity,
+        })
+
+    # ── Stop ────────────────────────────────────────────────────────
     async def stop(self) -> Any:
-        """Stop all current bot actions."""
+        """Stop all current actions (movement, mining, combat, following)."""
         return await self._request("stop")
-
-    async def get_inventory(self) -> Any:
-        """Return the bot's inventory as a list of {name, count} dicts."""
-        return await self._request("get_inventory")
-
-    async def get_goal(self) -> Any:
-        """Return the current pathfinding goal description."""
-        return await self._request("get_goal")
-
-    async def set_control_state(self, control: str, state: bool = True) -> None:
-        """Set a control state on the bot, e.g. 'jump', 'sprint', 'sneak'."""
-        await self._request("set_control_state", {"control": control, "state": state})
 
     # ── Events ──────────────────────────────────────────────────────
 
@@ -244,15 +429,23 @@ class SocketBridge:
                             SocketBridgeError(msg.get("error", "Unknown error"))
                         )
             elif "event" in msg:
-                # Server-pushed event
+                # Server-pushed event — dispatch via create_task so the
+                # read loop is never blocked.  This matters when an event
+                # handler itself calls _request() (e.g. chat → observe).
                 event_name: str = msg["event"]
                 data: dict[str, Any] = msg.get("data", {})
                 for handler in self._handlers.get(event_name, []):
-                    try:
-                        result = handler(**data)
-                        if asyncio.iscoroutine(result):
-                            await result
-                    except Exception:
-                        logger.exception(
-                            "Error in event handler for '%s'", event_name
-                        )
+                    result = handler(**data)
+                    if asyncio.iscoroutine(result):
+
+                        def _done_callback(
+                            t: asyncio.Task[Any], en: str = event_name,
+                        ) -> None:
+                            exc = t.exception()
+                            if exc is not None:
+                                logger.exception(
+                                    "Error in event handler for '%s'", en,
+                                )
+
+                        task = asyncio.create_task(result)
+                        task.add_done_callback(_done_callback)
