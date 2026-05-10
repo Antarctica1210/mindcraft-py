@@ -886,8 +886,10 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "javascript" },
+    { name = "litellm" },
     { name = "numpy" },
     { name = "pydantic" },
+    { name = "python-dotenv" },
 ]
 
 [package.optional-dependencies]
@@ -899,9 +901,6 @@ dev = [
 ]
 graph = [
     { name = "networkx" },
-]
-llm = [
-    { name = "litellm" },
 ]
 retrieval = [
     { name = "faiss-cpu" },
@@ -920,13 +919,14 @@ dev = [
 requires-dist = [
     { name = "faiss-cpu", marker = "extra == 'retrieval'", specifier = ">=1.8" },
     { name = "javascript", specifier = ">=1.0.0" },
-    { name = "litellm", marker = "extra == 'llm'", specifier = ">=1.50" },
+    { name = "litellm", specifier = ">=1.50" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "networkx", marker = "extra == 'graph'", specifier = ">=3.3" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "rank-bm25", marker = "extra == 'retrieval'", specifier = ">=0.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
 ]

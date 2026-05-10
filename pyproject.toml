@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mc"]
+packages = ["src/mc", "src/llm", "src/agent"]
 
 [project]
 name = "mindcraft-py"
@@ -13,6 +13,8 @@ dependencies = [
     "javascript>=1.0.0",       # JSPyBridge — Python ↔ Node.js bridge
     "pydantic>=2.0",
     "numpy>=1.26",
+    "litellm>=1.50",            # Unified LLM interface (100+ providers)
+    "python-dotenv>=1.0",       # .env file loading
 ]
 
 [project.optional-dependencies]
@@ -20,9 +22,7 @@ retrieval = [
     "faiss-cpu>=1.8",
     "rank-bm25>=0.2",
 ]
-llm = [
-    "litellm>=1.50",
-]
+llm = []
 graph = [
     "networkx>=3.3",
 ]
