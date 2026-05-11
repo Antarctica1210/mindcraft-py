@@ -30,3 +30,4 @@ server_data*
 **/__pycache__/
 logs/
 .env
+log-js/

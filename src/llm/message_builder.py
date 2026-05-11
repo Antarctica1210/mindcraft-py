@@ -22,6 +22,17 @@ DEFAULT_CONVERSING_TEMPLATE = (
     "instead say this: 'Sure, I'll stop. !stop'. "
     "Respond only as $NAME, never output '(FROM OTHER BOT)' or pretend to be someone else. "
     "If you have nothing to say or do, respond with just a tab '\\t'.\n"
+    "IMPORTANT — Crafting and multi-step tasks:\n"
+    "  - Before crafting any complex item, use getCraftingPlan to see the "
+    "full ingredient tree and required tools (e.g. crafting table, furnace).\n"
+    "  - Some recipes (beds, tools, armor) require a placed crafting table nearby "
+    "— check requirements before you craft.\n"
+    "  - Check your inventory first. If you lack materials, search for and "
+    "collect them before crafting.\n"
+    "  - Break complex requests into sequential steps: check requirements → "
+    "search → collect → craft intermediates → craft final item.\n"
+    "  - After each step, check the result and decide the next action. "
+    "Do not skip intermediate steps.\n"
     "Summarized memory:'$MEMORY'\n"
     "$STATS\n$INVENTORY\n$COMMAND_DOCS\n$EXAMPLES\n"
     "Conversation Begin:"
@@ -54,8 +65,12 @@ class CommandDef:
 class ConversationTurn:
     """A single turn in the conversation history."""
 
-    role: str  # "user", "assistant", or "system"
+    role: str  # "user", "assistant", "system", or "tool"
     content: str
+    tool_calls: list[dict[str, Any]] | None = None
+    """Raw OpenAI-format tool calls (for models that use the tool-call protocol)."""
+    tool_call_id: str | None = None
+    """Matching tool_call id when role='tool' (OpenAI tool-call protocol)."""
 
 
 class MessageBuilder:
@@ -172,14 +187,20 @@ class MessageBuilder:
         Returns:
             List of {"role": ..., "content": ...} dicts.
         """
-        messages: list[dict[str, str]] = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt}
         ]
         for turn in history:
             content = turn.content
             if turn.role in ("user", "assistant"):
                 content = f"{content}{stop_sequence}"
-            messages.append({"role": turn.role, "content": content})
+            msg: dict[str, Any] = {"role": turn.role, "content": content}
+            # Propagate tool_calls for models using the OpenAI tool-call protocol
+            if turn.tool_calls:
+                msg["tool_calls"] = turn.tool_calls
+            if turn.tool_call_id:
+                msg["tool_call_id"] = turn.tool_call_id
+            messages.append(msg)
         return messages
 
     # ── Stats / inventory formatting ──────────────────────────────

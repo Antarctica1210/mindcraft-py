@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 
 # Max turns before oldest are summarised / dropped
 DEFAULT_MAX_TURNS = 40
-# Turns to keep after compression
-KEEP_RECENT = 10
+# Turns to keep after compression (JS keeps ~9-14 turns for a 19-iter task;
+# 20 gives enough room for multi-step tasks while preventing prompt bloat).
+KEEP_RECENT = 20
 
 
 @dataclass

@@ -106,7 +106,7 @@ class AgentConfig:
     """
     name: str = ""
     profile: dict[str, Any] = field(default_factory=dict)
-    max_commands: int = 3
+    max_commands: int = -1  # -1 = unlimited, matches JS behavior
     verbose: bool = True
     narrate_behavior: bool = False
     show_command_syntax: str = "full"  # "full", "shortened", or "none"

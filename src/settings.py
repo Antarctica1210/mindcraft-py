@@ -102,7 +102,7 @@ class BotSettings:
     """Bot identity and runtime behaviour."""
 
     name: str = field(default_factory=lambda: _get("BOT_NAME", "mindcraft-bot"))
-    max_commands: int = field(default_factory=lambda: _get_int("BOT_MAX_COMMANDS", 3))
+    max_commands: int = field(default_factory=lambda: _get_int("BOT_MAX_COMMANDS", -1))
     narrate_behavior: bool = field(
         default_factory=lambda: _get_bool("BOT_NARRATE_BEHAVIOR", False)
     )

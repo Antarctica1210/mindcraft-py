@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -51,6 +52,50 @@ class PendingTask:
     goal: str          # what the player originally asked for
     player_name: str   # who to follow for guidance
     failed_reason: str  # why the command failed
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _is_hard_failure(result: str) -> bool:
+    """Return True for failures the LLM cannot recover from by retrying.
+
+    Soft failures ("no oak_log nearby", "player not found") are fed back
+    to the LLM so it can replan with a different approach.  Hard failures
+    (command does not exist, bridge error) require player intervention.
+    """
+    hard_patterns = [
+        "does not exist",
+        "BridgeError",
+        "not supported",
+        "not available",
+    ]
+    result_lower = result.lower()
+    return any(p.lower() in result_lower for p in hard_patterns)
+
+
+def _describe_action(name: str, args: list[Any]) -> str:
+    """Build a short human-readable description of what a command will do.
+
+    Uses the command's registered description and argument values to
+    produce a one-line summary suitable for in-game chat announcements.
+    """
+    cmd_defs = _command_defs()
+    cmd = cmd_defs.get(name)
+    param_names = list(cmd.params.keys()) if cmd else []
+
+    if not args:
+        if cmd:
+            desc = cmd.description.rstrip(".")
+            return desc[0].lower() + desc[1:]
+        return name
+
+    parts: list[str] = []
+    for i, arg in enumerate(args):
+        label = param_names[i] if i < len(param_names) else str(i)
+        parts.append(f"{label}={arg}")
+
+    return f"{name}({', '.join(parts)})"
 
 
 # ── Agent ───────────────────────────────────────────────────────────
@@ -353,6 +398,12 @@ class Agent:
         if max_responses is None:
             max_responses = self._config.max_commands
 
+        # -1 mirrors the JS default "unlimited" — convert to effectively
+        # infinite so the loop can run until the LLM produces an empty
+        # result (mirrors JS Infinity behaviour).
+        if max_responses is not None and max_responses < 0:
+            max_responses = sys.maxsize
+
         logger.info(">>> %s: %s", source, message)
         self._last_message = message
 
@@ -411,10 +462,16 @@ class Agent:
 
         For ``use_tools=False`` (question/chitchat) the LLM is called with
         ``tool_choice="none"`` and the reply is spoken once, no commands.
+
+        For ``use_tools=True`` (action_command) we use ``tool_choice="required"``
+        to force the LLM to always return structured tool_calls.  This eliminates
+        the legacy ``!command(args)`` text-parsing path entirely — every response
+        is in OpenAI tool-call format, so there are no quote-escaping bugs,
+        model-artifact leaks, or regex mismatches.
         """
         used_command = False
         bot_state = await self.observe()
-        tool_choice = None if use_tools else "none"
+        tool_choice = "required" if use_tools else "none"
 
         for _ in range(max_responses):
             if self._shut_up or not self._running:
@@ -432,14 +489,16 @@ class Agent:
                 )
 
             llm_response = await self.plan(bot_state, tool_choice=tool_choice)
-            if not llm_response.content.strip():
-                logger.debug("Empty LLM response — ending turn")
-                break
+            logger.info("<<< %s", llm_response.content.strip() or "(tool calls only)")
 
-            logger.info("<<< %s", llm_response.content.strip())
-
+            # Append assistant turn — include tool_calls if present so
+            # models that expect the OpenAI tool-call protocol see them.
             self._history.append(
-                ConversationTurn(role="assistant", content=llm_response.content),
+                ConversationTurn(
+                    role="assistant",
+                    content=llm_response.content,
+                    tool_calls=llm_response.tool_calls,
+                ),
             )
 
             # Question / chitchat path: just speak the reply, no commands.
@@ -451,6 +510,13 @@ class Agent:
                 llm_response.content,
                 tool_calls=llm_response.tool_calls,
             )
+
+            # If the LLM produced neither tool calls nor a text response,
+            # there is nothing to do — end the turn.
+            if not parsed.has_command and not llm_response.content.strip():
+                logger.debug("Empty LLM response with no tool calls — ending turn")
+                break
+
             if not parsed.has_command:
                 # Action path but model chose plain text — speak it and stop.
                 await self._send_chat(llm_response.content.strip())
@@ -468,20 +534,50 @@ class Agent:
                     logger.warning("Command chain halted: safety interrupt")
                     break
 
+                # Announce each step before executing
+                action_desc = _describe_action(cmd.name, cmd.args)
+                await self._send_chat(action_desc)
+
                 result = await self.execute_command(cmd.name, cmd.args)
                 used_command = True
                 self._record_action(cmd.name, cmd.args, result)
 
                 if result is None:
+                    await self._send_chat(f"{action_desc} — no response")
                     break  # no feedback = stop chaining
 
+                # Use role="tool" with tool_call_id when responding to an
+                # OpenAI-format tool call; the provider rejects role="system"
+                # after an assistant message that contains tool_calls.
+                result_role: str = "system"
+                result_tc_id: str | None = None
+                for tc in llm_response.tool_calls:
+                    # OpenAI-native format: name is inside "function"
+                    fn = tc.get("function", {})
+                    tc_name = fn.get("name", "") if isinstance(fn, dict) else tc.get("name", "")
+                    if tc_name.startswith("action:"):
+                        tc_name = tc_name[7:]
+                    if tc_name == cmd.name:
+                        result_role = "tool"
+                        result_tc_id = tc.get("id")
+                        break
+
                 self._history.append(
-                    ConversationTurn(role="system", content=result),
+                    ConversationTurn(
+                        role=result_role,
+                        content=result,
+                        tool_call_id=result_tc_id,
+                    ),
                 )
 
-                # If the command failed, switch to text-only so the LLM
-                # speaks to the player asking for guidance.
-                if "failed" in result:
+                # Only halt the chain for *hard* failures that the LLM
+                # cannot fix by trying a different approach.
+                # Soft failures ("no oak_log nearby") are fed back to the
+                # LLM so it can replan — matching the JS behaviour where
+                # execute_res is appended to history and the loop continues.
+                if _is_hard_failure(result):
+                    logger.warning("Hard command failure — asking player: %s", result)
+                    await self._send_chat(f"Failed: {result}")
                     self._pending_task = PendingTask(
                         command_name=cmd.name,
                         command_args=list(cmd.args),
@@ -490,6 +586,14 @@ class Agent:
                         failed_reason=result,
                     )
                     tool_choice = "none"
+                    break  # don't execute remaining commands in this batch
+
+                # Report success to the player
+                await self._send_chat(f"Done: {result}")
+
+                # Refresh bot state so the next LLM call sees updated
+                # inventory, position, etc. (mirrors JS in-line !stats/!inventory).
+                bot_state = await self.observe()
 
         self._history = self._convo_mgr.compress_history(self._history)
         return used_command
@@ -1031,7 +1135,10 @@ def _command_defs() -> dict[str, CommandDef]:
         # ── Crafting / Smelting ─────────────────────────────────────
         "craftRecipe": CommandDef(
             name="craftRecipe",
-            description="Craft a recipe using available materials.",
+            description="Craft a recipe using available materials. Some recipes (beds, "
+            "tools, armor, etc.) require a placed crafting table nearby. Use "
+            "getCraftingPlan to see the full ingredient tree and requirements "
+            "before crafting.",
             params={
                 "recipe_name": {"type": "string", "description": "Item to craft, e.g. stick"},
                 "num": {"type": "int", "description": "Number to craft (default 1)"},
@@ -1039,7 +1146,8 @@ def _command_defs() -> dict[str, CommandDef]:
         ),
         "smeltItem": CommandDef(
             name="smeltItem",
-            description="Smelt items in a furnace.",
+            description="Smelt items in a furnace. Requires a furnace nearby and fuel + "
+            "input items in inventory.",
             params={
                 "item_name": {"type": "string", "description": "Item to smelt, e.g. raw_iron"},
                 "num": {"type": "int", "description": "Number to smelt (default 1)"},
@@ -1138,7 +1246,10 @@ def _command_defs() -> dict[str, CommandDef]:
         ),
         "getCraftingPlan": CommandDef(
             name="getCraftingPlan",
-            description="Get a detailed crafting plan showing required ingredients and steps.",
+            description="Get a comprehensive crafting plan for a target item. Shows "
+            "required ingredients with exact quantities, what you already have, "
+            "and what you still need to gather. Always use this before crafting "
+            "complex items to know which intermediate steps are needed.",
             params={
                 "target_item": {
                     "type": "string",

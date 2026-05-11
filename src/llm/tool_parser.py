@@ -81,16 +81,30 @@ def parse_legacy(response_text: str) -> list[CommandCall]:
 
 
 def parse_tool_calls(tool_calls: list[dict[str, Any]]) -> list[CommandCall]:
-    """Convert OpenAI tool_calls into CommandCall objects."""
+    """Convert OpenAI tool_calls into CommandCall objects.
+
+    Handles both the OpenAI-native format
+        {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
+    and the legacy flattened format
+        {"id": "...", "name": "...", "arguments": "..."}.
+    """
     commands: list[CommandCall] = []
     for tc in tool_calls:
-        name = tc.get("name", "")
+        # OpenAI-native format: name/arguments live inside "function"
+        fn = tc.get("function", {})
+        if fn and isinstance(fn, dict):
+            name = fn.get("name", "")
+            raw_args = fn.get("arguments", "{}")
+        else:
+            # Legacy flattened format (backwards compatibility)
+            name = tc.get("name", "")
+            raw_args = tc.get("arguments", "{}")
+
         # Remove "action:" prefix if present (JS convention)
         if name.startswith("action:"):
             name = name[7:]
 
         arguments: dict[str, Any] = {}
-        raw_args = tc.get("arguments", "{}")
         if isinstance(raw_args, str):
             try:
                 arguments = json.loads(raw_args)
@@ -107,6 +121,38 @@ def parse_tool_calls(tool_calls: list[dict[str, Any]]) -> list[CommandCall]:
         ))
 
     return commands
+
+
+# Model-specific tokens that sometimes leak into text output.
+# Stripped before parsing so they don't interfere with command extraction.
+_MODEL_ARTIFACT_PATTERNS = [
+    # Gemma / proprietary model channel markers: "<|channel>string", "<|channel>system"
+    re.compile(r"<\|channel>[^\n]*", re.IGNORECASE),
+    # ChatML delimiters
+    re.compile(r"<\|im_start\|>.*?<\|im_end\|>", re.DOTALL),
+    re.compile(r"<\|(?:assistant|user|system)\|?>", re.IGNORECASE),
+]
+
+
+def _clean_model_artifacts(text: str) -> str:
+    """Remove known model-specific tokens that leak into responses.
+
+    Lines that start with a model artifact token are dropped entirely
+    (since the residual text after stripping, e.g. "string", is meaningless).
+    Embedded artifacts in otherwise-valid lines are stripped in-place.
+    """
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Drop lines that are nothing but artifact residues
+        for pat in _MODEL_ARTIFACT_PATTERNS:
+            stripped = pat.sub("", stripped).strip()
+        if not stripped:
+            continue
+        cleaned_lines.append(stripped)
+    return "\n".join(cleaned_lines).strip()
 
 
 def parse_response(
@@ -134,6 +180,9 @@ def parse_response(
                 has_command=True,
             )
 
+    # Clean model-specific artifacts before regex parsing
+    response_text = _clean_model_artifacts(response_text)
+
     # Fall back to regex
     commands = parse_legacy(response_text)
 
@@ -144,7 +193,7 @@ def parse_response(
     cleaned = cleaned.strip()
 
     return ParseResult(
-        text=cleaned or response_text,
+        text=cleaned,
         commands=commands,
         has_command=len(commands) > 0,
     )
@@ -162,23 +211,28 @@ def _parse_args(args_str: str) -> list[Any]:
     """Parse comma-separated arguments from the regex capture group.
 
     Handles two formats:
-        Positional:  '"oak_log", 5'         → ['oak_log', 5]
-        Keyword:     'x=642, y=71, z=481'   → [642, 71, 481]
+        Positional:  '"oak_log", 5'          → ['oak_log', 5]
+        Keyword:     'x=642, y=71, z=481'    → [642, 71, 481]
+        Single-quoted: "player_name='Wilson'" → ['Wilson', ...]
     """
     args: list[Any] = []
-    parts = re.findall(r'(?:"[^"]*"|[^,]+)', args_str)
+    # Match double-quoted strings, single-quoted strings, or non-comma sequences
+    parts = re.findall(r"""(?:"[^"]*"|'[^']*'|[^,]+)""", args_str)
 
     for part in parts:
         part = part.strip()
         if not part:
             continue
 
-        # Strip keyword prefix: "x=642" → "642"
-        if "=" in part and not part.startswith('"'):
+        # Strip keyword prefix: "x=642" → "642" (but not inside quotes)
+        if "=" in part and not (part.startswith('"') or part.startswith("'")):
             part = part.split("=", 1)[1].strip()
 
-        # Quoted string
+        # Double-quoted string
         if part.startswith('"') and part.endswith('"'):
+            args.append(part[1:-1])
+        # Single-quoted string (some models prefer this)
+        elif part.startswith("'") and part.endswith("'"):
             args.append(part[1:-1])
         elif part.lower() == "true":
             args.append(True)

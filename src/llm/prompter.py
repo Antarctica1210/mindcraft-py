@@ -112,10 +112,14 @@ class Prompter:
         ]
         for turn in turns:
             content = turn.get("content", "")
-            messages.append({
-                "role": turn.get("role", "user"),
-                "content": f"{content}{stop_sequence}",
-            })
+            role = turn.get("role", "user")
+            msg: dict[str, Any] = {"role": role, "content": content}
+            # Preserve tool_calls if present (for OpenAI tool-call protocol)
+            if turn.get("tool_calls"):
+                msg["tool_calls"] = turn["tool_calls"]
+            if turn.get("tool_call_id"):
+                msg["tool_call_id"] = turn["tool_call_id"]
+            messages.append(msg)
 
         kwargs = self._build_kwargs(messages, tool_choice=tool_choice)
 
@@ -126,6 +130,9 @@ class Prompter:
             self._llm.temperature,
             bool(self._tools),
         )
+
+        # Debug: print full request payload so we can compare with JS
+        _log_request(messages, self._tools, tool_choice)
 
         try:
             response = await acompletion(**kwargs)
@@ -260,15 +267,22 @@ class Prompter:
         # Strip <think>...</think> blocks from reasoning models
         content = _strip_think_tags(content)
 
-        # Extract tool calls
+        # Extract tool calls — preserve OpenAI-native format so they can be
+        # sent back to the API in subsequent turns without restructuring.
         tool_calls_raw: list[dict[str, Any]] = []
         if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
             for tc in choice.message.tool_calls:
-                tool_calls_raw.append({
-                    "id": getattr(tc, "id", ""),
-                    "name": tc.function.name if hasattr(tc, "function") else "",
-                    "arguments": tc.function.arguments if hasattr(tc, "function") else "{}",
-                })
+                tc_dict: dict[str, Any] = {"id": getattr(tc, "id", "")}
+                if hasattr(tc, "type"):
+                    tc_dict["type"] = tc.type
+                else:
+                    tc_dict["type"] = "function"
+                if hasattr(tc, "function"):
+                    tc_dict["function"] = {
+                        "name": tc.function.name or "",
+                        "arguments": tc.function.arguments or "{}",
+                    }
+                tool_calls_raw.append(tc_dict)
 
         usage: dict[str, int] = {}
         if hasattr(response, "usage") and response.usage:
@@ -292,6 +306,35 @@ class Prompter:
 
 
 # ── Think-tag stripping ─────────────────────────────────────────────
+
+
+def _log_request(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    tool_choice: str | None,
+) -> None:
+    """Pretty-print the full LLM request for debugging prompt differences."""
+    import json
+
+    payload: dict[str, Any] = {"messages": messages}
+    if tools:
+        payload["tools"] = [
+            {
+                "type": t.get("type"),
+                "function": {
+                    "name": t["function"]["name"],
+                    "description": t["function"]["description"],
+                },
+            }
+            for t in tools
+        ]
+    if tool_choice:
+        payload["tool_choice"] = tool_choice
+
+    logger.info(
+        "LLM REQUEST:\n%s",
+        json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+    )
 
 
 def _strip_think_tags(text: str) -> str:
