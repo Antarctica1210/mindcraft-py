@@ -19,14 +19,15 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from llm import Prompter
+from llm import InputIntent, InputRouter, Prompter
 from llm.message_builder import CommandDef, ConversationTurn, MessageBuilder
 from llm.tool_parser import parse_response
 
 from .conversation import ConversationManager
 from .executor import ActionExecutor
-from .models import AgentConfig, BotState, Position
+from .models import AgentConfig, BotState, EntityInfo, InventoryItem, Position
 from .modes import BehaviorMode, ModeEvaluator
+from .safety_monitor import SafetyMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,12 @@ class Agent:
         await agent.start(bridge)
     """
 
+    # Default config path for InputRouter keyword tables.
+    DEFAULT_INTENT_CONFIG = "config/intent_keywords.yaml"
+
+    # Cap on action_call payloads we feed back to InputRouter / feedback handler.
+    _RECENT_ACTIONS_WINDOW = 5
+
     def __init__(self, config: AgentConfig):
         self._config = config
         self.name = config.name
@@ -53,18 +60,22 @@ class Agent:
         # Phase 1 components (initialised in start())
         self._prompter: Prompter | None = None
         self._msg_builder: MessageBuilder | None = None
+        self._router: InputRouter | None = None
 
         # Phase 2 components
         self._executor = ActionExecutor()
         self._convo_mgr = ConversationManager()
         self._modes = ModeEvaluator()
+        self._safety: SafetyMonitor | None = None
 
         # Runtime state
-        self._bridge = None
+        self._bridge: Any = None
         self._history: list[ConversationTurn] = []
         self._last_sender: str | None = None
         self._shut_up: bool = False
         self._running: bool = False
+        # Track recent action_call results for feedback intent (Phase 4 hook)
+        self._recent_actions: list[dict[str, Any]] = []
 
         # Metrics
         self._tick_count: int = 0
@@ -85,10 +96,17 @@ class Agent:
             embedding=global_settings.embedding,
         )
 
-        # Register tool definitions if the provider supports tool calling
+        # Phase 1: register handlers FIRST so tool defs can be derived from them
+        self._executor._register_builtins()
+        self._executor.set_bridge(bridge)
+
+        # Phase 1: tool definitions (action functions only)
         tools = _build_tool_defs(self._executor._handlers)
         if tools:
             self._prompter.register_tools(tools)
+
+        # Phase 1: input intent classifier — pure regex/keyword, no LLM dep
+        self._router = InputRouter.from_config(self.DEFAULT_INTENT_CONFIG)
 
         # Phase 1: message builder
         self._msg_builder = MessageBuilder(
@@ -97,14 +115,20 @@ class Agent:
             self_prompt="",
         )
 
-        # Phase 2: register built-in command handlers
-        self._executor._register_builtins()
+        # Phase 2: safety polling (Plan A — Python-side observe loop)
+        self._safety = SafetyMonitor(bridge)
+        await self._safety.start()
 
-        logger.info("Agent %s started (model=%s)", self.name, self._prompter.model)
+        logger.info(
+            "Agent %s started (model=%s, router=on, safety=on)",
+            self.name, self._prompter.model,
+        )
 
     async def stop(self) -> None:
         """Gracefully shut down the agent."""
         self._running = False
+        if self._safety:
+            await self._safety.stop()
         if self._bridge:
             try:
                 await self._bridge.stop()
@@ -115,33 +139,104 @@ class Agent:
     # ── Observation ─────────────────────────────────────────────────
 
     async def observe(self) -> BotState:
-        """Gather the current bot state from the bridge."""
+        """Gather full bot state via concurrent SocketBridge queries.
+
+        One ``asyncio.gather`` call covers observe / inventory / entities /
+        nearby blocks / current goal. Per-call failures fall back to defaults
+        without poisoning the others.
+        """
         bridge = self._bridge
         if bridge is None:
             return BotState()
 
-        try:
-            s = await bridge.observe()
-        except Exception:
-            logger.debug("observe() failed", exc_info=True)
+        results = await asyncio.gather(
+            bridge.observe(),
+            bridge.get_inventory(),
+            bridge.get_entities(),
+            bridge.get_nearby_blocks(),
+            bridge.get_goal(),
+            return_exceptions=True,
+        )
+        base, inv_raw, ents_raw, blocks_raw, goal_raw = results
+
+        if isinstance(base, Exception) or not isinstance(base, dict):
+            logger.debug("observe() failed: %r", base)
             return BotState()
 
-        p = s.get("position", {})
+        p = base.get("position", {}) or {}
+
+        inventory: list[InventoryItem] = []
+        if isinstance(inv_raw, list):
+            for item in inv_raw[:30]:
+                if isinstance(item, dict):
+                    inventory.append(InventoryItem(
+                        name=item.get("name", "unknown"),
+                        count=int(item.get("count", 0)),
+                    ))
+
+        entities: list[EntityInfo] = []
+        if isinstance(ents_raw, list):
+            self_pos = Position(
+                x=p.get("x", 0), y=p.get("y", 0), z=p.get("z", 0),
+            )
+            for e in ents_raw[:20]:
+                if not isinstance(e, dict):
+                    continue
+                epos_raw = e.get("position", {}) or {}
+                epos = Position(
+                    x=epos_raw.get("x", 0),
+                    y=epos_raw.get("y", 0),
+                    z=epos_raw.get("z", 0),
+                )
+                entities.append(EntityInfo(
+                    name=e.get("name", ""),
+                    entity_type=e.get("type", ""),
+                    position=epos,
+                    distance=self_pos.distance_to(epos),
+                    health=float(e.get("health", 0) or 0),
+                ))
+
+        nearby_block_types: list[str] = []
+        if isinstance(blocks_raw, list):
+            nearby_block_types = [str(b) for b in blocks_raw]
+
+        current_goal: str | None = None
+        if isinstance(goal_raw, str):
+            current_goal = goal_raw or None
+        elif goal_raw is not None and not isinstance(goal_raw, Exception):
+            current_goal = str(goal_raw)
+
         return BotState(
-            health=s.get("health", 20),
-            food=s.get("food", 20),
+            health=base.get("health", 20),
+            food=base.get("food", 20),
             position=Position(x=p.get("x", 0), y=p.get("y", 0), z=p.get("z", 0)),
-            gamemode=s.get("gamemode", "survival"),
-            time_of_day=s.get("time_of_day", ""),
-            biome=s.get("biome", ""),
-            entities_nearby=s.get("entities_nearby", ""),
-            blocks_nearby=s.get("blocks_nearby", ""),
+            gamemode=base.get("gamemode", "survival"),
+            time_of_day=base.get("time_of_day", ""),
+            biome=base.get("biome", ""),
+            entities_nearby=base.get("entities_nearby", ""),
+            blocks_nearby=base.get("blocks_nearby", ""),
+            players_nearby=base.get("players_nearby", ""),
+            inventory=inventory,
+            entities=entities,
+            nearby_block_types=nearby_block_types,
+            current_goal=current_goal,
         )
 
     # ── Planning ────────────────────────────────────────────────────
 
-    async def plan(self, bot_state: BotState, _source: str = "") -> str:
-        """Build the prompt and query the LLM for the next action."""
+    async def plan(
+        self,
+        bot_state: BotState,
+        *,
+        tool_choice: str | None = None,
+    ) -> str:
+        """Build the prompt and query the LLM for the next action.
+
+        Args:
+            bot_state: Current state snapshot from ``observe()``.
+            tool_choice: Override tool selection. Pass ``"none"`` to forbid
+                tool calls (used for question / chitchat intents).
+        """
         if self._prompter is None or self._msg_builder is None:
             return ""
 
@@ -156,7 +251,7 @@ class Agent:
             blocks_nearby=bot_state.blocks_nearby,
         )
 
-        inventory = await self._format_inventory()
+        inventory = self._format_inventory(bot_state)
 
         command_docs = self._msg_builder.build_command_docs(
             blocked_actions=set(self._config.blocked_actions)
@@ -178,10 +273,24 @@ class Agent:
             system_prompt=system_prompt,
         )
 
-        response = await self._prompter.send_request(
-            turns=messages[1:],  # exclude system message (already in turns)
-            system_message=system_prompt,
+        # Wrap the LLM call so SafetyMonitor can cancel us on danger.
+        llm_task: asyncio.Task[Any] = asyncio.ensure_future(
+            self._prompter.send_request(
+                turns=messages[1:],  # exclude system message (already in turns)
+                system_message=system_prompt,
+                tool_choice=tool_choice,
+            )
         )
+        if self._safety:
+            self._safety.register_cancellable(llm_task)
+        try:
+            response = await llm_task
+        except asyncio.CancelledError:
+            logger.warning("LLM call cancelled (safety interrupt)")
+            return ""
+        finally:
+            if self._safety:
+                self._safety.clear_cancellables()
 
         return response.content
 
@@ -196,9 +305,17 @@ class Agent:
     async def handle_message(
         self, source: str, message: str, max_responses: int | None = None
     ) -> bool:
-        """Handle an incoming message: plan → parse → execute → repeat.
+        """Handle an incoming player message.
 
-        Returns True if at least one command was executed.
+        Classifies intent through ``InputRouter`` first, then dispatches:
+
+          * ``meta_command``    → ``_handle_meta_command`` (MemoryService stub)
+          * ``feedback``        → ``_handle_feedback``    (Phase 4a stub)
+          * ``ambiguous``       → ``_handle_ambiguous``   (ask to clarify)
+          * ``action_command``  → main LLM, ``tool_choice="auto"``
+          * ``question``/``chitchat`` → main LLM, ``tool_choice="none"``
+
+        Returns ``True`` iff at least one tool/action was executed.
         """
         if not self._running or not self._prompter:
             return False
@@ -206,79 +323,209 @@ class Agent:
         if max_responses is None:
             max_responses = self._config.max_commands
 
-        used_command = False
+        # ── 1. Classify intent ────────────────────────────────────────
+        intent = InputIntent.ACTION_COMMAND
+        matched: str | None = None
+        if self._router is not None:
+            decision = self._router.classify(message)
+            intent = decision.intent
+            matched = decision.matched_pattern
+        logger.info(
+            "InputRouter: source=%s intent=%s match=%r",
+            source, intent.value, matched,
+        )
 
-        # Observe current state
-        bot_state = await self.observe()
-
-        # Add the incoming message to history
+        # History gets the user turn regardless of intent — it's the truth
+        # source for both Conversation and (later) Phase 3 episodic L1 NDJSON.
         self._history.append(ConversationTurn(role="user", content=message))
         self._last_sender = source
+
+        # ── 2. Dispatch by intent ─────────────────────────────────────
+        if intent == InputIntent.META_COMMAND:
+            await self._handle_meta_command(message, source)
+            return False
+        if intent == InputIntent.FEEDBACK:
+            await self._handle_feedback(message, source)
+            return False
+        if intent == InputIntent.AMBIGUOUS:
+            await self._handle_ambiguous(message)
+            return False
+
+        # action_command / question / chitchat → main LLM
+        use_tools = intent == InputIntent.ACTION_COMMAND
+        return await self._run_plan_loop(
+            max_responses=max_responses, use_tools=use_tools,
+        )
+
+    # ── Plan loop (action / question / chitchat) ────────────────────
+
+    async def _run_plan_loop(
+        self, *, max_responses: int, use_tools: bool,
+    ) -> bool:
+        """Drive plan → parse → execute repeats for tool-capable intents.
+
+        For ``use_tools=False`` (question/chitchat) the LLM is called with
+        ``tool_choice="none"`` and the reply is spoken once, no commands.
+        """
+        used_command = False
+        bot_state = await self.observe()
+        tool_choice = None if use_tools else "none"
 
         for _ in range(max_responses):
             if self._shut_up or not self._running:
                 break
+            if self._safety and self._safety.state.interrupted:
+                logger.warning("Plan loop halted: safety interrupt active")
+                break
 
-            # Plan
-            llm_output = await self.plan(bot_state, source)
+            llm_output = await self.plan(bot_state, tool_choice=tool_choice)
             if not llm_output.strip():
                 logger.debug("Empty LLM response — ending turn")
                 break
 
-            # Parse
-            parsed = parse_response(llm_output)
             self._history.append(
-                ConversationTurn(role="assistant", content=llm_output)
+                ConversationTurn(role="assistant", content=llm_output),
             )
 
-            if not parsed.has_command:
-                # Plain conversation response — no command to execute
+            # Question / chitchat path: just speak the reply, no commands.
+            if not use_tools:
+                await self._send_chat(llm_output.strip())
                 break
 
-            # Execute each command
+            parsed = parse_response(llm_output)
+            if not parsed.has_command:
+                # Action path but model chose plain text — speak it and stop.
+                await self._send_chat(llm_output.strip())
+                break
+
             for cmd in parsed.commands:
                 if self._shut_up:
+                    break
+                if self._safety and self._safety.state.interrupted:
+                    logger.warning("Command chain halted: safety interrupt")
                     break
 
                 result = await self.execute_command(cmd.name, cmd.args)
                 used_command = True
+                self._record_action(cmd.name, cmd.args, result)
 
                 if result:
                     self._history.append(
-                        ConversationTurn(role="system", content=result)
+                        ConversationTurn(role="system", content=result),
                     )
                 else:
                     break  # no feedback = stop chaining
 
-        # Compress history if needed
         self._history = self._convo_mgr.compress_history(self._history)
-
         return used_command
+
+    # ── Intent-specific handlers ────────────────────────────────────
+
+    async def _handle_meta_command(self, message: str, source: str) -> None:
+        """Phase 3/4a hook — route to MemoryService write candidate.
+
+        For now: log + acknowledge. Wired into MemoryPolicy once Phase 3
+        lands.
+        """
+        logger.info("META_COMMAND from %s: %s", source, message)
+        await self._send_chat(
+            f"Memory command noted: '{message}'. "
+            "(MemoryService lands in Phase 3/4a.)"
+        )
+
+    async def _handle_feedback(self, message: str, source: str) -> None:
+        """Phase 4a hook — feedback candidate + recent action trace.
+
+        Logs the last few action_calls so a future feedback generator can
+        correlate the complaint with what the bot just did.
+        """
+        recent = [a["name"] for a in self._recent_actions]
+        logger.info(
+            "FEEDBACK from %s: %s (last %d actions: %s)",
+            source, message, len(self._recent_actions), recent,
+        )
+        await self._send_chat(
+            f"Got it — I'll learn from '{message}'. "
+            "(Feedback memory lands in Phase 4a.)"
+        )
+
+    async def _handle_ambiguous(self, message: str) -> None:
+        """Ask the player to clarify rather than guess."""
+        logger.info("AMBIGUOUS: %s", message)
+        await self._send_chat(
+            f"Did you want me to do something with '{message}', "
+            "or are we chatting? Try a verb (e.g. 'go ...', 'remember ...')."
+        )
+
+    async def _send_chat(self, text: str) -> None:
+        """Speak ``text`` through the bridge; quiet on failure."""
+        if self._bridge is None or not text:
+            return
+        try:
+            await self._bridge.chat(text)
+        except Exception:
+            logger.debug("Failed to send chat", exc_info=True)
+
+    def _record_action(
+        self, name: str, args: list[Any], result: str | None,
+    ) -> None:
+        """Keep a small ring of recent action_calls for FEEDBACK handler."""
+        self._recent_actions.append({
+            "name": name, "args": args, "result": result, "ts": time.time(),
+        })
+        if len(self._recent_actions) > self._RECENT_ACTIONS_WINDOW:
+            self._recent_actions = self._recent_actions[
+                -self._RECENT_ACTIONS_WINDOW:
+            ]
 
     # ── Main loop ───────────────────────────────────────────────────
 
     async def run_loop(self, tick_interval: float = 0.05) -> None:
-        """Run the agent main loop: modes → observe → (idle check).
+        """Run the agent main loop: safety check → quick observe → modes.
 
-        This is the top-level loop that runs every tick (20 TPS = 0.05 s).
-        It evaluates reactive modes and yields control back to the bridge.
+        Top-level loop, default 20 TPS (50 ms). Only does a *quick* observe
+        (single ``bridge.observe()`` call) — the full concurrent gather is
+        reserved for ``handle_message``. SafetyMonitor runs its own poll
+        independently at 250 ms.
         """
         while self._running:
             self._tick_count += 1
 
             try:
-                bot_state = await self.observe()
+                # 1. Safety interrupt — stop motion, clear modes, recover.
+                if self._safety and self._safety.state.interrupted:
+                    logger.warning(
+                        "SafetyMonitor interrupt: %s — stopping motion "
+                        "(emergency_escape skill lands in Phase 5)",
+                        self._safety.state.reason,
+                    )
+                    try:
+                        if self._bridge:
+                            await self._bridge.stop()
+                    except Exception:
+                        pass
+                    self._safety.clear_interrupt()
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # 2. Cheap tick observe — modes only need health/pos/blocks.
+                bot_state = await self._observe_quick()
                 if not bot_state.is_alive:
                     await asyncio.sleep(1.0)
                     continue
 
-                # Evaluate reactive behavior modes
+                # 3. Evaluate reactive behavior modes.
                 triggered = await self._modes.tick(bot_state, self._bridge)
                 if triggered:
-                    logger.debug("Tick %d: mode %s triggered", self._tick_count, triggered)
+                    logger.debug(
+                        "Tick %d: mode %s triggered", self._tick_count, triggered,
+                    )
 
-                # Update stuck tracking
-                if self._bridge is not None and self._modes.is_active(BehaviorMode.UNSTUCK):
+                # 4. Stuck recovery follow-up.
+                if (
+                    self._bridge is not None
+                    and self._modes.is_active(BehaviorMode.UNSTUCK)
+                ):
                     try:
                         goal = await self._bridge.get_goal()
                         if goal and "No current" in goal:
@@ -293,20 +540,46 @@ class Agent:
 
     # ── Internal helpers ────────────────────────────────────────────
 
-    async def _format_inventory(self) -> str:
-        """Format the bot's inventory for the $INVENTORY placeholder."""
-        if self._bridge is None:
-            return "INVENTORY: empty"
+    async def _observe_quick(self) -> BotState:
+        """Cheap single-call observe for the high-frequency tick loop.
+
+        Skips the inventory / entities / nearby-blocks / goal queries so we
+        only pay one network round-trip per tick. Falls back to defaults on
+        failure so the tick never crashes.
+        """
+        bridge = self._bridge
+        if bridge is None:
+            return BotState()
         try:
-            items = await self._bridge.get_inventory()
-            if not items:
-                return "INVENTORY: empty"
-            lines = ["INVENTORY:"]
-            for item in items[:20]:
-                lines.append(f"  {item['name']} x{item['count']}")
-            return "\n".join(lines)
+            s = await bridge.observe()
         except Exception:
-            return "INVENTORY: unavailable"
+            logger.debug("_observe_quick failed", exc_info=True)
+            return BotState()
+        p = s.get("position", {}) or {}
+        return BotState(
+            health=s.get("health", 20),
+            food=s.get("food", 20),
+            position=Position(x=p.get("x", 0), y=p.get("y", 0), z=p.get("z", 0)),
+            gamemode=s.get("gamemode", "survival"),
+            time_of_day=s.get("time_of_day", ""),
+            biome=s.get("biome", ""),
+            entities_nearby=s.get("entities_nearby", ""),
+            blocks_nearby=s.get("blocks_nearby", ""),
+            players_nearby=s.get("players_nearby", ""),
+        )
+
+    def _format_inventory(self, state: BotState) -> str:
+        """Format inventory from a populated ``BotState`` for the prompt.
+
+        Pulls directly from ``state.inventory`` (already fetched in the
+        concurrent ``observe()`` gather), no extra network call.
+        """
+        if not state.inventory:
+            return "INVENTORY: empty"
+        lines = ["INVENTORY:"]
+        for item in state.inventory[:20]:
+            lines.append(f"  {item.name} x{item.count}")
+        return "\n".join(lines)
 
     def shut_up(self) -> None:
         """Mute the agent (stop all non-critical output)."""

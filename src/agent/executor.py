@@ -29,6 +29,10 @@ class ActionExecutor:
     def register_many(self, handlers: dict[str, Callable[..., Any]]) -> None:
         self._handlers.update(handlers)
 
+    def set_bridge(self, bridge: Any) -> None:
+        """Attach the SocketBridge instance used to dispatch commands."""
+        self._bridge = bridge
+
     async def execute(self, command_name: str, args: list[Any]) -> str | None:
         name = command_name.lstrip("!")
         handler = self._handlers.get(name)

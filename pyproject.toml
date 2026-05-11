@@ -50,3 +50,11 @@ select = ["E", "F", "I", "N", "W"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Match unit tests; test_e2e.py is excluded because it boots a Mineflayer
+# subprocess and is meant to be invoked directly.
+python_files = ["test_*.py"]
+addopts = "--ignore=tests/test_e2e.py"

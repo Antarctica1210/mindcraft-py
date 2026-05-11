@@ -90,6 +90,7 @@ class Prompter:
         system_message: str,
         *,
         stop_sequence: str = "***",
+        tool_choice: str | None = None,
     ) -> LLMResponse:
         """Send a chat completion request through LiteLLM.
 
@@ -97,6 +98,11 @@ class Prompter:
             turns: Conversation history as [{"role": ..., "content": ...}].
             system_message: System prompt.
             stop_sequence: Token appended to each user/assistant message.
+            tool_choice: Override the default "auto" tool selection. Pass
+                "none" to force a pure-text reply (for question / chitchat
+                intents from InputRouter). Pass "required" to force a tool
+                call. Pass None to use the default ("auto" if tools
+                registered, else omitted).
 
         Returns:
             LLMResponse with content and metadata.
@@ -111,7 +117,7 @@ class Prompter:
                 "content": f"{content}{stop_sequence}",
             })
 
-        kwargs = self._build_kwargs(messages)
+        kwargs = self._build_kwargs(messages, tool_choice=tool_choice)
 
         logger.info(
             "LiteLLM → model=%s msgs=%d temp=%.1f tools=%s",
@@ -130,7 +136,9 @@ class Prompter:
                     len(turns), len(turns) - 1,
                 )
                 return await self.send_request(
-                    turns[1:], system_message, stop_sequence=stop_sequence
+                    turns[1:], system_message,
+                    stop_sequence=stop_sequence,
+                    tool_choice=tool_choice,
                 )
             logger.exception("Context window exceeded with single turn")
             return LLMResponse(
@@ -142,7 +150,9 @@ class Prompter:
             if "context_length_exceeded" in err_msg.lower() and len(turns) > 1:
                 logger.warning("Context length exceeded, trimming oldest turn")
                 return await self.send_request(
-                    turns[1:], system_message, stop_sequence=stop_sequence
+                    turns[1:], system_message,
+                    stop_sequence=stop_sequence,
+                    tool_choice=tool_choice,
                 )
             logger.exception("LiteLLM request failed")
             return LLMResponse(
@@ -181,7 +191,12 @@ class Prompter:
 
     # ── internal ────────────────────────────────────────────────────
 
-    def _build_kwargs(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _build_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> dict[str, Any]:
         """Build the kwargs dict for litellm.acompletion()."""
         kwargs: dict[str, Any] = {
             "model": self._llm.model,
@@ -199,8 +214,16 @@ class Prompter:
             kwargs["api_key"] = self._llm.api_key
 
         if self._tools:
-            kwargs["tools"] = self._tools
-            kwargs["tool_choice"] = "auto"
+            # tool_choice="none" forces a pure-text reply — used for question /
+            # chitchat intents from InputRouter so questions cannot trigger
+            # tool calls. Default "auto" lets the model decide.
+            if tool_choice == "none":
+                # Some providers reject "tools" + tool_choice="none" together,
+                # so we omit tools entirely in that branch.
+                kwargs["tool_choice"] = "none"
+            else:
+                kwargs["tools"] = self._tools
+                kwargs["tool_choice"] = tool_choice or "auto"
 
         return kwargs
 

@@ -112,18 +112,58 @@ BackgroundReflectionWorker
 **LLM 介入点：**
 
 - 适合：用户自然语言 → 结构化 goal/tool call，失败反馈 → 简短解释，history 压缩和 prompt 构建
-- 不适合：发明不存在的命令、绕过 `ToolCallParser`、直接操作 socket 或 Mineflayer API
+- 不适合：发明不存在的命令、绕过 `ToolCallParser`、绕过 `InputRouter` 自行判断是问答还是行动、直接操作 socket 或 Mineflayer API
 - 实时性：LLM 调用必须可取消/超时；前台安全中断不等待模型返回
 
 迁移 `models/prompter.js` (~800 行，含 20+ provider)：
 
 - [ ] 用 litellm 统一 provider 接口（OpenAI / Anthropic / Gemini / Ollama / Replicate 等）
 - [ ] 实现 `MessageBuilder`：system prompt + examples + conversation + tool definitions 拼接
-- [ ] 实现 `ToolCallParser`：解析 LLM 返回的 tool call，映射为 Mineflayer 命令
+- [ ] 实现 `ToolCallParser`：解析 LLM 返回的 tool call，**1:1 映射到现有 `SocketBridge` 方法**（详见下文 SocketBridge 集成）
+- [ ] 实现 `InputRouter`：玩家消息进入主 LLM **之前**先做意图分类（详见下文）
 - [ ] 保留 history 压缩逻辑，用 Python 重写
-- [ ] 单元测试：各 provider 的 mock 调用验证
+- [ ] 单元测试：各 provider 的 mock 调用验证；InputRouter 意图分类准确率验证；ToolCallParser 对 SocketBridge 全部方法签名的覆盖率验证
 
-**产出：`src/llm/prompter.py`, `src/llm/message_builder.py`, `src/llm/tool_parser.py`**
+**SocketBridge 集成（贴现有实现，避免重复造轮子）：**
+
+Phase 0 已交付 [src/mc/socket_bridge.py](src/mc/socket_bridge.py)，提供完整 async 客户端，~50 个方法按 SocketBridge 现有分组：
+
+`lifecycle` (create_bot, close_server) · `observation` (observe, get_entities, get_nearby_blocks, get_craftable, get_inventory, get_goal) · `communication` (chat) · `movement` (move_to, go_to_player, follow_player, move_away, search_for_block, search_for_entity, go_to_bed, go_to_surface, dig_down, stay, set_control_state) · `combat` (attack, attack_player) · `inventory` (equip, consume, discard) · `block` (place_block, activate_block, use_on, collect_blocks) · `chest` (view_chest, put_in_chest, take_from_chest) · `crafting` (craft_recipe, smelt_item, clear_furnace, get_crafting_plan) · `villager` (show_villager_trades, trade_with_villager) · `look` (look_at_player, look_at_position) · `give` (give_to_player) · `skills` (pickup_nearby_items, should_place_torch, place_torch, till_and_sow, use_door) · `stop`
+
+Phase 1 不重新发明工具协议，直接对接：
+
+- [ ] **工具定义自动生成**：从 `SocketBridge` 方法签名（async def + 类型注解）反射出 OpenAI/Anthropic 兼容的 tool schema；新增方法时无需手改 prompter
+- [ ] **工具分组**与 SocketBridge 现有分组保持一致，按需注入（采集任务只注入 observation+movement+block+inventory，战斗注入 combat+observation，避免 prompt 膨胀）
+- [ ] **`ToolCallParser` 输出 `BridgeCall(method: str, params: dict)`**，由 Phase 2 `ActionExecutor` 直接 `await getattr(bridge, call.method)(**call.params)` 分派，**禁止**自行实现 Mineflayer API
+- [ ] **黑名单**：`create_bot` / `close_server` 不暴露给 LLM；`attack_player` 默认隐藏，需玩家显式启用
+- [ ] **工具描述里写明状态约束**（如 "craft_recipe 需附近有 crafting_table"），让 LLM 自行避免确定性失败
+- [ ] 旧 `bridge.py` / `events.py`（JSPyBridge）**不在 Phase 1 引用范围**，roadmap 已标已废弃
+
+**InputRouter：玩家输入意图分类（在 LLM 之前）：**
+
+当前设计盲点：所有玩家消息直接喂给主 LLM + tool definitions，由 LLM "自由发挥"决定产 tool call 还是纯回话。这会导致问句被误执行（"基地在哪？" → `!goto(base)`）、元命令被当成动作（`remember base` 表层像 `go to base`）、反馈被当成新指令（`don't` 触发另一个动作）。
+
+`InputRouter` 在 LLM 调用前做一次**粗分类**，分四类四条路径：
+
+| 意图类别 | 识别方式 | LLM 配置 | 下游 |
+|---|---|---|---|
+| **meta_command** | 关键词正则命中（`remember / forget / save skill / unforget / save route / prefer / avoid`） | **跳过主 LLM**，走轻量 LLM 生成结构化候选 | `MemoryService` 写入路径（Phase 4 / Phase 5 policy gate） |
+| **feedback** | 关键词正则命中（`wrong / don't / too risky / never / 不对 / 别 / 太冒险`） | 轻量 LLM 生成 feedback candidate + 关联最近 action trace | `feedback/` candidate（Phase 4 中风险） |
+| **action_command** | 默认（含动词性 + 目标对象）或 LLM 分类 | `tool_choice="auto"`，允许 action tools | `ActionExecutor`（Phase 2） |
+| **question / chitchat** | 疑问句 / 招呼 / 无动作目标 | `tool_choice="none"`，**禁用** action tools；需事实先 `recall()` | 仅回话 |
+| **ambiguous** | 短命令缺动词 / 词义重叠（如 `base`、`mine`） | LLM 必须**先反问澄清**，不直接执行 | 暂存到 Conversation queue，等下一轮 |
+
+实现要点：
+
+- [ ] `InputIntent` Pydantic 枚举：`meta_command | feedback | action_command | question | chitchat | ambiguous`
+- [ ] `classify(message: str, state: BotState, recent_actions: list) -> InputIntent`：快路径用正则 + 关键词表；慢路径在歧义时调用轻量 LLM 做二次判定
+- [ ] **快路径**（meta_command / feedback）：不进主 LLM，直接走 Phase 4/5 写入候选生成器，延迟 < 100ms，风险可控
+- [ ] **慢路径**（action_command / question）：进主 LLM，但用 `tool_choice` 硬约束，杜绝问句触发动作
+- [ ] **歧义**：返回 `ambiguous` 后由 `AgentLoop` 触发反问，反问轮次也走 InputRouter 重新分类
+- [ ] L1 NDJSON `player_msg` 事件扩展 `intent` 字段，便于事后审计分类准确率
+- [ ] 关键词表可热加载（`config/intent_keywords.yaml`），多语言支持（中/英分表）
+
+**产出：`src/llm/prompter.py`, `src/llm/message_builder.py`, `src/llm/tool_parser.py`, `src/llm/input_router.py`**
 
 ### Phase 2: Agent 核心 + 类型建模 (5-7 天)
 
@@ -137,14 +177,55 @@ BackgroundReflectionWorker
 
 迁移 `agent/agent.js` (~600 行)：
 
-- [ ] Pydantic models：`BotState`, `Inventory`, `Position`, `Entity`, `Action`, `Task`
-- [ ] `AgentLoop`：感知 (observe) → 规划 (plan) → 执行 (execute) → 反馈 (feedback) 主循环
-- [ ] `ActionExecutor`：将 LLM tool call 转为 Mineflayer API 调用（通过 `mc_bridge`）
-- [ ] 迁移 `conversation.js`：对话历史管理，turn 压缩
-- [ ] 迁移 `modes.js`：自驱动模式 / 跟随模式 / 采集模式的状态机
-- [ ] 集成测试：`"collect 5 oak_log"` 端到端跑通
+- [ ] Pydantic models：`BotState`, `Inventory`, `Position`, `Entity`, `Action`, `Task`——**`BotState` schema 严格对齐 [src/mc/socket_bridge.py](src/mc/socket_bridge.py) 的 `observe()` 返回结构**（health / food / position / gamemode / time_of_day / biome / entities_nearby / blocks_nearby / players_nearby），不重新发明字段
+- [ ] `AgentLoop`：感知 (observe) → **意图分类 (route)** → 规划 (plan) → 执行 (execute) → 反馈 (feedback) 主循环
+- [ ] **意图分发**：在 plan 之前调用 `InputRouter.classify()`（Phase 1），按返回意图走五条分支：
+  - `meta_command` → 走 `MemoryService` 候选生成，不进 plan
+  - `feedback` → 走 `feedback` candidate 生成 + 关联最近 action trace，不进 plan
+  - `action_command` → 进 plan，主 LLM `tool_choice="auto"`
+  - `question / chitchat` → 进 plan，主 LLM `tool_choice="none"`，需事实先 `recall()`
+  - `ambiguous` → AgentLoop 触发反问，玩家下一轮输入重新经 InputRouter
+- [ ] `ActionExecutor`：将 `BridgeCall(method, params)` 通过 `await getattr(bridge, call.method)(**call.params)` 分派到 `SocketBridge`，**不直接持有 Mineflayer API**
+- [ ] 迁移 `conversation.js`：对话历史管理，turn 压缩；记录每条 `player_msg` 的 `intent` 字段
+- [ ] 迁移 `modes.js`：自驱动模式 / 跟随模式 / 采集模式的状态机；参考 [src/mc/observer_mode.py](src/mc/observer_mode.py) 的模式 + threat detection + 评估循环（注意改写为 SocketBridge 路径，不再用 JSPyBridge）
+- [ ] 集成测试：`"collect 5 oak_log"` 端到端跑通；`"你在哪"`不得触发 action；`remember base` 走 MemoryService 不走 ActionExecutor
 
-**产出：`src/agent/core.py`, `src/agent/models.py`, `src/agent/executor.py`, `src/agent/conversation.py`, `src/agent/modes.py`**
+**BotState 来源（observe 合成）：**
+
+`AgentLoop.observe()` 一步合成 BotState，**全部走 SocketBridge async API**，不重复实现：
+
+```python
+state = BotState(
+    **(await bridge.observe()),
+    inventory=await bridge.get_inventory(),
+    entities=await bridge.get_entities(),
+    nearby_block_types=await bridge.get_nearby_blocks(distance=16),
+    current_goal=await bridge.get_goal(),
+)
+```
+
+并发发起这些请求（`asyncio.gather`）以降低单 tick 延迟；任一失败用上一 tick 缓存兜底，记 `safety_interrupt` 事件。
+
+**事件双通道（请求-响应 vs server-push）：**
+
+SocketBridge 是**双向通道**，AgentLoop 必须区分驱动来源：
+
+| 通道 | 触发 | 入口 | 下游 |
+|---|---|---|---|
+| 请求-响应 | AgentLoop 主动 | `await bridge.observe()` / `await bridge.collect_blocks(...)` 等 | 写入 L1 `action_call` / `action_result` 事件 |
+| Server-push | Mineflayer 事件 | `@bridge.on("chat" / "spawn" / "end" / "error" / "kicked")` decorator | `chat` → InputRouter；`spawn` / `end` / `kicked` → 重连或终止；`error` → safety_interrupt |
+
+`@bridge.on("chat")` 是玩家输入的**唯一入口**，handler 不直接进 plan，先入 `Conversation.queue()`，由 AgentLoop 下一次循环统一经 InputRouter 处理（保证 InputRouter 路径是单一入口）。
+
+**安全中断与高频感知：**
+
+`socket_server.js` 当前只推送 `chat / spawn / end / error / kicked`——**没有** `physicsTick` 或低血量通知。Phase 2 必须明确选择：
+
+- [ ] **方案 A（推荐起手）**：AgentLoop 起一个 `SafetyMonitor` async 任务，独立于主循环，固定 200-500ms 调一次 `bridge.observe()`，发现 health<5 / lava 接近 / 敌对 entity 距离 <3 时设置中断标志，主循环在 plan / execute 边界检查并跳到 emergency skill
+- [ ] **方案 B（性能更好但需改 Node 端）**：扩展 `socket_server.js` 推送 `health_change` / `entity_hurt` / `block_update` 事件，AgentLoop 订阅这些事件直接触发中断；目前**不在 Phase 2 范围**，先列为可选优化
+- [ ] LLM 调用必须可 `asyncio.cancel()`，safety_interrupt 触发时立即取消 plan 中的未完成 LLM 请求，跳到 emergency 路径
+
+**产出：`src/agent/core.py`, `src/agent/models.py`, `src/agent/executor.py`, `src/agent/conversation.py`, `src/agent/modes.py`, `src/agent/safety_monitor.py`**
 
 ### Phase 3: MemoryLayer 契约层 + 写入策略 (2-3 天)
 
@@ -176,7 +257,7 @@ Phase 3 只定义"记忆操作系统"的契约：
 - [ ] 定义 `MemoryRecord` / `MemoryQuery` / `MemoryResult` Pydantic 模型
 - [ ] 定义 `MemoryStore` 接口：`put`, `get`, `search`, `update`, `delete`, `compact`
 - [ ] 命名空间设计：`bot/<name>/working`, `episodic`, `semantic`, `procedural`
-- [ ] 元数据规范：`source`, `confidence`, `created_at`, `updated_at`, `ttl`, `world_id`, `scope`, `tags`, `evidence`, `valid_when`, `invalid_when`
+- [ ] 元数据规范：`scope` (必填，`minecraft` | `bot` | `world`，见下文 Scope 子节), `source`, `confidence`, `created_at`, `updated_at`, `ttl`, `world_id` (当 `scope=world` 时必填), `tags`, `evidence`, `valid_when`, `invalid_when`
 - [ ] 存储抽象：只定义接口，不绑定具体存储；Phase 4a 的 `FileMemoryStore` 是第一个实现
 - [ ] 检索抽象：只定义 `search(query) -> list[MemoryResult]`，不提前实现 dense vector / BM25 / RRF
 - [ ] 写入策略：哪些事件自动写入、哪些需要 LLM 反思后晋升、哪些只保留短期
@@ -199,8 +280,10 @@ Phase 3 只定义"记忆操作系统"的契约：
 L1 NDJSON 每行一个事件，schema 建议：
 
 ```json
-{"ts":"2026-05-11T14:30:12.345Z","session_id":"...","world_id":"main","type":"llm_turn|action_call|action_result|world_event|player_msg|safety_interrupt","payload":{...}}
+{"ts":"2026-05-11T14:30:12.345Z","session_id":"...","world_id":"main","type":"llm_turn|action_call|action_result|world_event|player_msg|safety_interrupt","intent":"meta_command|feedback|action_command|question|chitchat|ambiguous","payload":{...}}
 ```
+
+`intent` 字段仅在 `type=player_msg` 时有效，由 Phase 1 `InputRouter` 写入；便于事后审计分类准确率与路径分布。
 
 session_id 按"自然中断"切（玩家离线 / bot 重连 / 任务完成 / 安全死亡），不按固定时长，便于 TaskRun 和 skill 提取对齐。
 
@@ -269,6 +352,32 @@ session_id 按"自然中断"切（玩家离线 / bot 重连 / 任务完成 / 安
   - **Dynamic backend (World Facts)**：Phase 7b 写入 `memory/facts/`，对应 `MemoryRecord` 子类型
 - `recall(namespace="semantic", ...)` 内部按需查两个 backend；冲突时 static 优先（见上）
 - 玩家偏好、对话事实（非世界事实）单独放 `memory/facts/players.md` 等，仍属 `semantic` 但不进 KnowledgeGraph
+
+**Scope 强制与召回路由（通用 vs 世界特定）：**
+
+`scope` 是 `MemoryRecord` 和 skill frontmatter 的**必填字段**，三选一：
+
+- `minecraft` — 通用 Minecraft 机制（配方、工具等级、怪物掉落、食物值），由 Phase 7a 静态知识承担；运行时不直接写入
+- `bot` — 当前 bot 的通用技能、经验教训、跨世界偏好，**跨世界、可分享**（分享机制见 Phase 8b）
+- `world` — 仅在当前 `world_id` 有效的事实（坐标、库存、玩家关系、危险区域、episodic、TaskRun）
+
+**召回顺序：world > bot > minecraft**（更具体更可信）。同名冲突时 world override bot。
+
+写入路由原则：
+
+- `remember base` / 命名坐标 → 强制 `world`
+- `save skill X` → 默认 `bot`；若候选内容含具体坐标 / 命名实体 / 玩家名 → 自动降级 `world` 并提醒玩家
+- World facts（箱子、传送门、危险区域）→ 强制 `world`
+- Reflection 提出的 feedback candidate → LLM 提议 scope，policy 复核
+- 玩家偏好 → `bot` + `player_id` 标记
+- `scope` 升级（`world → bot`，把世界特定内容提升为通用）必须玩家显式确认，防止坐标 / 命名实体污染通用层
+
+实现内容（补到上面清单）：
+
+- [ ] `MemoryRecord.scope` 必填字段（`Literal["minecraft", "bot", "world"]`）
+- [ ] `MemoryQuery` 默认按 `world > bot > minecraft` 顺序聚合
+- [ ] 写入前 scope 校验器：扫描内容是否含 world-specific 实体（坐标、`places/` 命名），违反时自动降级或拒绝
+- [ ] Skill / 通用记忆**只描述流程**，具体坐标/箱子通过 `recall(scope="world", ...)` 在执行时拼接，**不允许硬编码进 `bot` 层文件**
 
 **产出：`src/memory/models.py`, `src/memory/store.py`, `src/memory/service.py`, `src/memory/policies.py`, `src/memory/session_sink.py`, `src/memory/reflection_worker.py`, `src/memory/working.py`, `src/memory/evaluator.py`, `src/memory/tombstones.py`**
 
@@ -341,20 +450,25 @@ Phase 7a 只处理 Static Knowledge，不写 MemoryLayer：
 设计参考 Claude Code 的记忆系统（`~/.claude/projects/<project>/memory/`）：
 
 ```
-bots/<bot_name>/memory/
-├── MEMORY.md              ← 索引文件，始终加载（每行 <150 字符，上限 200 行）
-├── episodic/              ← Phase 3 L2 episodic summary（按 session/任务压缩后的摘要）
-│   ├── 2026-05-10_mining_run.md
-│   └── 2026-05-10_night_death.md
-├── places/
-│   ├── base.md            ← 命名位置：基地坐标
-│   └── diamond_mine.md    ← 命名位置：钻石矿坐标
-├── feedback/
-│   ├── night_mining.md    ← 教训：夜间采矿死亡
-│   └── creeper_combat.md  ← 教训：苦力怕近战策略
-├── facts/
-│   ├── players.md         ← 玩家偏好、关系
-│   └── world_facts.md     ← 世界事实（传送门位置等）
+bots/<bot_name>/
+├── universal/                ← scope=bot，跨世界，可分享（Phase 8b 打包）
+│   ├── MEMORY.md             ← 通用记忆索引
+│   └── memory/
+│       └── feedback/
+│           ├── night_caving.md  ← 教训：夜间无盾下洞危险（机制类，通用）
+│           └── creeper_combat.md ← 教训：苦力怕近战策略
+└── worlds/<world_id>/        ← scope=world（无 world_id 时默认 worlds/default/）
+    └── memory/
+        ├── MEMORY.md         ← 此世界的索引，始终加载（每行 <150 字符，上限 200 行）
+        ├── episodic/         ← Phase 3 L2 episodic summary（非任务区间）
+        │   ├── 2026-05-10_mining_run.md
+        │   └── 2026-05-10_night_death.md
+        ├── places/
+        │   ├── base.md       ← 命名位置：基地坐标
+        │   └── diamond_mine.md ← 命名位置：钻石矿坐标
+        └── facts/
+            ├── players.md    ← 玩家偏好、关系（属此世界/此服务器）
+            └── world_facts.md ← 世界事实（传送门位置等）
 ```
 
 > Skill 文件不放在 `memory/skills/`，而是独立存放在 `bots/<bot_name>/skills/`。它们属于 Procedural Memory，但 schema、写入风险和执行语义都不同，避免和普通事实/反馈记忆混写。
@@ -366,6 +480,8 @@ bots/<bot_name>/memory/
 name: base_location
 description: 主基地坐标
 type: place
+scope: world              # 含坐标，强制 world 层
+world_id: main
 created: 2026-05-10T12:00:00Z
 updated: 2026-05-10T14:00:00Z
 confidence: high          # high / medium / low
@@ -384,6 +500,7 @@ ttl: null                 # null = 永不过期
 ---
 name: avoid_night_caving
 type: feedback
+scope: bot                # 基于游戏机制，跨世界通用
 ---
 
 不要在夜间去洞穴挖矿。
@@ -469,10 +586,11 @@ bot 当时只有石剑，没有盾牌和远程武器。
 **Skill 文件格式：**
 
 ```markdown
-<!-- bots/<name>/skills/mine_diamonds.md -->
+<!-- bots/<name>/universal/skills/mine_diamonds.md -->
 ---
 name: mine_diamonds
 description: 寻找并挖掘钻石矿
+scope: bot                # 流程通用，不含坐标 / 命名实体
 triggers:
   - situation: "玩家要求挖钻石"
   - state: "inventory 有 iron_pickaxe，pos.y > 0"
@@ -559,13 +677,42 @@ def match_skill(situation: str, state: BotState, skills_dir: Path) -> Skill | No
 - [ ] `SkillFile` Pydantic 模型：解析 YAML frontmatter + 步骤/失败模式
 - [ ] `SkillStore` / `ProceduralMemoryAdapter`：接入 Phase 3 的 `procedural` namespace
 - [ ] `SkillIndex`：扫描 `skills/` 目录，建立触发词 → 文件映射
-- [ ] `SkillMatcher`：给定 situation + BotState → 返回最佳匹配 skill
+- [ ] `SkillMatcher`：给定 situation + BotState → 返回最佳匹配 skill；按 `world > bot` scope 顺序匹配
 - [ ] 权重自动更新：每次执行后更新 `success_count / fail_count / confidence`
 - [ ] 步骤/失败模式变更策略：默认生成候选变更，高风险 skill 需要人工确认
 - [ ] 失败链式回退：skill 执行失败 → 读取 `失败模式` 列表 → 触发对应 sub-skill
 - [ ] 与 `ActionExecutor` 集成：高 confidence（>0.9）的 skill 直接执行，低 confidence 走 LLM
+- [ ] **Scope 路由与流程/坐标解耦**（详见下文）
 
-**产出：`src/skills/loader.py`, `src/skills/matcher.py`, `bots/<name>/skills/` 示例**
+**Scope 路由与流程/坐标解耦：**
+
+Skill 文件分两层存放，强制 `scope` 字段：
+
+- **通用 skill**（默认）：`bots/<name>/universal/skills/*.md`，`scope: bot`——只描述流程、前置条件、失败模式，**不允许硬编码坐标 / 命名实体 / 玩家名**
+- **世界特定 skill**（少数）：`bots/<name>/worlds/<world_id>/skills/*.md`，`scope: world`——绑定具体地图的特殊流程（如"基地巡逻路线"）
+
+通用 skill 执行时通过 `recall(scope="world", ...)` 拿坐标 / 命名实体后再拼接动作：
+
+```python
+# 通用 mine_diamonds.md 不持有具体坐标
+# 执行时 SkillExecutor 调 recall("places", "diamond_mine") 取坐标
+loc = memory.recall(scope="world", type="place", name="diamond_mine")
+if not loc:
+    # 触发先勘探子 skill 或问玩家
+    return need_exploration()
+goto(loc.coords)
+mine_down_to(y=-58)
+```
+
+匹配优先级：`world` scope skill > `bot` scope skill > LLM 兜底。`SkillMatcher` 同时扫两个目录，命名冲突时 world 覆盖 bot。
+
+写入时静态校验：
+
+- [ ] 写入 `scope: bot` 的 skill 前扫描内容，发现坐标字面量 / `places/` 命名引用 → 拒绝写入或自动降级到 `scope: world` 并提示
+- [ ] 写入 `scope: world` skill 时正常通过，但 policy 仍要求显式确认
+- [ ] `scope` 升级（world → bot，例如把私人流程贡献为通用）必须玩家显式确认，且强制去除坐标 / 命名实体
+
+**产出：`src/skills/loader.py`, `src/skills/matcher.py`, `src/skills/scope_validator.py`, `bots/<name>/universal/skills/` + `bots/<name>/worlds/<world_id>/skills/` 示例**
 
 ---
 
@@ -639,7 +786,7 @@ L1 切片在 reflection 阶段按是否归属已知 `task_id` 分流：
 
 **目标：在 Phase 4a 文件型记忆和 Phase 7a 静态知识稳定后，把运行时发现的世界事实写入 Semantic Memory，并与 Static Knowledge 组合使用。**
 
-> 开发策略参考：`docs/minecraft-knowledge-strategy.md`。Phase 7b 只处理 World Facts：bot 在具体世界里观察到的事实必须经过 MemoryLayer policy 写入，并带 `world_id`, `ttl`, `confidence`, `evidence`。
+> 开发策略参考：`docs/minecraft-knowledge-strategy.md`。Phase 7b 只处理 World Facts：bot 在具体世界里观察到的事实必须经过 MemoryLayer policy 写入，并带 `scope: world`, `world_id`, `ttl`, `confidence`, `evidence`。
 
 **LLM 介入点：**
 
@@ -657,7 +804,7 @@ Phase 7b 只处理 World Facts，不重复实现 Phase 7a 的静态知识：
 实现内容：
 
 - [ ] `WorldFactService`：将 `LOCATED_AT` / `STORED_IN` / `DANGEROUS_NEAR` 等运行时事实交给 MemoryLayer 写入
-- [ ] 世界事实必须标记 `source`, `confidence`, `world_id`, `evidence`, `ttl`, `valid_when`, `invalid_when`
+- [ ] 世界事实必须标记 `scope: world` + `world_id` + `source`, `confidence`, `evidence`, `ttl`, `valid_when`, `invalid_when`
 - [ ] 查询组合：当前任务先查 Phase 7a Static Knowledge，再查 World Facts 补充具体坐标、库存和风险
 - [ ] 与 ActionExecutor 集成：执行合成/采集前结合 KnowledgeGraph 和 World Facts 选择最少采集路径
 - [ ] 静态知识和世界事实冲突时，静态知识优先；世界事实过期或验证失败时降 confidence / forget
@@ -694,15 +841,70 @@ Phase 7b 只处理 World Facts，不重复实现 Phase 7a 的静态知识：
 
 **产出：`src/npc/manager.py`, `src/npc/controller.py`（Deferred）**
 
+### Phase 8b: 通用 Skill / Memory Bundle 分享 (Deferred，按需)
+
+**目标：把 `scope: bot` 的通用 skill 和经验教训打包、清洗、分发给其他 bot / 玩家，让通用智能在社区内累积。`scope: world` 内容永远不参与分享。**
+
+> 暂不进入主线。前置条件：Phase 5a + Phase 4a 稳定，scope 校验已工作；社区 / 多玩家场景明确出现。
+
+**LLM 介入点：**
+
+- 适合：辅助生成 skill 的英文 description / 多语言摘要、检测分享前是否含隐私信息
+- 不适合：决定信任级别、覆盖 quarantine 决策、绕过版本检查、直接 enable 高风险导入 skill
+- 实时性：打包 / 校验 / 导入全程离线；导入后 skill 默认进 quarantine，需玩家显式 enable 后才参与匹配
+
+设计原则：
+
+- **只能分享 `scope: bot` 的内容**——`world` 层（坐标 / 库存 / 玩家关系）永远不出仓库
+- **导入即降权**：confidence 重置（默认 0.5），靠本地复用次数升回
+- **高风险 skill 强制 quarantine**：含 `digDown` / `break_block` / `attack_player` 等动作的导入 skill 默认 disabled，需玩家 `enable <skill>` 后才生效
+- **版本固定**：每个 bundle 声明 Minecraft 版本 / mod 依赖 / `minecraft-data` 版本，导入时 mismatch 触发警告或拒绝
+- **本地优先**：同名 skill 本地 override 导入版本；导入版本另存为 `<name>.shared.md`，仅在本地失败时 fallback
+
+实现内容：
+
+- [ ] **Bundle 格式**：`bundle.yaml` + `universal/` 子树（skills + feedback），SHA-256 hash 作为 bundle id
+- [ ] **Sanitizer**：打包前扫描，禁止出现坐标字面量、`places/` 命名引用、`world_id`、玩家用户名等；命中即报错或自动剔除
+- [ ] **Provenance 字段**（写入导入文件 frontmatter）：`source: imported`, `origin: <author/bundle_hash>`, `imported_at`, `peer_reviewed: N`, `local_verified: false`, `quarantined: true|false`
+- [ ] **版本检查器**：比对当前 Minecraft 版本与 bundle 声明，mismatch 提示降级处理
+- [ ] **冲突解决**：本地同名 skill 存在时，导入版本写到 `<name>.shared.md`；SkillMatcher 优先本地，本地失败再尝试 shared
+- [ ] **Quarantine 控制**：`bundle enable <skill>` / `bundle disable <skill>` / `bundle remove <bundle_id>`
+- [ ] **审计日志**：导入 / enable / 首次执行 / 失败案例均落 L1 NDJSON，便于追溯
+- [ ] **CLI 工具**：`bundle export <name>` / `bundle import <path-or-url>` / `bundle list` / `bundle inspect <id>`
+
+**风险与缓解：**
+
+| 风险 | 缓解 |
+|---|---|
+| 导入 skill 含恶意动作（破坏建筑、攻击玩家） | quarantine 默认 disabled + 高风险动作清单 + dry-run 模拟 |
+| 隐私泄漏（导出时夹带坐标 / 玩家名） | Sanitizer 强制扫描，命中阻塞导出 |
+| 版本不兼容（1.20 skill 用在 1.21） | bundle.yaml 声明版本，导入时强制校验 |
+| 错误经验被广泛分发（坏 feedback） | 导入 feedback 同样降权，需本地多次命中才升 confidence |
+| 同名覆盖本地正确流程 | 本地 override，shared 仅作 fallback |
+
+**产出：`src/bundle/exporter.py`, `src/bundle/importer.py`, `src/bundle/sanitizer.py`, `src/bundle/version_check.py`, `src/bundle/quarantine.py`（Deferred）**
+
 ### Phase 9: 集成测试与性能验证 (3-5 天)
 
 - [ ] 端到端回归测试：采集、合成、建造、战斗
+- [ ] **SocketBridge 工具覆盖测试**：ToolCallParser 必须能正确分派 SocketBridge 的全部公开方法；新增 SocketBridge 方法时自动 schema 反射要能覆盖
+- [ ] **SafetyMonitor 测试**：构造 health<5 / lava / hostile 距离<3 场景，验证中断标志生效且 plan 中的 LLM 调用被 `asyncio.cancel()`
+- [ ] **事件双通道测试**：`@bridge.on("chat")` 入口必须经 `Conversation.queue()` 再进 InputRouter，不直接进 plan；`spawn` / `end` / `error` / `kicked` 事件能触发对应重连/终止逻辑
 - [ ] MemoryLayer 回归测试：写入、检索、压缩、命名空间隔离、schema migration
 - [ ] **记忆 determinism 测试**：fixture L1 NDJSON → 多次运行 reflection → L2 候选必须稳定（剔除时间戳后 content hash 一致）
 - [ ] **记忆老化测试**：TTL 过期、confidence half-life 衰减、`invalid_when` 触发——用快进时间夹具验证 `MemoryEvaluator` 行为
 - [ ] **Forget 持久性测试**：`forget(X)` → 同 L1 trace 重放 reflection → 不得回写 X；`unforget(X)` 后恢复
 - [ ] **Conflict resolution 测试**：构造静态/世界事实冲突、source 权重冲突、recency 冲突场景，验证 evaluator 决策路径
 - [ ] **Working Memory 测试**：crash-recovery 快照写入/读回/失效场景；`get_working_context()` 在 token 预算下的截断行为
+- [ ] **Scope 隔离测试**：`scope: bot` skill 含坐标字面量必须被 scope_validator 拒绝；`recall()` 必须按 `world > bot > minecraft` 顺序返回；命名冲突时 world override bot
+- [ ] **InputRouter 意图分类测试**（关键，防误执行）：
+  - 问句类（"你在哪 / 你怎么死的 / 现在几点"）→ 必须分类为 `question`，且 LLM 调用必须 `tool_choice="none"`，**不得**产生任何 action_call
+  - 元命令类（`remember X / forget X / save skill X / unforget X`）→ 必须分类为 `meta_command`，走 `MemoryService` 路径，**不得**进 ActionExecutor
+  - 反馈类（`wrong / don't / 不对 / 别 / too risky`）→ 必须分类为 `feedback`，生成 candidate 时**必须关联最近 N 个 action_call**
+  - 行动类（"挖 10 个橡木 / 去基地 / 造一个箱子"）→ 必须分类为 `action_command`，主 LLM 应产 tool call
+  - 歧义类（`base` 单独、`mine` 单独等）→ 必须分类为 `ambiguous`，AgentLoop 必须触发反问而非直接行动
+  - 多语言：中文 / 英文表都需覆盖
+  - 审计：L1 `player_msg.intent` 字段必须正确写入
 - [ ] TaskTree 回归测试：任务复盘、模板检索、candidate skill 晋升、**与 episodic 不双写**
 - [ ] KnowledgeGraph 回归测试：配方查询、工具链校验、采集路径查询
 - [ ] World Facts 回归测试：世界事实写入/过期、库存事实复用、静态知识冲突处理
@@ -731,7 +933,7 @@ Week 3:  Phase 4a (文件型记忆 MEMORY.md) + Phase 5a (文件型动作图 ski
 Week 4:  Phase 6 (TaskTree Lite) + Phase 7b (World Facts / Semantic Memory) + 集成加固
 Week 5:  Phase 3b (SQLite/结构化索引，按需) + Phase 4b (FAISS 检索，按需) + Phase 5b (图数据库，按需)
 Week 6:  Phase 9 (集成测试与性能验证)
-Deferred: Phase 8 (多 bot / NPC 控制迁移，按需)
+Deferred: Phase 8 (多 bot / NPC 控制迁移，按需) + Phase 8b (通用 Skill / Memory Bundle 分享，按需)
 ```
 
 **总计：约 6 周。Phase 3 先收敛接口和 policy，Phase 7a 提前提供高性价比的静态知识校验，Phase 4a/5a 用文件系统跑通记忆和 skill，Phase 6/7b 聚焦单 bot 的任务复盘和世界事实组合，降低过早抽象的返工风险。3b/4b/5b/8 推迟到规模真正需要时引入。**
@@ -751,13 +953,15 @@ mindcraft-py/
 │   ├── llm/
 │   │   ├── prompter.py        # LLM 调用统一接口
 │   │   ├── message_builder.py # Prompt 拼接
-│   │   └── tool_parser.py     # Tool call 解析
+│   │   ├── tool_parser.py     # Tool call 解析（LLM 输出端）
+│   │   └── input_router.py    # Phase 1: 玩家输入意图分类（LLM 输入端，五类分发）
 │   ├── agent/
-│   │   ├── core.py            # Agent 主循环
-│   │   ├── models.py          # Pydantic 数据模型
-│   │   ├── executor.py        # 动作执行器
-│   │   ├── conversation.py    # 对话管理
-│   │   └── modes.py           # 行为模式状态机
+│   │   ├── core.py            # Agent 主循环 (observe → route → plan → execute → feedback)
+│   │   ├── models.py          # Pydantic 数据模型（BotState 对齐 SocketBridge.observe()）
+│   │   ├── executor.py        # ActionExecutor：BridgeCall → SocketBridge 分派
+│   │   ├── conversation.py    # 对话管理 + intent 字段记录
+│   │   ├── modes.py           # 行为模式状态机（参考 observer_mode.py 模式）
+│   │   └── safety_monitor.py  # Phase 2: 高频 observe 轮询 + 中断标志
 │   ├── memory/
 │   │   ├── models.py          # MemoryRecord / MemoryQuery / MemoryResult / WorkingContext
 │   │   ├── store.py           # MemoryStore 接口
@@ -774,7 +978,8 @@ mindcraft-py/
 │   ├── skills/
 │   │   ├── loader.py          # Phase 5a: Skill 文件解析（YAML frontmatter + markdown）
 │   │   ├── store.py           # Phase 5a: ProceduralMemoryAdapter / SkillStore
-│   │   └── matcher.py         # Phase 5a: 触发词 + 状态条件匹配器
+│   │   ├── matcher.py         # Phase 5a: 触发词 + 状态条件匹配器（scope 路由）
+│   │   └── scope_validator.py # Phase 5a: scope=bot skill 不得含坐标 / 命名实体
 │   ├── retrieval/
 │   │   ├── faiss_index.py     # Phase 4b: 稠密向量索引（可推迟）
 │   │   ├── bm25_index.py      # Phase 4b: 稀疏关键词索引（可推迟）
@@ -786,9 +991,15 @@ mindcraft-py/
 │   │   └── world_facts.py     # Phase 7b: 运行时世界事实写入 MemoryLayer
 │   ├── task/
 │   │   └── task_tree.py       # Phase 6: TaskTree Lite / 任务复盘
-│   └── npc/
-│       ├── manager.py         # Deferred: 多 bot 管理
-│       └── controller.py      # Deferred: 指令转发
+│   ├── npc/
+│   │   ├── manager.py         # Deferred: 多 bot 管理
+│   │   └── controller.py      # Deferred: 指令转发
+│   └── bundle/                # Phase 8b: 通用 Skill / Memory 分享（Deferred）
+│       ├── exporter.py        # 打包 universal/ 为 bundle
+│       ├── importer.py        # 导入 bundle 到本地 universal/，强制 quarantine
+│       ├── sanitizer.py       # 扫描坐标 / 玩家名 / 命名实体，阻塞泄漏
+│       ├── version_check.py   # Minecraft 版本 / mod / minecraft-data 版本比对
+│       └── quarantine.py      # 高风险 skill 默认 disabled，玩家显式 enable
 ├── tests/
 │   ├── test_llm/
 │   ├── test_agent/
@@ -796,22 +1007,27 @@ mindcraft-py/
 │   ├── test_retrieval/
 │   └── test_integration/
 ├── bots/<name>/               # 每个 bot 的数据持久化
-│   ├── memory/
-│   │   ├── MEMORY.md           # 记忆索引
-│   │   ├── .tombstones.json    # Phase 3: forget deny-list（防 reflection 回写）
-│   │   ├── episodic/           # Phase 3: L2 episodic summary（非任务的 session 摘要）
-│   │   ├── places/             # 命名位置
-│   │   ├── feedback/           # 经验教训
-│   │   └── facts/              # 世界事实（Phase 7b 写入；属 semantic dynamic backend）
-│   ├── sessions/               # Phase 3: L1 raw trace，append-only NDJSON
-│   │   └── 2026-05-11/
-│   │       ├── 1430-mining.ndjson
-│   │       └── 1430-mining.working_snapshot.json  # 可选 crash-recovery 快照
-│   ├── skills/
-│   │   ├── mine_diamonds.md    # 技能模板
-│   │   └── build_shelter.md
-│   └── tasks/
-│       └── build_base_run.json # Phase 6: 任务复盘导出
+│   ├── universal/              # scope=bot —— 跨世界、可分享（Phase 8b 打包）
+│   │   ├── MEMORY.md           # 通用记忆索引
+│   │   ├── memory/
+│   │   │   └── feedback/       # 机制类经验教训（"夜间无盾下洞危险"）
+│   │   └── skills/             # 通用流程模板，不含坐标 / 命名实体
+│   │       ├── mine_diamonds.md
+│   │       └── build_shelter.md
+│   └── worlds/<world_id>/      # scope=world —— 仅本世界（无 world_id 时默认 default/）
+│       ├── memory/
+│       │   ├── MEMORY.md           # 此世界的索引
+│       │   ├── .tombstones.json    # Phase 3: forget deny-list
+│       │   ├── episodic/           # Phase 3: L2 episodic summary
+│       │   ├── places/             # 命名位置（基地、矿点）
+│       │   └── facts/              # 世界事实（玩家关系、传送门、危险区）
+│       ├── sessions/               # Phase 3: L1 raw trace，按天分目录
+│       │   └── 2026-05-11/
+│       │       ├── 1430-mining.ndjson
+│       │       └── 1430-mining.working_snapshot.json
+│       ├── skills/                 # 少数世界特定 skill（如基地巡逻路线）
+│       └── tasks/
+│           └── build_base_run.json # Phase 6: 任务复盘导出
 ├── data/
 │   └── minecraft/<version>/    # Phase 7a: minecraft-data 导出的结构化知识
 │       ├── items.json
@@ -821,6 +1037,8 @@ mindcraft-py/
 │       └── foods.json
 ├── scripts/
 │   └── export_minecraft_data.js # Phase 7a: 导出 minecraft-data JSON
+├── config/
+│   └── intent_keywords.yaml   # Phase 1: InputRouter 关键词表（中/英分表，热加载）
 ├── node_modules/              # Node.js 依赖（socket_server.js）
 │   ├── skills.js              # 动作执行（退化版）
 │   └── world.js               # 世界状态查询

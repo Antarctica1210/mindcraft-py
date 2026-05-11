@@ -38,23 +38,6 @@ class Position:
 
 
 @dataclass
-class BotState:
-    """Snapshot of the bot's current state, gathered each observation cycle."""
-    health: float = 20.0
-    food: float = 20.0
-    position: Position = field(default_factory=Position)
-    gamemode: str = "survival"
-    time_of_day: str = ""
-    biome: str = ""
-    entities_nearby: str = ""
-    blocks_nearby: str = ""
-
-    @property
-    def is_alive(self) -> bool:
-        return self.health > 0
-
-
-@dataclass
 class InventoryItem:
     """A single item in the bot's inventory."""
     name: str = "unknown"
@@ -69,6 +52,39 @@ class EntityInfo:
     entity_type: str = ""
     position: Position | None = None
     distance: float = 0.0
+    health: float = 0.0
+
+
+@dataclass
+class BotState:
+    """Snapshot of the bot's current state, gathered each observation cycle.
+
+    Schema aligned with ``SocketBridge.observe()`` + parallel inventory /
+    entities / nearby-block queries. The string summary fields
+    (``entities_nearby`` / ``blocks_nearby`` / ``players_nearby``) come
+    straight from ``observe()`` and are suited for prompt injection; the
+    structured fields below them carry the typed details for tools,
+    SafetyMonitor, and rule-based modes.
+    """
+    # ── Direct from bridge.observe() ────────────────────────────────
+    health: float = 20.0
+    food: float = 20.0
+    position: Position = field(default_factory=Position)
+    gamemode: str = "survival"
+    time_of_day: str = ""
+    biome: str = ""
+    entities_nearby: str = ""      # human-readable summary
+    blocks_nearby: str = ""        # human-readable summary
+    players_nearby: str = ""       # human-readable summary
+    # ── Parallel-fetched structured details ─────────────────────────
+    inventory: list[InventoryItem] = field(default_factory=list)
+    entities: list[EntityInfo] = field(default_factory=list)
+    nearby_block_types: list[str] = field(default_factory=list)
+    current_goal: str | None = None
+
+    @property
+    def is_alive(self) -> bool:
+        return self.health > 0
 
 
 @dataclass
