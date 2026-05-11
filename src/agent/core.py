@@ -17,10 +17,12 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from llm import InputIntent, InputRouter, Prompter
 from llm.message_builder import CommandDef, ConversationTurn, MessageBuilder
+from llm.prompter import LLMResponse
 from llm.tool_parser import parse_response
 
 from .conversation import ConversationManager
@@ -30,6 +32,26 @@ from .modes import BehaviorMode, ModeEvaluator
 from .safety_monitor import SafetyMonitor
 
 logger = logging.getLogger(__name__)
+
+_AFFIRMATIVE: frozenset[str] = frozenset({
+    "yes", "yeah", "y", "yep", "sure", "ok", "okay", "alright",
+    "of course", "go ahead", "yea", "yup", "mhm", "please",
+})
+_NEGATIVE: frozenset[str] = frozenset({
+    "no", "nope", "nah", "n", "no thanks", "not now",
+})
+
+
+@dataclass
+class PendingTask:
+    """Tracks a failed command so the bot can resume with player guidance."""
+
+    command_name: str
+    command_args: list[Any]
+    goal: str          # what the player originally asked for
+    player_name: str   # who to follow for guidance
+    failed_reason: str  # why the command failed
+
 
 # ── Agent ───────────────────────────────────────────────────────────
 
@@ -72,10 +94,15 @@ class Agent:
         self._bridge: Any = None
         self._history: list[ConversationTurn] = []
         self._last_sender: str | None = None
+        self._last_message: str = ""
         self._shut_up: bool = False
         self._running: bool = False
         # Track recent action_call results for feedback intent (Phase 4 hook)
         self._recent_actions: list[dict[str, Any]] = []
+
+        # Error recovery — guided task resumption
+        self._pending_task: PendingTask | None = None
+        self._guided_loop_task: asyncio.Task[None] | None = None
 
         # Metrics
         self._tick_count: int = 0
@@ -229,16 +256,19 @@ class Agent:
         bot_state: BotState,
         *,
         tool_choice: str | None = None,
-    ) -> str:
+    ) -> LLMResponse:
         """Build the prompt and query the LLM for the next action.
 
         Args:
             bot_state: Current state snapshot from ``observe()``.
             tool_choice: Override tool selection. Pass ``"none"`` to forbid
                 tool calls (used for question / chitchat intents).
+
+        Returns:
+            LLMResponse with content and any tool_calls.
         """
         if self._prompter is None or self._msg_builder is None:
-            return ""
+            return LLMResponse(content="", model="")
 
         stats = self._msg_builder.format_stats(
             health=bot_state.health,
@@ -274,7 +304,7 @@ class Agent:
         )
 
         # Wrap the LLM call so SafetyMonitor can cancel us on danger.
-        llm_task: asyncio.Task[Any] = asyncio.ensure_future(
+        llm_task: asyncio.Task[LLMResponse] = asyncio.ensure_future(
             self._prompter.send_request(
                 turns=messages[1:],  # exclude system message (already in turns)
                 system_message=system_prompt,
@@ -287,12 +317,12 @@ class Agent:
             response = await llm_task
         except asyncio.CancelledError:
             logger.warning("LLM call cancelled (safety interrupt)")
-            return ""
+            return LLMResponse(content="", model=self._prompter.model)
         finally:
             if self._safety:
                 self._safety.clear_cancellables()
 
-        return response.content
+        return response
 
     # ── Execution ───────────────────────────────────────────────────
 
@@ -323,6 +353,19 @@ class Agent:
         if max_responses is None:
             max_responses = self._config.max_commands
 
+        logger.info(">>> %s: %s", source, message)
+        self._last_message = message
+
+        # ── 0. Check for yes/no when we have a pending guided task ───
+        if self._pending_task is not None:
+            msg_lower = message.strip().lower()
+            if msg_lower in _AFFIRMATIVE:
+                await self._start_guided_task(source)
+                return False
+            if msg_lower in _NEGATIVE:
+                await self._cancel_pending_task()
+                return False
+
         # ── 1. Classify intent ────────────────────────────────────────
         intent = InputIntent.ACTION_COMMAND
         matched: str | None = None
@@ -335,9 +378,11 @@ class Agent:
             source, intent.value, matched,
         )
 
-        # History gets the user turn regardless of intent — it's the truth
-        # source for both Conversation and (later) Phase 3 episodic L1 NDJSON.
-        self._history.append(ConversationTurn(role="user", content=message))
+        # Include the sender's name so the LLM can reference them in
+        # commands like followPlayer / goToPlayer.
+        self._history.append(
+            ConversationTurn(role="user", content=f"{source}: {message}"),
+        )
         self._last_sender = source
 
         # ── 2. Dispatch by intent ─────────────────────────────────────
@@ -378,25 +423,43 @@ class Agent:
                 logger.warning("Plan loop halted: safety interrupt active")
                 break
 
-            llm_output = await self.plan(bot_state, tool_choice=tool_choice)
-            if not llm_output.strip():
+            # Flush behavior log so the LLM sees what modes have been doing
+            # (mirrors JS behavior_log flush before each promptConvo call).
+            b_log = self._modes.flush_behavior_log()
+            if b_log:
+                self._history.append(
+                    ConversationTurn(role="system", content=f"Recent behaviors:\n{b_log}"),
+                )
+
+            llm_response = await self.plan(bot_state, tool_choice=tool_choice)
+            if not llm_response.content.strip():
                 logger.debug("Empty LLM response — ending turn")
                 break
 
+            logger.info("<<< %s", llm_response.content.strip())
+
             self._history.append(
-                ConversationTurn(role="assistant", content=llm_output),
+                ConversationTurn(role="assistant", content=llm_response.content),
             )
 
             # Question / chitchat path: just speak the reply, no commands.
             if not use_tools:
-                await self._send_chat(llm_output.strip())
+                await self._send_chat(llm_response.content.strip())
                 break
 
-            parsed = parse_response(llm_output)
+            parsed = parse_response(
+                llm_response.content,
+                tool_calls=llm_response.tool_calls,
+            )
             if not parsed.has_command:
                 # Action path but model chose plain text — speak it and stop.
-                await self._send_chat(llm_output.strip())
+                await self._send_chat(llm_response.content.strip())
                 break
+
+            # Speak the pre-command text so the player knows what the bot
+            # is doing (mirrors JS routeResponse before executeCommand).
+            if parsed.text.strip():
+                await self._send_chat(parsed.text.strip())
 
             for cmd in parsed.commands:
                 if self._shut_up:
@@ -409,12 +472,24 @@ class Agent:
                 used_command = True
                 self._record_action(cmd.name, cmd.args, result)
 
-                if result:
-                    self._history.append(
-                        ConversationTurn(role="system", content=result),
-                    )
-                else:
+                if result is None:
                     break  # no feedback = stop chaining
+
+                self._history.append(
+                    ConversationTurn(role="system", content=result),
+                )
+
+                # If the command failed, switch to text-only so the LLM
+                # speaks to the player asking for guidance.
+                if "failed" in result:
+                    self._pending_task = PendingTask(
+                        command_name=cmd.name,
+                        command_args=list(cmd.args),
+                        goal=self._last_message,
+                        player_name=self._last_sender or "player",
+                        failed_reason=result,
+                    )
+                    tool_choice = "none"
 
         self._history = self._convo_mgr.compress_history(self._history)
         return used_command
@@ -456,6 +531,126 @@ class Agent:
             f"Did you want me to do something with '{message}', "
             "or are we chatting? Try a verb (e.g. 'go ...', 'remember ...')."
         )
+
+    # ── Guided task recovery ─────────────────────────────────────────
+
+    async def _start_guided_task(self, player_name: str) -> None:
+        """Player said yes — follow them and periodically retry the pending task."""
+        pt = self._pending_task
+        if pt is None or self._bridge is None:
+            return
+
+        self._pending_task = None  # consumed
+        logger.info(
+            "Guided task: following %s, retrying !%s every few seconds",
+            player_name, pt.command_name,
+        )
+
+        await self._send_chat(
+            "Okay, following you! Lead me to what I need."
+        )
+
+        # Cancel any previous guided loop
+        self._cancel_guided_loop()
+
+        self._guided_loop_task = asyncio.create_task(
+            self._run_guided_loop(pt, player_name)
+        )
+
+    async def _cancel_pending_task(self) -> None:
+        """Player said no — ask what they want to do next."""
+        self._pending_task = None
+        self._cancel_guided_loop()
+
+        if self._prompter and self._msg_builder and self._bridge:
+            await self._send_chat(
+                "No problem! What would you like me to do instead?"
+            )
+
+    def _cancel_guided_loop(self) -> None:
+        if self._guided_loop_task and not self._guided_loop_task.done():
+            self._guided_loop_task.cancel()
+        self._guided_loop_task = None
+
+    async def _run_guided_loop(
+        self, pt: PendingTask, player_name: str,
+    ) -> None:
+        """Follow player and retry the failed command every few seconds."""
+        if self._bridge is None:
+            return
+
+        # Start following the player
+        try:
+            await self._executor.execute(
+                "followPlayer", [player_name, 4],
+            )
+        except Exception:
+            logger.exception("followPlayer failed in guided loop")
+
+        deadline = time.time() + 120  # 2 min timeout
+        check_interval = 4  # seconds between retries
+        last_status = time.time()
+
+        try:
+            while self._running and time.time() < deadline:
+                await asyncio.sleep(check_interval)
+
+                # Quick observe to refresh bot state
+                bot_state = await self._observe_quick()
+                if not bot_state.is_alive:
+                    await self._send_chat("I died! Can't complete the task.")
+                    return
+
+                # Retry the failed command
+                result = await self.execute_command(
+                    pt.command_name, pt.command_args,
+                )
+
+                if result is None or "failed" not in result:
+                    # Stop following, then re-trigger the plan loop with
+                    # the original goal to continue the multi-step task.
+                    try:
+                        if self._bridge:
+                            await self._bridge.stop()
+                    except Exception:
+                        pass
+                    await self._send_chat(
+                        f"Found it! Now continuing with: {pt.goal}"
+                    )
+                    self._history.append(ConversationTurn(
+                        role="user",
+                        content=f"{player_name}: {pt.goal}",
+                    ))
+                    await self._run_plan_loop(
+                        max_responses=self._config.max_commands,
+                        use_tools=True,
+                    )
+                    return
+
+                # Still failing — send periodic status updates
+                now = time.time()
+                if now - last_status > 15:
+                    await self._send_chat(
+                        "Still following you... I haven't found what I need yet."
+                    )
+                    last_status = now
+
+            # Timeout
+            await self._send_chat(
+                "I've been following for a while but couldn't find what I "
+                "needed. What should I do next?"
+            )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Guided loop error")
+        finally:
+            # Stop following
+            try:
+                if self._bridge:
+                    await self._bridge.stop()
+            except Exception:
+                pass
 
     async def _send_chat(self, text: str) -> None:
         """Speak ``text`` through the bridge; quiet on failure."""

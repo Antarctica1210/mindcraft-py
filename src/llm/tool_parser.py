@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 #   Keyword:    !moveTo(x=642, y=71, z=481)
 #   Mixed:      !collectBlocks("oak_log", count=5)
 # Captures: group 1 = command name, group 2 = optional args string
-_SIMPLE_VAL = r'(?:-?\d+(?:\.\d+)?|true|false|"[^"]*")'
-_KW_VAL = r'(?:\w+=(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))'
+_SIMPLE_VAL = r'(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"|[^,)]+)'
+_KW_VAL = r'(?:\w+=(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"|[^,)]+))'
 _ARG = rf'(?:{_KW_VAL}|{_SIMPLE_VAL})'
 _COMMAND_PATTERN = re.compile(
     rf'!([\w:]+)'

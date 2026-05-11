@@ -6,6 +6,7 @@ Mirrors the JS ``executeCommand()`` flow in ``src/agent/commands/index.js``.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -40,13 +41,19 @@ class ActionExecutor:
             logger.warning("Unknown command: !%s", name)
             return f"Command !{name} does not exist."
         try:
-            result = handler(self._bridge, *args)
+            # Map positional args to handler parameter names so ordering
+            # doesn't matter — tool_calls JSON key order can differ from
+            # the Python function signature.
+            sig = inspect.signature(handler)
+            handler_params = list(sig.parameters.keys())[1:]  # skip bridge
+            kwargs = dict(zip(handler_params, args))
+            result = handler(self._bridge, **kwargs)
             if hasattr(result, "__await__"):
                 result = await result
             return str(result) if result is not None else None
-        except Exception:
+        except Exception as exc:
             logger.exception("Command !%s failed", name)
-            return f"Command !{name} failed with an error."
+            return f"Command !{name} failed: {exc}"
 
     def has(self, name: str) -> bool:
         return name.lstrip("!") in self._handlers

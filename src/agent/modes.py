@@ -50,11 +50,13 @@ class ModeState:
     # Per-mode metrics
     _stuck_since: float = 0.0
     _prev_position: tuple[float, float, float] = (0, 0, 0)
+    _logged_stuck: bool = False  # only log once per stuck episode
 
     def frame(self, position: tuple[float, float, float]) -> None:
         """Called once per tick to update mode-specific state."""
         if position != self._prev_position:
             self._stuck_since = 0.0
+            self._logged_stuck = False
         self._prev_position = position
 
 
@@ -67,6 +69,7 @@ class ModeEvaluator:
         }
         self._active_mode: BehaviorMode | None = None
         self._frame_count: int = 0
+        self._behavior_log: list[str] = []
 
     def active_mode(self) -> BehaviorMode | None:
         return self._active_mode
@@ -74,12 +77,25 @@ class ModeEvaluator:
     def is_active(self, mode: BehaviorMode) -> bool:
         return self._active_mode == mode
 
+    def log_behavior(self, message: str) -> None:
+        """Record a behavior event for the next LLM call."""
+        self._behavior_log.append(message)
+
+    def flush_behavior_log(self) -> str:
+        """Return and clear the behavior log buffer (mirrors JS flushBehaviorLog)."""
+        if not self._behavior_log:
+            return ""
+        log = "\n".join(self._behavior_log)
+        self._behavior_log.clear()
+        return log
+
     def activate(self, mode: BehaviorMode) -> None:
         """Activate a mode, pausing lower-priority ones."""
         self._active_mode = mode
         state = self._states[mode]
         state.active = True
         state.paused = False
+        self.log_behavior(f"{mode.value} activated")
         priority_idx = MODE_PRIORITY.index(mode)
         for i, m in enumerate(MODE_PRIORITY):
             if i > priority_idx:
@@ -90,6 +106,7 @@ class ModeEvaluator:
         self._states[mode].active = False
         if self._active_mode == mode:
             self._active_mode = None
+        self.log_behavior(f"{mode.value} released")
         priority_idx = MODE_PRIORITY.index(mode)
         for i, m in enumerate(MODE_PRIORITY):
             if i > priority_idx:
@@ -105,6 +122,7 @@ class ModeEvaluator:
             if not state.on or state.paused:
                 continue
             if await self._evaluate(mode, bot_state, bridge):
+                self.log_behavior(f"{mode.value} triggered on tick {self._frame_count}")
                 return mode
         return None
 
@@ -146,6 +164,8 @@ class ModeEvaluator:
             return False
         stuck_duration = time.time() - state._stuck_since
         if stuck_duration > 20:
-            logger.warning("Bot stuck for %.0fs — unstuck triggered", stuck_duration)
+            if not state._logged_stuck:
+                state._logged_stuck = True
+                logger.warning("Bot stuck for %.0fs — unstuck triggered", stuck_duration)
             return True
         return False
