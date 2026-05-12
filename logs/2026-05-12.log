@@ -398,3 +398,149 @@ ConnectionResetError: [Errno 54] Connection reset by peer
 2026-05-12 16:45:39 [agent.core] WARNING: LLM call cancelled (safety interrupt)
 2026-05-12 16:45:39 [agent.core] INFO: <<< (empty)
 2026-05-12 16:45:39 [main] INFO: Goodbye.
+2026-05-12 17:18:19 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-12.log
+2026-05-12 17:18:19 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 17:18:19 [main] INFO:   Mindcraft-Py — LLM-driven Minecraft Bot
+2026-05-12 17:18:19 [main] INFO:   LLM: openai/qwen/qwen3.6-35b-a3b
+2026-05-12 17:18:19 [main] INFO:   MC Server: 127.0.0.1:55916
+2026-05-12 17:18:19 [main] INFO:   Bot: mindcraft-bot
+2026-05-12 17:18:19 [main] INFO:   Socket Bridge: tcp://127.0.0.1:9090
+2026-05-12 17:18:19 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 17:18:20 [main] INFO: No socket server on 127.0.0.1:9090 — starting subprocess…
+2026-05-12 17:18:20 [main] INFO: [socket-server] [socket-server] Listening on tcp://127.0.0.1:9090
+2026-05-12 17:18:20 [main] INFO: Socket server ready on port 9090
+2026-05-12 17:18:20 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-12 17:18:20 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-12 17:18:20 [main] INFO: Creating bot 'mindcraft-bot' on 127.0.0.1:55916 …
+2026-05-12 17:18:23 [main] INFO: Bot connected as mindcraft-bot
+2026-05-12 17:18:23 [skills.registry] INFO: SkillRegistry loaded: 10 skills
+2026-05-12 17:18:23 [knowledge.knowledge_graph] INFO: KnowledgeGraph loaded: 1415 items, 1105 blocks, 1606 recipes, 151 entities, 40 foods
+2026-05-12 17:18:23 [agent.core] INFO: KnowledgeGraph loaded for mindcraft-bot
+2026-05-12 17:18:23 [agent.safety_monitor] INFO: SafetyMonitor started (poll=0.25s, min_health=5.0, hostile<3.0m)
+2026-05-12 17:18:23 [agent.core] INFO: Agent mindcraft-bot started (model=openai/qwen/qwen3.6-35b-a3b, router=on, safety=on)
+2026-05-12 17:18:23 [main] INFO: Bot is ready. Waiting for chat messages (Ctrl+C to stop).
+2026-05-12 17:18:23 [main] INFO: Connected to 127.0.0.1:55916 as mindcraft-bot (LLM: openai/qwen/qwen3.6-35b-a3b)
+2026-05-12 17:18:41 [agent.core] INFO: >>> Wilson: come to me
+2026-05-12 17:18:41 [agent.core] INFO: InputRouter: source=Wilson intent=action_command match='^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b'
+2026-05-12 17:18:55 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:18:55 [agent.core] INFO: <<< tools=action:goToPlayer
+2026-05-12 17:19:11 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:19:11 [agent.core] INFO: <<< tools=action:goToPlayer
+2026-05-12 17:19:28 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:19:28 [agent.core] INFO: <<< tools=action:goToPlayer
+2026-05-12 17:19:45 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:19:45 [agent.core] INFO: <<< tools=action:stop
+2026-05-12 17:20:00 [agent.core] INFO: >>> Wilson: craft a bed
+2026-05-12 17:20:00 [agent.core] INFO: InputRouter: source=Wilson intent=action_command match='^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b'
+2026-05-12 17:20:00 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:20:00 [agent.core] INFO: <<< tools=action:goToPlayer
+2026-05-12 17:20:15 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:20:15 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 17:20:15 [agent.executor] ERROR: Command !getCraftingPlan failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 84, in execute
+    result = await result
+             ^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 384, in _get_crafting_plan
+    return await bridge.get_crafting_plan(target_item, quantity)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 334, in get_crafting_plan
+    return await self._request("get_crafting_plan", {
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "target_item": target_item, "quantity": quantity,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    })
+    ^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 409, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+mc.socket_bridge.SocketBridgeError: Crafting plan failed: Cannot read properties of null (reading 'itemsByName')
+2026-05-12 17:20:31 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:20:31 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 17:20:31 [agent.executor] ERROR: Command !getCraftingPlan failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 84, in execute
+    result = await result
+             ^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 384, in _get_crafting_plan
+    return await bridge.get_crafting_plan(target_item, quantity)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 334, in get_crafting_plan
+    return await self._request("get_crafting_plan", {
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "target_item": target_item, "quantity": quantity,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    })
+    ^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 409, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+mc.socket_bridge.SocketBridgeError: Crafting plan failed: Cannot read properties of null (reading 'itemsByName')
+2026-05-12 17:20:47 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:20:47 [agent.core] INFO: <<< tools=action:craftRecipe
+2026-05-12 17:20:47 [agent.executor] ERROR: Command !craftRecipe failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 84, in execute
+    result = await result
+             ^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 305, in _craft_recipe
+    return await bridge.craft_recipe(recipe_name, num)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 264, in craft_recipe
+    return await self._request("craft_recipe", {"recipe_name": recipe_name, "num": num})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 409, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+mc.socket_bridge.SocketBridgeError: name.toLowerCase is not a function
+2026-05-12 17:21:04 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 17:21:04 [agent.core] INFO: <<< tools=action:craftRecipe
+2026-05-12 17:21:04 [agent.executor] ERROR: Command !craftRecipe failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 84, in execute
+    result = await result
+             ^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 305, in _craft_recipe
+    return await bridge.craft_recipe(recipe_name, num)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 264, in craft_recipe
+    return await self._request("craft_recipe", {"recipe_name": recipe_name, "num": num})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 409, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+mc.socket_bridge.SocketBridgeError: name.toLowerCase is not a function
+2026-05-12 17:21:14 [main] INFO: Interrupted — shutting down…
+2026-05-12 17:21:14 [agent.safety_monitor] INFO: SafetyMonitor stopped
+2026-05-12 17:21:14 [mc.socket_bridge] ERROR: Read error in socket bridge
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 420, in _read_loop
+    line = await self._reader.readline()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 562, in readline
+    line = await self.readuntil(sep)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 677, in readuntil
+    await self._wait_for_data('readuntil')
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 539, in _wait_for_data
+    await self._waiter
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/selector_events.py", line 1009, in _read_ready__data_received
+    data = self._sock.recv(self.max_size)
+ConnectionResetError: [Errno 54] Connection reset by peer
+2026-05-12 17:21:14 [agent.core] WARNING: LLM call cancelled (safety interrupt)
+2026-05-12 17:21:14 [agent.core] INFO: <<< (empty)
+2026-05-12 17:21:14 [agent.core] WARNING: LLM call cancelled (safety interrupt)
+2026-05-12 17:21:14 [agent.core] INFO: <<< (empty)
+2026-05-12 17:21:14 [main] INFO: Goodbye.
