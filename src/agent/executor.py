@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -15,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 COMMAND_DOCS: dict[str, dict[str, Any]] = {}
 """Per-command documentation populated by register_builtins()."""
+
+
+def _to_snake(name: str) -> str:
+    """Convert common tool-call camelCase names to Python handler snake_case."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
 def _failure_hint(command_name: str, error: str) -> str | None:
@@ -66,7 +72,12 @@ class ActionExecutor:
         """Attach the SocketBridge instance used to dispatch commands."""
         self._bridge = bridge
 
-    async def execute(self, command_name: str, args: list[Any]) -> str | None:
+    async def execute(
+        self,
+        command_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any] | None = None,
+    ) -> str | None:
         name = command_name.lstrip("!")
         handler = self._handlers.get(name)
         if handler is None:
@@ -78,8 +89,18 @@ class ActionExecutor:
             # the Python function signature.
             sig = inspect.signature(handler)
             handler_params = list(sig.parameters.keys())[1:]  # skip bridge
-            kwargs = dict(zip(handler_params, args))
-            result = handler(self._bridge, **kwargs)
+            call_kwargs: dict[str, Any] = {}
+            for key, value in (kwargs or {}).items():
+                snake = _to_snake(key)
+                if key in handler_params:
+                    call_kwargs[key] = value
+                elif snake in handler_params:
+                    call_kwargs[snake] = value
+                else:
+                    call_kwargs[key] = value
+            if args:
+                call_kwargs.update(dict(zip(handler_params, args)))
+            result = handler(self._bridge, **call_kwargs)
             if hasattr(result, "__await__"):
                 result = await result
             return str(result) if result is not None else None

@@ -51,6 +51,32 @@ export const WOOL_COLORS = [
     'black'
 ]
 
+export function initMinecraftData(version = null) {
+    const resolvedVersion = version || mc_version || settings.minecraft_version;
+    if (!resolvedVersion || resolvedVersion === "auto") {
+        if (mcdata) return mcdata;
+        throw new Error("Minecraft data version is not initialized yet.");
+    }
+    if (mcdata && mc_version === resolvedVersion && Item) {
+        return mcdata;
+    }
+    mc_version = resolvedVersion;
+    mcdata = minecraftData(mc_version);
+    Item = prismarine_items(mc_version);
+    return mcdata;
+}
+
+export function ensureMinecraftData(version = null) {
+    if (!mcdata || !Item || (version && version !== mc_version)) {
+        return initMinecraftData(version);
+    }
+    return mcdata;
+}
+
+export function getMinecraftData(version = null) {
+    return ensureMinecraftData(version);
+}
+
 
 export function initBot(username) {
     const options = {
@@ -124,9 +150,7 @@ export function initBot(username) {
     });
 
     bot.once('login', () => {
-        mc_version = bot.version;
-        mcdata = minecraftData(mc_version);
-        Item = prismarine_items(mc_version);
+        initMinecraftData(bot.version);
     });
 
     return bot;
@@ -154,6 +178,7 @@ export function mustCollectManually(blockName) {
 }
 
 export function getItemId(itemName) {
+    ensureMinecraftData();
     let item = mcdata.itemsByName[itemName];
     if (item) {
         return item.id;
@@ -173,11 +198,13 @@ export function getItemId(itemName) {
  * and "bed" matches a bed variant.
  */
 export function fuzzyFindItem(itemName) {
+    ensureMinecraftData();
     if (!mcdata || !mcdata.itemsByName) return null;
     return _fuzzyFind(itemName, Object.keys(mcdata.itemsByName));
 }
 
 export function fuzzyFindBlock(blockName) {
+    ensureMinecraftData();
     if (!mcdata || !mcdata.blocksByName) return null;
     return _fuzzyFind(blockName, Object.keys(mcdata.blocksByName));
 }

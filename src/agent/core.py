@@ -54,6 +54,7 @@ class PendingTask:
 
     command_name: str
     command_args: list[Any]
+    command_kwargs: dict[str, Any] | None
     goal: str          # what the player originally asked for
     player_name: str   # who to follow for guidance
     failed_reason: str  # why the command failed
@@ -450,9 +451,14 @@ class Agent:
 
     # ── Execution ───────────────────────────────────────────────────
 
-    async def execute_command(self, command_name: str, args: list[Any]) -> str | None:
+    async def execute_command(
+        self,
+        command_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any] | None = None,
+    ) -> str | None:
         """Execute a parsed command and return feedback for the LLM history."""
-        return await self._executor.execute(command_name, args)
+        return await self._executor.execute(command_name, args, kwargs)
 
     # ── Message handling (mirrors agent.js handleMessage) ────────────
 
@@ -655,14 +661,22 @@ class Agent:
                     break
 
                 # Announce each step before executing
-                action_desc = _describe_action(cmd.name, cmd.args)
+                cmd_args = cmd.args
+                cmd_kwargs = getattr(cmd, "kwargs", None) or None
+                action_desc = _describe_action(
+                    cmd.name,
+                    cmd_args if cmd_args else list((cmd_kwargs or {}).values()),
+                )
                 await self._send_chat(action_desc)
 
-                result = await self._execute_agent_command(cmd.name, cmd.args)
+                result = await self._execute_agent_command(cmd.name, cmd_args, cmd_kwargs)
                 used_command = True
-                self._record_action(cmd.name, cmd.args, result)
+                self._record_action(cmd.name, cmd_args, result)
                 await self._record_event("action_result", {
-                    "command": cmd.name, "args": cmd.args, "result": result,
+                    "command": cmd.name,
+                    "args": cmd_args,
+                    "kwargs": cmd_kwargs,
+                    "result": result,
                 })
 
                 if result is None:
@@ -693,7 +707,9 @@ class Agent:
 
                 # ── Failure classification ───────────────────────────
                 is_fail = result and "FAILED:" in result
-                args_str = ",".join(str(a) for a in cmd.args)
+                args_str = ",".join(str(a) for a in cmd_args)
+                if not args_str and cmd_kwargs:
+                    args_str = ",".join(f"{k}={v}" for k, v in cmd_kwargs.items())
                 this_fail_key = (cmd.name, args_str) if is_fail else None
 
                 if _is_hard_failure(result):
@@ -701,7 +717,8 @@ class Agent:
                     await self._send_chat(f"Failed: {result}")
                     self._pending_task = PendingTask(
                         command_name=cmd.name,
-                        command_args=list(cmd.args),
+                        command_args=list(cmd_args),
+                        command_kwargs=dict(cmd_kwargs or {}),
                         goal=self._last_message,
                         player_name=self._last_sender or "player",
                         failed_reason=result,
@@ -750,23 +767,38 @@ class Agent:
         self._history = self._convo_mgr.compress_history(self._history)
         return used_command
 
-    async def _execute_agent_command(self, command_name: str, args: list[Any]) -> str | None:
+    async def _execute_agent_command(
+        self,
+        command_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any] | None = None,
+    ) -> str | None:
         """Handle commands that need Agent runtime state, else use executor."""
         name = command_name.lstrip("!")
+        values = args if args else list((kwargs or {}).values())
         if name == "setGoal":
-            goal = str(args[0]) if args else ""
+            goal = str((kwargs or {}).get("self_prompt", values[0] if values else ""))
             return await self._set_self_goal(goal)
         if name == "endGoal":
             return await self._end_self_goal()
         if name == "setMode":
-            mode_name = str(args[0]) if args else ""
-            on = _as_bool(args[1], default=True) if len(args) > 1 else True
+            mode_name = str((kwargs or {}).get("mode_name", values[0] if values else ""))
+            on_raw = (kwargs or {}).get("on", values[1] if len(values) > 1 else True)
+            on = _as_bool(on_raw, default=True)
             return self._modes.set_enabled(mode_name, on)
         if name == "modes":
             return self._modes.status_text()
         if name == "newAction":
-            prompt = str(args[0]) if args else self._last_message
+            prompt = str((kwargs or {}).get("code_prompt", values[0] if values else self._last_message))
             return await self._execute_dynamic_action(prompt)
+        if name == "getCraftingPlan":
+            target = str((kwargs or {}).get("target_item", values[0] if values else ""))
+            quantity = int((kwargs or {}).get("quantity", values[1] if len(values) > 1 else 1) or 1)
+            kg_plan = await self._get_knowledge_crafting_plan(target, quantity)
+            if kg_plan is not None:
+                return kg_plan
+        if name == "craftRecipe":
+            args, kwargs = await self._normalise_craft_recipe_args(args, kwargs)
         if name == "stfu":
             self.shut_up()
             return "Bot muted."
@@ -776,7 +808,7 @@ class Agent:
         if name == "clearChat":
             self._history.clear()
             return "Chat history cleared."
-        return await self.execute_command(command_name, args)
+        return await self.execute_command(command_name, args, kwargs)
 
     # ── Intent-specific handlers ────────────────────────────────────
 
@@ -1001,7 +1033,7 @@ class Agent:
 
                 # Retry the failed command
                 result = await self.execute_command(
-                    pt.command_name, pt.command_args,
+                    pt.command_name, pt.command_args, pt.command_kwargs,
                 )
 
                 if result is None or "failed" not in result:
@@ -1204,6 +1236,53 @@ class Agent:
             "recipe": recipe[:3] if recipe else [],
             "collection": collection,
         }
+
+    async def _get_knowledge_crafting_plan(
+        self, target_item: str, quantity: int = 1,
+    ) -> str | None:
+        """Use Python KnowledgeGraph for crafting plans when available."""
+        if self._knowledge is None:
+            return None
+        bot_state = await self.observe()
+        inventory = [
+            {"name": item.name, "count": item.count}
+            for item in bot_state.inventory
+        ]
+        try:
+            return self._knowledge.get_crafting_plan(
+                target_item, quantity=quantity, inventory=inventory,
+            )
+        except Exception:
+            logger.exception("KnowledgeGraph crafting plan failed")
+            return None
+
+    async def _normalise_craft_recipe_args(
+        self,
+        args: list[Any],
+        kwargs: dict[str, Any] | None,
+    ) -> tuple[list[Any], dict[str, Any] | None]:
+        """Resolve fuzzy craft targets before sending them to Mineflayer."""
+        if self._knowledge is None:
+            return args, kwargs
+
+        kw = dict(kwargs or {})
+        values = args if args else list(kw.values())
+        raw_name = kw.get("recipe_name", values[0] if values else None)
+        if not raw_name:
+            return args, kwargs
+
+        bot_state = await self.observe()
+        inventory = [
+            {"name": item.name, "count": item.count}
+            for item in bot_state.inventory
+        ]
+        resolved = self._knowledge.resolve_craft_target(str(raw_name), inventory)
+        if args:
+            new_args = list(args)
+            new_args[0] = resolved
+            return new_args, kwargs
+        kw["recipe_name"] = resolved
+        return args, kw
 
     def _format_inventory(self, state: BotState) -> str:
         """Format inventory from a populated ``BotState`` for the prompt.
@@ -1438,7 +1517,7 @@ def _command_defs() -> dict[str, CommandDef]:
             name="collectBlocks",
             description="Mine and collect blocks of the specified type.",
             params={
-                "blockType": {"type": "string", "description": "Block type, e.g. oak_log"},
+                "block_type": {"type": "string", "description": "Block type, e.g. oak_log"},
                 "count": {"type": "int", "description": "Number to collect"},
             },
         ),

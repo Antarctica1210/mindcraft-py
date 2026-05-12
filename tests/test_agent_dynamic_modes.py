@@ -60,6 +60,58 @@ async def test_new_action_generates_code_and_executes_bridge() -> None:
     assert "hello from generated code" in calls[-1][1]
 
 
+async def test_get_crafting_plan_uses_python_knowledge_graph() -> None:
+    class FakeKnowledge:
+        def get_crafting_plan(self, target_item: str, quantity: int, inventory: object) -> str:
+            assert target_item == "bed"
+            assert quantity == 1
+            return "KG plan for bed"
+
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "white_wool", "count": 3}]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._knowledge = FakeKnowledge()
+
+    result = await agent._execute_agent_command(
+        "getCraftingPlan",
+        [],
+        {"target_item": "bed", "quantity": 1},
+    )
+
+    assert result == "KG plan for bed"
+
+
+async def test_craft_recipe_target_is_normalized_by_knowledge_graph() -> None:
+    class FakeKnowledge:
+        def resolve_craft_target(self, target_item: str, inventory: object) -> str:
+            assert target_item == "bed"
+            return "white_bed"
+
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "white_wool", "count": 3}]
+
+    async def craft_recipe(recipe_name: str, num: int = 1) -> str:
+        bridge.calls.append(("craft_recipe", recipe_name, num))
+        return f"crafted {recipe_name}"
+
+    bridge.craft_recipe = craft_recipe  # type: ignore[method-assign]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    agent._knowledge = FakeKnowledge()
+
+    result = await agent._execute_agent_command(
+        "craftRecipe",
+        [],
+        {"recipe_name": "bed", "num": 1},
+    )
+
+    assert result == "crafted white_bed"
+    assert ("craft_recipe", "white_bed", 1) in bridge.calls
+
+
 async def test_cowardice_mode_moves_away_when_hurt_near_hostile() -> None:
     bridge = FakeBridge()
     modes = ModeEvaluator()

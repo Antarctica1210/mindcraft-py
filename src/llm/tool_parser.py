@@ -38,6 +38,8 @@ class CommandCall:
     args: list[Any]    # e.g. ["oak_log", 5]
     raw: str            # original matched text
     source: str = "regex"  # "regex" or "tool_call"
+    kwargs: dict[str, Any] | None = None
+    """Named arguments from tool calls. Legacy regex commands leave this empty."""
 
 
 @dataclass
@@ -138,9 +140,10 @@ def parse_tool_calls(tool_calls: list[dict[str, Any]] | list[object]) -> list[Co
 
         commands.append(CommandCall(
             name=name,
-            args=list(arguments.values()),
+            args=[],
             raw=json.dumps(raw),
             source="tool_call",
+            kwargs=arguments,
         ))
 
     return commands

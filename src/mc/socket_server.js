@@ -25,7 +25,7 @@ const PORT = parseInt(opts.port, 10);
 
 // ── Lazy-loaded modules ──────────────────────────────────────────────
 
-let mineflayer, pathfinder, collectBlock, pvp, armorManager, autoEat, vec3;
+let mineflayer, pathfinder, collectBlock, pvp, armorManager, autoEat, vec3, mcUtils;
 
 async function loadModules() {
   if (mineflayer) return;
@@ -36,6 +36,7 @@ async function loadModules() {
   armorManager = (await import("mineflayer-armor-manager")).default;
   autoEat = (await import("mineflayer-auto-eat")).default;
   vec3 = (await import("vec3")).default;
+  mcUtils = await import("../utils/mcdata.js");
 }
 
 function loadPlugins(b) {
@@ -90,6 +91,72 @@ function inventoryDelta(before, after) {
     if (diff !== 0) parts.push(`${key} ${diff > 0 ? "+" : ""}${diff}`);
   }
   return parts.length ? parts.join(", ") : "no inventory change";
+}
+
+function inventorySummary(counts) {
+  const parts = Object.entries(counts)
+    .filter(([, count]) => count > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, count]) => `${name} x${count}`);
+  return parts.length ? parts.join(", ") : "empty";
+}
+
+function isAirLike(block) {
+  return !block || block.name === "air" || block.name === "cave_air" || block.name === "void_air";
+}
+
+async function placeInventoryBlockNearBot(blockName) {
+  if (!bot) throw new Error("No bot connected");
+  const item = bot.inventory.items().find((i) => i.name === blockName);
+  if (!item) throw new Error(`No ${blockName} in inventory.`);
+  await bot.equip(item, "hand");
+
+  const base = bot.entity.position.floored();
+  const faces = [
+    new vec3(0, 1, 0),
+    new vec3(1, 0, 0),
+    new vec3(-1, 0, 0),
+    new vec3(0, 0, 1),
+    new vec3(0, 0, -1),
+  ];
+
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const ref = bot.blockAt(base.offset(dx, dy, dz));
+        if (!ref || isAirLike(ref) || ref.name.includes("water") || ref.name.includes("lava")) continue;
+        for (const face of faces) {
+          const targetPos = ref.position.offset(face.x, face.y, face.z);
+          if (bot.entity.position.distanceTo(targetPos) > 4.5) continue;
+          const target = bot.blockAt(targetPos);
+          if (!isAirLike(target)) continue;
+          await bot.placeBlock(ref, face);
+          return bot.blockAt(targetPos);
+        }
+      }
+    }
+  }
+  throw new Error(`Could not find a free space to place ${blockName}.`);
+}
+
+function recipeRequirementText(recipe, mcData) {
+  try {
+    const ingredients = recipe.inShape ? recipe.inShape.flat() :
+      recipe.ingredients ? recipe.ingredients : [];
+    const counts = {};
+    for (const ing of ingredients) {
+      if (!ing) continue;
+      const id = ing.id ?? ing.item?.id ?? ing.type;
+      const item = mcData.items[id] || mcData.blocks[id];
+      const name = item?.name;
+      if (!name) continue;
+      counts[name] = (counts[name] || 0) + (ing.count || 1);
+    }
+    const text = inventorySummary(counts);
+    return text === "empty" ? "unknown ingredients" : text;
+  } catch {
+    return "unknown ingredients";
+  }
 }
 
 async function waitForPathfinderDone(timeoutMs = 60000, target = null, range = 2) {
@@ -168,7 +235,8 @@ function _levenshtein(a, b) {
  * Returns the best-matching key or null if nothing is close enough.
  */
 function _fuzzyLookup(name, lookupMap) {
-  const target = name.toLowerCase();
+  if (name == null) return null;
+  const target = String(name).toLowerCase();
   const tokens = target.split("_").filter(t => t.length > 1);
   if (!tokens.length || !lookupMap) return null;
 
@@ -332,6 +400,9 @@ async function handleRequest(method, params) {
         bot.once("spawn", () => {
           clearTimeout(t);
           try { loadPlugins(bot); } catch {}
+          try { mcUtils.initMinecraftData(bot.version); } catch (e) {
+            console.warn(`[socket] mcdata init failed for ${bot.version}: ${e.message}`);
+          }
           registerBotEvents(bot);
           resolve();
         });
@@ -833,7 +904,8 @@ async function handleRequest(method, params) {
     // ── Crafting / Smelting ─────────────────────────────────────────
     case "craft_recipe": {
       if (!bot) throw new Error("No bot connected");
-      const recipeName = params.recipe_name;
+      const recipeName = String(params.recipe_name || "").trim();
+      if (!recipeName) throw new Error("No recipe_name provided.");
       const num = params.num || 1;
       const mcData = (await import("minecraft-data")).default(bot.version);
       // Find recipe — exact match first, then fuzzy fallback
@@ -847,24 +919,78 @@ async function handleRequest(method, params) {
           resolvedName = fuzzy;
         }
       }
-      const recipes = bot.recipesAll(itemId, null);
-      if (!recipes.length) throw new Error(`No recipe for ${recipeName}.`);
-      const recipe = recipes[0];
-      // Check for crafting table
-      const needsTable = recipe.requiresTable;
+      if (itemId == null) throw new Error(`No recipe for ${recipeName}.`);
+
+      const beforePos = positionSummary(bot);
+      const beforeInv = inventoryCounts(bot);
+      const notes = [];
+      let placedTable = false;
       let craftingTable = null;
-      if (needsTable) {
+
+      let recipes = bot.recipesFor(itemId, null, 1, null);
+      if (!recipes.length) {
         craftingTable = bot.findBlock({
           matching: mcData.blocksByName.crafting_table?.id,
-          maxDistance: 8,
+          maxDistance: 16,
         });
-        if (!craftingTable) throw new Error("No crafting table nearby. Place one first.");
+        if (!craftingTable) {
+          const hasTable = bot.inventory.items().some((i) => i.name === "crafting_table");
+          if (hasTable) {
+            craftingTable = await placeInventoryBlockNearBot("crafting_table");
+            placedTable = true;
+            notes.push(`Placed crafting_table at (${craftingTable.position.x}, ${craftingTable.position.y}, ${craftingTable.position.z}).`);
+          }
+        }
+        if (craftingTable) {
+          if (bot.entity.position.distanceTo(craftingTable.position) > 4) {
+            await bot.pathfinder.goto(new pathfinder.goals.GoalNear(
+              craftingTable.position.x,
+              craftingTable.position.y,
+              craftingTable.position.z,
+              4,
+            ));
+          }
+          recipes = bot.recipesFor(itemId, null, 1, craftingTable);
+        }
       }
+
+      if (!recipes.length) {
+        const tableRecipes = bot.recipesFor(itemId, null, 1, true);
+        if (tableRecipes.length && !craftingTable) {
+          throw new Error(`Crafting ${resolvedName} requires a crafting_table. You do not have one nearby or in inventory.`);
+        }
+        const allRecipes = bot.recipesAll(itemId, null);
+        const req = allRecipes.length ? recipeRequirementText(allRecipes[0], mcData) : "unknown ingredients";
+        throw new Error(
+          `Missing ingredient for ${resolvedName}. Required recipe includes: ${req}. ` +
+          `Inventory: ${inventorySummary(beforeInv)}.`,
+        );
+      }
+
+      const recipe = recipes[0];
       try {
         await bot.craft(recipe, num, craftingTable);
-        return `Crafted ${num}x ${resolvedName}.`;
+        notes.push(`Crafted ${num}x ${resolvedName}.`);
+        if (placedTable && craftingTable) {
+          try {
+            await bot.collectBlock.collect(craftingTable);
+            notes.push("Picked crafting_table back up.");
+          } catch (e) {
+            notes.push(`Could not pick crafting_table back up: ${e.message}`);
+          }
+        }
+        const afterPos = positionSummary(bot);
+        const afterInv = inventoryCounts(bot);
+        return [
+          ...notes,
+          `Position: ${beforePos} -> ${afterPos}.`,
+          `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
+        ].join("\n");
       } catch (e) {
-        throw new Error(`Craft failed: ${e.message}`);
+        throw new Error(
+          `Craft failed for ${resolvedName}: ${e.message}. ` +
+          `Inventory: ${inventorySummary(inventoryCounts(bot))}.`,
+        );
       }
     }
 
@@ -1153,8 +1279,8 @@ async function handleRequest(method, params) {
         prefix = `You already have ${existing} ${targetItem}. If you need more:\n`;
       }
       try {
-        const mc = await import("../utils/mcdata.js");
-        const plan = mc.getDetailedCraftingPlan(targetItem, quantity, currInventory);
+        mcUtils.ensureMinecraftData(bot.version);
+        const plan = mcUtils.getDetailedCraftingPlan(targetItem, quantity, currInventory);
         return prefix + plan;
       } catch (e) {
         throw new Error(`Crafting plan failed: ${e.message}`);

@@ -232,9 +232,10 @@ class E2EHarness:
 
         # 5. Execute commands
         for i, cmd in enumerate(parsed.commands):
-            print(f"[EXEC #{i}] !{cmd.name}({', '.join(str(a) for a in cmd.args)})")
+            display_args = cmd.args if cmd.args else list((cmd.kwargs or {}).values())
+            print(f"[EXEC #{i}] !{cmd.name}({', '.join(str(a) for a in display_args)})")
             try:
-                result = await self._executor.execute(cmd.name, cmd.args)
+                result = await self._executor.execute(cmd.name, cmd.args, cmd.kwargs)
                 print(f"[RESULT #{i}] {result}")
                 if result:
                     self._history.append(ConversationTurn(role="system", content=result))
