@@ -158,7 +158,71 @@ export function getItemId(itemName) {
     if (item) {
         return item.id;
     }
+    // Fuzzy fallback — handles LLM-guessed names like "oak_bed" → "red_bed"
+    const fuzzyName = fuzzyFindItem(itemName);
+    if (fuzzyName) {
+        console.warn(`[mcdata] Fuzzy matched "${itemName}" → "${fuzzyName}"`);
+        return mcdata.itemsByName[fuzzyName].id;
+    }
     return null;
+}
+
+/**
+ * Find the closest matching item name using token-based fuzzy matching.
+ * For example, "oak_bed" matches "red_bed" (they share the "bed" token),
+ * and "bed" matches a bed variant.
+ */
+export function fuzzyFindItem(itemName) {
+    if (!mcdata || !mcdata.itemsByName) return null;
+    return _fuzzyFind(itemName, Object.keys(mcdata.itemsByName));
+}
+
+export function fuzzyFindBlock(blockName) {
+    if (!mcdata || !mcdata.blocksByName) return null;
+    return _fuzzyFind(blockName, Object.keys(mcdata.blocksByName));
+}
+
+function _fuzzyFind(name, candidates) {
+    const target = name.toLowerCase();
+    const tokens = target.split('_').filter(t => t.length > 1);
+    if (!tokens.length) return null;
+
+    // Score each candidate: whole-token matches dominate edit-distance ratio.
+    // This ensures "bed" matches "red_bed" (shared "bed" token) over "bedrock"
+    // (substring match only).
+    let best = null, bestScore = -Infinity;
+    for (const key of candidates) {
+        const keyTokens = new Set(key.split('_'));
+        const tokenHits = tokens.filter(t => keyTokens.has(t)).length;
+        const maxLen = Math.max(target.length, key.length);
+        const distRatio = 1 - _levenshtein(target, key) / maxLen;  // 0..1
+        const score = tokenHits + distRatio;  // whole-token hits dominate
+        if (score > bestScore) {
+            bestScore = score;
+            best = key;
+        }
+    }
+
+    if (best && bestScore > 0.4) return best;
+    return null;
+}
+
+function _levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = new Array(m + 1);
+    for (let i = 0; i <= m; i++) {
+        dp[i] = new Array(n + 1);
+        dp[i][0] = i;
+    }
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] = a[i - 1] === b[j - 1]
+                ? dp[i - 1][j - 1]
+                : Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]) + 1;
+        }
+    }
+    return dp[m][n];
 }
 
 export function getItemName(itemId) {
@@ -173,6 +237,11 @@ export function getBlockId(blockName) {
     let block = mcdata.blocksByName[blockName];
     if (block) {
         return block.id;
+    }
+    const fuzzyName = fuzzyFindBlock(blockName);
+    if (fuzzyName) {
+        console.warn(`[mcdata] Fuzzy matched "${blockName}" → "${fuzzyName}"`);
+        return mcdata.blocksByName[fuzzyName].id;
     }
     return null;
 }

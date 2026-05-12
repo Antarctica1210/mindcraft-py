@@ -54,6 +54,47 @@ let lineBuffer = "";
 let followingTarget = null;   // player name being followed
 let stayingUntil = 0;         // timestamp when stay() ends (0 = not staying)
 
+// ── Fuzzy name matching ────────────────────────────────────────────────
+
+function _levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = new Array(m + 1);
+  for (let i = 0; i <= m; i++) { dp[i] = new Array(n + 1); dp[i][0] = i; }
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]) + 1;
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Fuzzy-match a name against a lookup map (e.g. mcData.itemsByName).
+ * Returns the best-matching key or null if nothing is close enough.
+ */
+function _fuzzyLookup(name, lookupMap) {
+  const target = name.toLowerCase();
+  const tokens = target.split("_").filter(t => t.length > 1);
+  if (!tokens.length || !lookupMap) return null;
+
+  const candidates = Object.keys(lookupMap);
+  let best = null, bestScore = -Infinity;
+  for (const key of candidates) {
+    const keyTokens = new Set(key.split("_"));
+    const tokenHits = tokens.filter(t => keyTokens.has(t)).length;
+    const maxLen = Math.max(target.length, key.length);
+    const distRatio = 1 - _levenshtein(target, key) / maxLen;
+    const score = tokenHits + distRatio;  // whole-token hits dominate
+    if (score > bestScore) { bestScore = score; best = key; }
+  }
+
+  if (best && bestScore > 0.4) return best;
+  return null;
+}
+
 // ── Push events ──────────────────────────────────────────────────────
 
 function emit(event, data) {
@@ -661,8 +702,18 @@ async function handleRequest(method, params) {
       const recipeName = params.recipe_name;
       const num = params.num || 1;
       const mcData = (await import("minecraft-data")).default(bot.version);
-      // Find recipe
-      const recipes = bot.recipesAll(mcData.itemsByName[recipeName]?.id, null);
+      // Find recipe — exact match first, then fuzzy fallback
+      let itemId = mcData.itemsByName[recipeName]?.id;
+      let resolvedName = recipeName;
+      if (itemId == null) {
+        const fuzzy = _fuzzyLookup(recipeName, mcData.itemsByName);
+        if (fuzzy) {
+          console.warn(`[socket] Fuzzy matched "${recipeName}" → "${fuzzy}"`);
+          itemId = mcData.itemsByName[fuzzy]?.id;
+          resolvedName = fuzzy;
+        }
+      }
+      const recipes = bot.recipesAll(itemId, null);
       if (!recipes.length) throw new Error(`No recipe for ${recipeName}.`);
       const recipe = recipes[0];
       // Check for crafting table
@@ -677,7 +728,7 @@ async function handleRequest(method, params) {
       }
       try {
         await bot.craft(recipe, num, craftingTable);
-        return `Crafted ${num}x ${recipeName}.`;
+        return `Crafted ${num}x ${resolvedName}.`;
       } catch (e) {
         throw new Error(`Craft failed: ${e.message}`);
       }
@@ -709,7 +760,14 @@ async function handleRequest(method, params) {
         }
       }
       // Add input
-      const inputItem = mcData.itemsByName[itemName];
+      let inputItem = mcData.itemsByName[itemName];
+      if (!inputItem) {
+        const fuzzy = _fuzzyLookup(itemName, mcData.itemsByName);
+        if (fuzzy) {
+          console.warn(`[socket] Fuzzy matched "${itemName}" → "${fuzzy}"`);
+          inputItem = mcData.itemsByName[fuzzy];
+        }
+      }
       if (!inputItem) throw new Error(`Unknown item: ${itemName}`);
       await container.putInput(inputItem.id, null, num);
       container.close();

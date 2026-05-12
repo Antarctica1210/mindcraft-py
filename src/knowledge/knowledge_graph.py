@@ -18,6 +18,7 @@ Usage::
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from pathlib import Path
@@ -179,9 +180,43 @@ class KnowledgeGraph:
         """Normalise a human-friendly item name to the minecraft-data key."""
         return name.lower().replace(" ", "_")
 
+    def _fuzzy_match(self, name: str, candidates: list[str]) -> str | None:
+        """Return the closest matching candidate using token+edit-distance.
+
+        Splits the query into underscore tokens, then scores each candidate
+        by whole-token matches (dominate) + sequence ratio (tiebreaker).
+        This ensures "bed" matches "red_bed" (shared "bed" token) over
+        "bedrock" (substring match only).
+        """
+        target = name.lower()
+        tokens = [t for t in target.split("_") if len(t) > 1]
+        if not tokens:
+            return None
+
+        best, best_score = None, -1.0
+        for c in candidates:
+            c_tokens = set(c.split("_"))
+            token_hits = sum(1 for t in tokens if t in c_tokens)
+            ratio = difflib.SequenceMatcher(None, target, c).ratio()
+            score = token_hits + ratio
+            if score > best_score:
+                best_score = score
+                best = c
+
+        if best and best_score >= 0.4:
+            logger.info("Fuzzy matched %r → %r (score=%.2f)", name, best, best_score)
+            return best
+        return None
+
     def get_item_id(self, name: str) -> int | None:
         name = self._resolve_item_name(name)
-        return self._items_by_name.get(name)
+        item_id = self._items_by_name.get(name)
+        if item_id is not None:
+            return item_id
+        fuzzy = self._fuzzy_match(name, list(self._items_by_name.keys()))
+        if fuzzy:
+            return self._items_by_name[fuzzy]
+        return None
 
     def get_item_name(self, item_id: int) -> str | None:
         item = self._items.get(item_id)
@@ -189,7 +224,13 @@ class KnowledgeGraph:
 
     def get_block_id(self, name: str) -> int | None:
         name = self._resolve_item_name(name)
-        return self._blocks_by_name.get(name)
+        block_id = self._blocks_by_name.get(name)
+        if block_id is not None:
+            return block_id
+        fuzzy = self._fuzzy_match(name, list(self._blocks_by_name.keys()))
+        if fuzzy:
+            return self._blocks_by_name[fuzzy]
+        return None
 
     def get_block_name(self, block_id: int) -> str | None:
         block = self._blocks.get(block_id)
@@ -209,7 +250,14 @@ class KnowledgeGraph:
           - shape: the crafting grid shape (if shaped)
         """
         name = self._resolve_item_name(result_item)
-        return self._recipe_index.get(name, [])
+        recipes = self._recipe_index.get(name)
+        if recipes:
+            return recipes
+        # Fuzzy fallback
+        fuzzy = self._fuzzy_match(name, list(self._recipe_index.keys()))
+        if fuzzy:
+            return self._recipe_index.get(fuzzy, [])
+        return []
 
     def get_recipes_for_ingredient(self, ingredient: str) -> list[dict[str, Any]]:
         """Find all recipes that consume *ingredient*."""
