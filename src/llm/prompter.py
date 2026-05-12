@@ -15,6 +15,8 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 from langchain_core.messages import (
@@ -31,6 +33,7 @@ from pydantic import BaseModel, Field, SecretStr
 from settings import EmbeddingSettings, LLMSettings
 
 logger = logging.getLogger(__name__)
+_RAW_RESPONSE_LOGGER_NAME = "llm.raw_response"
 
 
 # ── Pydantic I/O models ────────────────────────────────────────────
@@ -162,7 +165,7 @@ class _LLMOutputParser(BaseOutputParser[LLMOutput]):
         ``core.py`` and ``tool_parser.py`` see a consistent shape.
         """
         raw: Any = msg.content or ""
-        text = raw if isinstance(raw, str) else str(raw)
+        text = _coerce_content_to_text(raw)
         content = _strip_think_tags(text)
 
         meta: dict[str, Any] = getattr(msg, "response_metadata", {}) or {}
@@ -178,10 +181,22 @@ class _LLMOutputParser(BaseOutputParser[LLMOutput]):
         extra: dict[str, Any] = getattr(msg, "additional_kwargs", {}) or {}
         if not raw_tool_calls and extra.get("tool_calls"):
             raw_tool_calls = extra["tool_calls"]
+        if not raw_tool_calls:
+            raw_tool_calls = _recover_invalid_tool_calls(
+                getattr(msg, "invalid_tool_calls", []) or []
+            )
 
         tool_calls: list[ToolCallOutput] = []
         for tc in raw_tool_calls:
             tool_calls.append(_normalize_tool_call(tc))
+
+        # Some reasoning endpoints put the only natural-language payload in
+        # message.reasoning_content / additional_kwargs["reasoning_content"].
+        # Use it only when there is no normal content and no tool call; for
+        # action responses, content="" + finish_reason="tool_calls" is expected.
+        reasoning = _extract_reasoning_content(msg, extra)
+        if not content and not tool_calls and reasoning:
+            content = _strip_think_tags(reasoning)
 
         # Token usage, preferring response_metadata, falling back to usage_metadata
         usage: UsageOutput | None = None
@@ -202,9 +217,18 @@ class _LLMOutputParser(BaseOutputParser[LLMOutput]):
             )
 
         # Log reasoning_content for debugging (DeepSeek/Qwen reasoning models)
-        reasoning = extra.get("reasoning_content") or ""
         if reasoning:
             logger.debug("LLM reasoning_content (%d chars): %.200s", len(reasoning), reasoning)
+        if not content and not tool_calls:
+            invalid_tool_calls = getattr(msg, "invalid_tool_calls", []) or []
+            logger.warning(
+                "LLM response parsed empty: finish_reason=%r metadata=%s "
+                "additional_kwargs=%s invalid_tool_calls=%s",
+                finish_reason,
+                _safe_preview(meta),
+                _safe_preview(extra),
+                _safe_preview(invalid_tool_calls),
+            )
 
         return LLMOutput(
             content=content,
@@ -213,6 +237,140 @@ class _LLMOutputParser(BaseOutputParser[LLMOutput]):
             tool_calls=tool_calls,
             usage=usage,
         )
+
+
+def _coerce_content_to_text(raw: Any) -> str:
+    """Extract text from LangChain/OpenAI content shapes."""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(raw)
+
+
+def _recover_invalid_tool_calls(raw: list[Any]) -> list[dict[str, Any]]:
+    """Recover provider tool calls LangChain marked invalid.
+
+    Some OpenAI-compatible servers return a tool call with arguments that
+    LangChain cannot parse into a dict.  The raw name/args are still useful to
+    our executor, so keep them instead of treating the whole response as empty.
+    """
+    recovered: list[dict[str, Any]] = []
+    for tc in raw:
+        if isinstance(tc, dict):
+            name = tc.get("name") or tc.get("function", {}).get("name", "")
+            args = (
+                tc.get("args")
+                or tc.get("arguments")
+                or tc.get("function", {}).get("arguments", "{}")
+            )
+            recovered.append({
+                "id": tc.get("id", ""),
+                "type": tc.get("type", "function"),
+                "function": {"name": name, "arguments": args},
+            })
+            continue
+        name = getattr(tc, "name", "")
+        args = getattr(tc, "args", None) or getattr(tc, "arguments", "{}")
+        recovered.append({
+            "id": getattr(tc, "id", ""),
+            "type": getattr(tc, "type", "function"),
+            "function": {"name": name, "arguments": args},
+        })
+    return recovered
+
+
+def _extract_reasoning_content(msg: AIMessage, extra: dict[str, Any]) -> str:
+    """Return provider-specific reasoning text, if LangChain preserved it."""
+    value = extra.get("reasoning_content") or getattr(msg, "reasoning_content", "")
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    return _coerce_content_to_text(value)
+
+
+def _safe_preview(value: Any, *, limit: int = 1200) -> str:
+    """JSON-ish one-line preview for diagnostics without flooding logs."""
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        text = str(value)
+    return text[:limit]
+
+
+def _to_jsonable(value: Any) -> Any:
+    """Convert LangChain/Pydantic objects into JSON-serializable data."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _raw_response_logger() -> logging.Logger:
+    """Logger dedicated to complete LLM response payloads."""
+    raw_logger = logging.getLogger(_RAW_RESPONSE_LOGGER_NAME)
+    raw_logger.setLevel(logging.INFO)
+    raw_logger.propagate = False
+
+    if not raw_logger.handlers:
+        log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        handler = logging.FileHandler(
+            log_dir / f"{today}.llm_responses.jsonl",
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        raw_logger.addHandler(handler)
+
+    return raw_logger
+
+
+def _log_raw_response(
+    *,
+    model: str,
+    tool_choice: str | None,
+    attempt: int,
+    raw_result: Any,
+    parsed: LLMOutput | None = None,
+) -> None:
+    """Append one full raw LLM response record to the debug JSONL log."""
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "tool_choice": tool_choice,
+        "attempt": attempt,
+        "raw_type": type(raw_result).__name__,
+        "raw_response": _to_jsonable(raw_result),
+        "parsed": _to_jsonable(parsed) if parsed is not None else None,
+    }
+    _raw_response_logger().info(json.dumps(record, ensure_ascii=False, default=str))
+
+
+def _allowed_tool_names(tools: list[dict[str, Any]]) -> set[str]:
+    """Return registered tool/function names from OpenAI-style tool defs."""
+    names: set[str] = set()
+    for tool in tools:
+        fn = tool.get("function", {})
+        if isinstance(fn, dict):
+            name = fn.get("name")
+            if isinstance(name, str):
+                names.add(name)
+    return names
 
 
 def _normalize_tool_call(tc: dict[str, Any]) -> ToolCallOutput:
@@ -286,6 +444,22 @@ class Prompter:
                 model_name = model_name[len(prefix) :]
                 break
 
+        model_kwargs: dict[str, Any] = {}
+        if llm.disable_thinking:
+            model_kwargs["reasoning_effort"] = llm.reasoning_effort or "none"
+            model_kwargs["extra_body"] = {
+                "enable_thinking": False,
+                "enableThinking": False,
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                    "enableThinking": False,
+                },
+            }
+            logger.info(
+                "LLM thinking disabled (reasoning_effort=%s)",
+                model_kwargs["reasoning_effort"],
+            )
+
         self._model = ChatOpenAI(  # type: ignore[call-arg]
             model=model_name,
             openai_api_base=llm.base_url or None,
@@ -294,6 +468,7 @@ class Prompter:
             max_tokens=llm.max_tokens,
             request_timeout=llm.timeout,
             max_retries=0,  # retry loop is in send_request()
+            **model_kwargs,
         )
 
         # Chain components (assembled per-call in _build_chain for tool binding)
@@ -332,7 +507,8 @@ class Prompter:
         All parameters are in the typed ``LLMInput`` model — no **kwargs.
         """
         lc_history = _dicts_to_lc_messages(input.history)
-        chain = self._build_chain(tool_choice=input.tool_choice)
+        chain = self._build_model_chain(tool_choice=input.tool_choice)
+        parser = _LLMOutputParser(model_name=self.model)
 
         for attempt in range(3):
             try:
@@ -340,9 +516,16 @@ class Prompter:
                     "system_message": input.system_message,
                     "history": lc_history,
                 })
-                # LLMOutputParser.parse_result() always returns LLMOutput;
-                # LangChain's Runnable.ainvoke() return type is opaque Any.
-                return raw_result  # type: ignore[no-any-return]
+                parsed = parser.parse_result(raw_result)
+                parsed = self._filter_unknown_tool_calls(parsed)
+                _log_raw_response(
+                    model=self.model,
+                    tool_choice=input.tool_choice,
+                    attempt=attempt + 1,
+                    raw_result=raw_result,
+                    parsed=parsed,
+                )
+                return parsed
             except Exception as exc:
                 err_msg = str(exc)
 
@@ -413,29 +596,51 @@ class Prompter:
 
     # ── internal ────────────────────────────────────────────────────
 
-    def _build_chain(self, *, tool_choice: str | None = None) -> Any:
-        """Build the ``prompt | model | parser`` chain, conditionally binding tools.
+    def _filter_unknown_tool_calls(self, output: LLMOutput) -> LLMOutput:
+        """Drop model-invented tool calls before they reach the executor."""
+        if not output.tool_calls or not self._tools:
+            return output
+
+        allowed = _allowed_tool_names(self._tools)
+        kept: list[ToolCallOutput] = []
+        dropped: list[str] = []
+        for tc in output.tool_calls:
+            name = tc.function.name
+            if name in allowed:
+                kept.append(tc)
+            else:
+                dropped.append(name)
+
+        if dropped:
+            logger.warning(
+                "Dropped unknown LLM tool calls: %s",
+                ", ".join(name[:120] for name in dropped),
+            )
+            return output.model_copy(update={"tool_calls": kept})
+
+        return output
+
+    def _build_model_chain(self, *, tool_choice: str | None = None) -> Any:
+        """Build the ``prompt | model`` chain, conditionally binding tools.
 
         Per-call chain construction is cheap (Runnables are lightweight objects)
         and lets us vary tool binding per invocation — some calls need tools,
         others are pure-text (question / chitchat intents).
         """
-        parser = _LLMOutputParser(model_name=self.model)
-
         if self._tools and tool_choice != "none":
             bound_model = self._model.bind(
                 tools=self._tools,
                 tool_choice=tool_choice or "auto",
             )
-            return self._prompt | bound_model | parser
+            return self._prompt | bound_model
 
         if tool_choice == "none":
             # Explicitly disable tool calling for question/chitchat intents
             bound_model = self._model.bind(tool_choice="none")
-            return self._prompt | bound_model | parser
+            return self._prompt | bound_model
 
         # No tools registered, no tool_choice override → plain model
-        return self._prompt | self._model | parser
+        return self._prompt | self._model
 
 
 # ── Message conversion ─────────────────────────────────────────────

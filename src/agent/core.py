@@ -14,6 +14,7 @@ Mirrors the ``Agent`` class in ``src/agent/agent.js``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import sys
@@ -45,6 +46,19 @@ _AFFIRMATIVE: frozenset[str] = frozenset({
 })
 _NEGATIVE: frozenset[str] = frozenset({
     "no", "nope", "nah", "n", "no thanks", "not now",
+})
+_QUERY_COMMANDS: frozenset[str] = frozenset({
+    "stats",
+    "inventory",
+    "goal",
+    "entities",
+    "nearbyBlocks",
+    "craftable",
+    "help",
+    "modes",
+    "getCraftingPlan",
+    "searchWiki",
+    "showVillagerTrades",
 })
 
 
@@ -102,6 +116,42 @@ def _describe_action(name: str, args: list[Any]) -> str:
         parts.append(f"{label}={arg}")
 
     return f"{name}({', '.join(parts)})"
+
+
+def _tool_call_required_reminder() -> str:
+    """Prompt nudge for models that ignore required tool calling."""
+    return (
+        "You must respond with a tool call (function call) for this request. "
+        "Do NOT output plain text or reasoning-only content — pick the most "
+        "appropriate command and call it. If you are unsure which command to "
+        "use, call !help or !stats first."
+    )
+
+
+def _command_call_key(
+    name: str,
+    args: list[Any],
+    kwargs: dict[str, Any] | None = None,
+) -> str:
+    """Stable key for detecting repeated calls with the same arguments."""
+    payload = {
+        "name": name.lstrip("!"),
+        "args": args,
+        "kwargs": kwargs or {},
+    }
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _query_repeat_reminder(name: str, result: str) -> str:
+    """Prompt nudge when a model repeats the same read-only query."""
+    return (
+        f"You already called {name} with the same arguments and got this result:\n"
+        f"{result[:1200]}\n\n"
+        "Do NOT call the same query again. Use this information to take the next "
+        "concrete action toward the player's request. For crafting tasks, choose "
+        "an action such as craftRecipe for craftable items, collectBlocks/search "
+        "for missing materials, or ask the player if the materials cannot be obtained."
+    )
 
 
 def _extract_js_code(text: str) -> str:
@@ -566,6 +616,8 @@ class Agent:
         consecutive_failures = 0
         last_failed: tuple[str, str] | None = None  # (command, args_str)
         no_tool_retries = 0  # F2: track re-prompts when LLM omits tool calls
+        seen_query_results: dict[str, str] = {}
+        warned_repeated_queries: set[str] = set()
 
         for _ in range(max_responses):
             if self._shut_up or not self._running:
@@ -594,19 +646,23 @@ class Agent:
             else:
                 logger.info("<<< (empty)")
 
-            # Append assistant turn — include tool_calls if present so
-            # models that expect the OpenAI tool-call protocol see them.
-            self._history.append(
-                ConversationTurn(
-                    role="assistant",
-                    content=llm_response.content,
-                    tool_calls=llm_response.tool_calls,
-                ),
-            )
-
-            # Question / chitchat path: just speak the reply, no commands.
-            if not use_tools:
-                await self._send_chat(llm_response.content.strip())
+            # Action path + tool_choice="required": some reasoning models can
+            # spend tokens internally, return finish_reason="stop", and expose
+            # neither content nor tool calls. Give them the same one-shot
+            # correction we use for plain text without tool calls.
+            if use_tools and not llm_response.tool_calls and not llm_response.content.strip():
+                if no_tool_retries < 1:
+                    no_tool_retries += 1
+                    logger.warning(
+                        "LLM produced empty response on action_command intent — "
+                        "injecting tool-call reminder (retry %d/1)", no_tool_retries,
+                    )
+                    self._history.append(ConversationTurn(
+                        role="system",
+                        content=_tool_call_required_reminder(),
+                    ))
+                    continue
+                logger.debug("Empty LLM response with no tool calls after retry — ending turn")
                 break
 
             parsed = parse_response(
@@ -614,8 +670,20 @@ class Agent:
                 tool_calls=llm_response.tool_calls,
             )
 
-            # If the LLM produced neither tool calls nor a text response,
-            # there is nothing to do — end the turn.
+            # Question / chitchat path: just remember and speak the reply,
+            # no commands.
+            if not use_tools:
+                self._history.append(
+                    ConversationTurn(
+                        role="assistant",
+                        content=llm_response.content,
+                        tool_calls=llm_response.tool_calls,
+                    ),
+                )
+                await self._send_chat(llm_response.content.strip())
+                break
+
+            # Non-action paths can still produce neither tool calls nor text.
             if not parsed.has_command and not llm_response.content.strip():
                 logger.debug("Empty LLM response with no tool calls — ending turn")
                 break
@@ -634,19 +702,62 @@ class Agent:
                     )
                     self._history.append(ConversationTurn(
                         role="system",
-                        content=(
-                            "You must respond with a tool call (function call) "
-                            "for this request.  Do NOT output plain text — pick "
-                            "the most appropriate command and call it.  If you "
-                            "are unsure which command to use, call !help or "
-                            "!stats first."
-                        ),
+                        content=_tool_call_required_reminder(),
                     ))
                     continue  # re-call plan() with tool_choice="required"
 
                 # Speak plain text (question/chitchat path, or retry exhausted)
                 await self._send_chat(llm_response.content.strip())
                 break
+
+            repeated_query: tuple[str, str] | None = None
+            if use_tools:
+                for cmd in parsed.commands:
+                    cmd_key = _command_call_key(
+                        cmd.name,
+                        cmd.args,
+                        getattr(cmd, "kwargs", None) or None,
+                    )
+                    normalized_name = cmd.name.lstrip("!")
+                    if normalized_name in _QUERY_COMMANDS and cmd_key in seen_query_results:
+                        repeated_query = (normalized_name, cmd_key)
+                        break
+
+            if repeated_query is not None:
+                normalized_name, cmd_key = repeated_query
+                if cmd_key not in warned_repeated_queries:
+                    warned_repeated_queries.add(cmd_key)
+                    logger.warning(
+                        "LLM repeated query command %s with same arguments — "
+                        "injecting next-step reminder",
+                        normalized_name,
+                    )
+                    self._history.append(ConversationTurn(
+                        role="system",
+                        content=_query_repeat_reminder(
+                            normalized_name,
+                            seen_query_results[cmd_key],
+                        ),
+                    ))
+                    continue
+                logger.warning(
+                    "LLM repeated query command %s after reminder — ending turn",
+                    normalized_name,
+                )
+                await self._send_chat(
+                    "I'm stuck repeating the same check instead of taking the next step."
+                )
+                return used_command
+
+            # Append assistant turn — include tool_calls if present so
+            # models that expect the OpenAI tool-call protocol see them.
+            self._history.append(
+                ConversationTurn(
+                    role="assistant",
+                    content=llm_response.content,
+                    tool_calls=llm_response.tool_calls,
+                ),
+            )
 
             # Speak the pre-command text so the player knows what the bot
             # is doing (mirrors JS routeResponse before executeCommand).
@@ -663,6 +774,8 @@ class Agent:
                 # Announce each step before executing
                 cmd_args = cmd.args
                 cmd_kwargs = getattr(cmd, "kwargs", None) or None
+                cmd_key = _command_call_key(cmd.name, cmd_args, cmd_kwargs)
+                normalized_name = cmd.name.lstrip("!")
                 action_desc = _describe_action(
                     cmd.name,
                     cmd_args if cmd_args else list((cmd_kwargs or {}).values()),
@@ -756,6 +869,8 @@ class Agent:
                 else:
                     consecutive_failures = 0
                     last_failed = None
+                    if normalized_name in _QUERY_COMMANDS:
+                        seen_query_results[cmd_key] = result
 
                 # Report success to the player
                 await self._send_chat(f"Done: {result}")
@@ -789,7 +904,9 @@ class Agent:
         if name == "modes":
             return self._modes.status_text()
         if name == "newAction":
-            prompt = str((kwargs or {}).get("code_prompt", values[0] if values else self._last_message))
+            prompt = str(
+                (kwargs or {}).get("code_prompt", values[0] if values else self._last_message)
+            )
             return await self._execute_dynamic_action(prompt)
         if name == "getCraftingPlan":
             target = str((kwargs or {}).get("target_item", values[0] if values else ""))

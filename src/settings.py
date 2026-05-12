@@ -77,6 +77,10 @@ class LLMSettings:
 
     max_tokens: int = field(default_factory=lambda: _get_int("LLM_MAX_TOKENS", 512))
     temperature: float = field(default_factory=lambda: _get_float("LLM_TEMPERATURE", 0.7))
+    disable_thinking: bool = field(
+        default_factory=lambda: _get_bool("LLM_DISABLE_THINKING", True)
+    )
+    reasoning_effort: str = field(default_factory=lambda: _get("LLM_REASONING_EFFORT", "none"))
 
     # Timeout in seconds
     timeout: int = field(default_factory=lambda: _get_int("LLM_TIMEOUT", 120))

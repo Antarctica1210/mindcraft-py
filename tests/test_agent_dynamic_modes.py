@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from conftest import FakeBridge
+
 from agent.core import Agent
 from agent.models import AgentConfig, BotState, EntityInfo, Position
 from agent.modes import BehaviorMode, ModeEvaluator
-from conftest import FakeBridge
 from llm.message_builder import MessageBuilder
-from llm.prompter import LLMInput, LLMOutput
+from llm.prompter import LLMInput, LLMOutput, ToolCallFunction, ToolCallOutput
 
 
 class FakePrompter:
@@ -110,6 +111,132 @@ async def test_craft_recipe_target_is_normalized_by_knowledge_graph() -> None:
 
     assert result == "crafted white_bed"
     assert ("craft_recipe", "white_bed", 1) in bridge.calls
+
+
+async def test_action_loop_retries_empty_required_tool_response() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    responses = [
+        LLMOutput(content="", model="fake"),
+        LLMOutput(
+            content="",
+            model="fake",
+            tool_calls=[
+                ToolCallOutput(
+                    id="call_1",
+                    function=ToolCallFunction(name="action:stop", arguments="{}"),
+                )
+            ],
+        ),
+    ]
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        assert tool_choice == "required"
+        return responses.pop(0)
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent._run_plan_loop(max_responses=2, use_tools=True)
+
+    assert used_command is True
+    assert ("stop",) in bridge.calls
+    assert any(
+        turn.role == "system" and "tool call" in turn.content
+        for turn in agent._history
+    )
+
+
+async def test_action_loop_blocks_repeated_query_tool_call() -> None:
+    class FakeKnowledge:
+        calls = 0
+
+        def get_crafting_plan(self, target_item: str, quantity: int, inventory: object) -> str:
+            self.calls += 1
+            assert target_item == "bed"
+            assert quantity == 1
+            return "Crafting plan: craft white_bed now."
+
+        def resolve_craft_target(self, target_item: str, inventory: object) -> str:
+            assert target_item == "bed"
+            return "white_bed"
+
+    bridge = FakeBridge()
+
+    async def craft_recipe(recipe_name: str, num: int = 1) -> str:
+        bridge.calls.append(("craft_recipe", recipe_name, num))
+        return f"crafted {recipe_name}"
+
+    bridge.craft_recipe = craft_recipe  # type: ignore[method-assign]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    knowledge = FakeKnowledge()
+    agent._knowledge = knowledge
+
+    responses = [
+        LLMOutput(
+            content="",
+            model="fake",
+            tool_calls=[
+                ToolCallOutput(
+                    id="call_1",
+                    function=ToolCallFunction(
+                        name="action:getCraftingPlan",
+                        arguments='{"target_item":"bed","quantity":1}',
+                    ),
+                )
+            ],
+        ),
+        LLMOutput(
+            content="",
+            model="fake",
+            tool_calls=[
+                ToolCallOutput(
+                    id="call_2",
+                    function=ToolCallFunction(
+                        name="action:getCraftingPlan",
+                        arguments='{"target_item":"bed","quantity":1}',
+                    ),
+                )
+            ],
+        ),
+        LLMOutput(
+            content="",
+            model="fake",
+            tool_calls=[
+                ToolCallOutput(
+                    id="call_3",
+                    function=ToolCallFunction(
+                        name="action:craftRecipe",
+                        arguments='{"recipe_name":"bed","num":1}',
+                    ),
+                )
+            ],
+        ),
+    ]
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        assert tool_choice == "required"
+        return responses.pop(0)
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent._run_plan_loop(max_responses=3, use_tools=True)
+
+    assert used_command is True
+    assert knowledge.calls == 1
+    assert ("craft_recipe", "white_bed", 1) in bridge.calls
+    assert any(
+        turn.role == "system" and "Do NOT call the same query again" in turn.content
+        for turn in agent._history
+    )
 
 
 async def test_cowardice_mode_moves_away_when_hurt_near_hostile() -> None:

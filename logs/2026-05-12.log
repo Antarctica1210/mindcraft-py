@@ -544,3 +544,397 @@ ConnectionResetError: [Errno 54] Connection reset by peer
 2026-05-12 17:21:14 [agent.core] WARNING: LLM call cancelled (safety interrupt)
 2026-05-12 17:21:14 [agent.core] INFO: <<< (empty)
 2026-05-12 17:21:14 [main] INFO: Goodbye.
+2026-05-12 18:47:37 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-12.log
+2026-05-12 18:47:37 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 18:47:37 [main] INFO:   Mindcraft-Py — LLM-driven Minecraft Bot
+2026-05-12 18:47:37 [main] INFO:   LLM: openai/qwen/qwen3.6-35b-a3b
+2026-05-12 18:47:37 [main] INFO:   MC Server: 127.0.0.1:55916
+2026-05-12 18:47:37 [main] INFO:   Bot: mindcraft-bot
+2026-05-12 18:47:37 [main] INFO:   Socket Bridge: tcp://127.0.0.1:9090
+2026-05-12 18:47:37 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 18:47:38 [main] INFO: No socket server on 127.0.0.1:9090 — starting subprocess…
+2026-05-12 18:47:38 [main] INFO: [socket-server] [socket-server] Listening on tcp://127.0.0.1:9090
+2026-05-12 18:47:38 [main] INFO: Socket server ready on port 9090
+2026-05-12 18:47:38 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-12 18:47:38 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-12 18:47:38 [main] INFO: Creating bot 'mindcraft-bot' on 127.0.0.1:55916 …
+2026-05-12 18:47:39 [main] INFO: Bot connected as mindcraft-bot
+2026-05-12 18:47:39 [skills.registry] INFO: SkillRegistry loaded: 10 skills
+2026-05-12 18:47:39 [knowledge.knowledge_graph] INFO: KnowledgeGraph loaded: 1415 items, 1105 blocks, 1606 recipes, 151 entities, 40 foods
+2026-05-12 18:47:39 [agent.core] INFO: KnowledgeGraph loaded for mindcraft-bot
+2026-05-12 18:47:39 [agent.safety_monitor] INFO: SafetyMonitor started (poll=0.25s, min_health=5.0, hostile<3.0m)
+2026-05-12 18:47:39 [agent.core] INFO: Agent mindcraft-bot started (model=openai/qwen/qwen3.6-35b-a3b, router=on, safety=on)
+2026-05-12 18:47:39 [main] INFO: Bot is ready. Waiting for chat messages (Ctrl+C to stop).
+2026-05-12 18:47:39 [main] INFO: Connected to 127.0.0.1:55916 as mindcraft-bot (LLM: openai/qwen/qwen3.6-35b-a3b)
+2026-05-12 18:47:48 [agent.core] INFO: >>> Wilson: craft a bed
+2026-05-12 18:47:48 [agent.core] INFO: InputRouter: source=Wilson intent=action_command match='^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b'
+2026-05-12 18:48:18 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 18:48:18 [agent.core] INFO: <<< (empty)
+2026-05-12 18:56:30 [main] INFO: Interrupted — shutting down…
+2026-05-12 18:56:30 [agent.safety_monitor] INFO: SafetyMonitor stopped
+2026-05-12 18:56:30 [mc.socket_bridge] ERROR: Read error in socket bridge
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 420, in _read_loop
+    line = await self._reader.readline()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 562, in readline
+    line = await self.readuntil(sep)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 677, in readuntil
+    await self._wait_for_data('readuntil')
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 539, in _wait_for_data
+    await self._waiter
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/selector_events.py", line 1009, in _read_ready__data_received
+    data = self._sock.recv(self.max_size)
+ConnectionResetError: [Errno 54] Connection reset by peer
+2026-05-12 18:56:31 [main] INFO: Goodbye.
+2026-05-12 18:58:21 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-12.log
+2026-05-12 18:58:21 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 18:58:21 [main] INFO:   Mindcraft-Py — LLM-driven Minecraft Bot
+2026-05-12 18:58:21 [main] INFO:   LLM: openai/qwen/qwen3.6-35b-a3b
+2026-05-12 18:58:21 [main] INFO:   MC Server: 127.0.0.1:55916
+2026-05-12 18:58:21 [main] INFO:   Bot: mindcraft-bot
+2026-05-12 18:58:21 [main] INFO:   Socket Bridge: tcp://127.0.0.1:9090
+2026-05-12 18:58:21 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 18:58:22 [main] INFO: No socket server on 127.0.0.1:9090 — starting subprocess…
+2026-05-12 18:58:22 [main] INFO: [socket-server] [socket-server] Listening on tcp://127.0.0.1:9090
+2026-05-12 18:58:22 [main] INFO: Socket server ready on port 9090
+2026-05-12 18:58:22 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-12 18:58:22 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-12 18:58:22 [main] INFO: Creating bot 'mindcraft-bot' on 127.0.0.1:55916 …
+2026-05-12 18:58:23 [main] INFO: Bot connected as mindcraft-bot
+2026-05-12 18:58:23 [skills.registry] INFO: SkillRegistry loaded: 10 skills
+2026-05-12 18:58:23 [knowledge.knowledge_graph] INFO: KnowledgeGraph loaded: 1415 items, 1105 blocks, 1606 recipes, 151 entities, 40 foods
+2026-05-12 18:58:23 [agent.core] INFO: KnowledgeGraph loaded for mindcraft-bot
+2026-05-12 18:58:23 [agent.safety_monitor] INFO: SafetyMonitor started (poll=0.25s, min_health=5.0, hostile<3.0m)
+2026-05-12 18:58:23 [agent.core] INFO: Agent mindcraft-bot started (model=openai/qwen/qwen3.6-35b-a3b, router=on, safety=on)
+2026-05-12 18:58:23 [main] INFO: Bot is ready. Waiting for chat messages (Ctrl+C to stop).
+2026-05-12 18:58:23 [main] INFO: Connected to 127.0.0.1:55916 as mindcraft-bot (LLM: openai/qwen/qwen3.6-35b-a3b)
+2026-05-12 18:58:35 [agent.core] INFO: >>> Wilson: craft a bed
+2026-05-12 18:58:35 [agent.core] INFO: InputRouter: source=Wilson intent=action_command match='^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b'
+2026-05-12 18:58:49 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 18:58:49 [llm.prompter] WARNING: LLM response parsed empty: finish_reason='stop' metadata={"token_usage": {"completion_tokens": 47, "prompt_tokens": 7340, "total_tokens": 7387, "completion_tokens_details": {"accepted_prediction_tokens": null, "audio_tokens": null, "reasoning_tokens": 46, "rejected_prediction_tokens": null}, "prompt_tokens_details": null}, "model_provider": "openai", "model_name": "qwen/qwen3.6-35b-a3b", "system_fingerprint": "qwen/qwen3.6-35b-a3b", "id": "chatcmpl-36grdy08tvc19qyezgbs1y", "finish_reason": "stop", "logprobs": null} additional_kwargs={"refusal": null} invalid_tool_calls=[]
+2026-05-12 18:58:49 [agent.core] INFO: <<< (empty)
+2026-05-12 19:05:54 [main] INFO: Interrupted — shutting down…
+2026-05-12 19:05:54 [agent.safety_monitor] INFO: SafetyMonitor stopped
+2026-05-12 19:05:54 [mc.socket_bridge] ERROR: Read error in socket bridge
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 420, in _read_loop
+    line = await self._reader.readline()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 562, in readline
+    line = await self.readuntil(sep)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 677, in readuntil
+    await self._wait_for_data('readuntil')
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 539, in _wait_for_data
+    await self._waiter
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/selector_events.py", line 1009, in _read_ready__data_received
+    data = self._sock.recv(self.max_size)
+ConnectionResetError: [Errno 54] Connection reset by peer
+2026-05-12 19:05:55 [main] INFO: Goodbye.
+2026-05-12 19:09:50 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-12.log
+2026-05-12 19:09:50 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 19:09:50 [main] INFO:   Mindcraft-Py — LLM-driven Minecraft Bot
+2026-05-12 19:09:50 [main] INFO:   LLM: openai/google/gemma-4-26b-a4b
+2026-05-12 19:09:50 [main] INFO:   MC Server: 127.0.0.1:55916
+2026-05-12 19:09:50 [main] INFO:   Bot: mindcraft-bot
+2026-05-12 19:09:50 [main] INFO:   Socket Bridge: tcp://127.0.0.1:9090
+2026-05-12 19:09:50 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 19:09:50 [main] INFO: No socket server on 127.0.0.1:9090 — starting subprocess…
+2026-05-12 19:09:50 [main] INFO: [socket-server] [socket-server] Listening on tcp://127.0.0.1:9090
+2026-05-12 19:09:50 [main] INFO: Socket server ready on port 9090
+2026-05-12 19:09:50 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-12 19:09:50 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-12 19:09:50 [main] INFO: Creating bot 'mindcraft-bot' on 127.0.0.1:55916 …
+2026-05-12 19:09:51 [main] INFO: Bot connected as mindcraft-bot
+2026-05-12 19:09:52 [skills.registry] INFO: SkillRegistry loaded: 10 skills
+2026-05-12 19:09:52 [knowledge.knowledge_graph] INFO: KnowledgeGraph loaded: 1415 items, 1105 blocks, 1606 recipes, 151 entities, 40 foods
+2026-05-12 19:09:52 [agent.core] INFO: KnowledgeGraph loaded for mindcraft-bot
+2026-05-12 19:09:52 [agent.safety_monitor] INFO: SafetyMonitor started (poll=0.25s, min_health=5.0, hostile<3.0m)
+2026-05-12 19:09:52 [agent.core] INFO: Agent mindcraft-bot started (model=openai/google/gemma-4-26b-a4b, router=on, safety=on)
+2026-05-12 19:09:52 [main] INFO: Bot is ready. Waiting for chat messages (Ctrl+C to stop).
+2026-05-12 19:09:52 [main] INFO: Connected to 127.0.0.1:55916 as mindcraft-bot (LLM: openai/google/gemma-4-26b-a4b)
+2026-05-12 19:09:59 [agent.core] INFO: >>> Wilson: craft a bed
+2026-05-12 19:09:59 [agent.core] INFO: InputRouter: source=Wilson intent=action_command match='^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b'
+2026-05-12 19:10:11 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:10:11 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:10:24 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:10:24 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:10:38 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:10:38 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:10:52 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:10:52 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:11:05 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:11:05 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:11:30 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:11:30 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:11:44 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:11:44 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:11:46 [main] INFO: Interrupted — shutting down…
+2026-05-12 19:11:46 [agent.safety_monitor] INFO: SafetyMonitor stopped
+2026-05-12 19:11:46 [mc.socket_bridge] ERROR: Read error in socket bridge
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 420, in _read_loop
+    line = await self._reader.readline()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 562, in readline
+    line = await self.readuntil(sep)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 677, in readuntil
+    await self._wait_for_data('readuntil')
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 539, in _wait_for_data
+    await self._waiter
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/selector_events.py", line 1009, in _read_ready__data_received
+    data = self._sock.recv(self.max_size)
+ConnectionResetError: [Errno 54] Connection reset by peer
+2026-05-12 19:11:47 [agent.core] WARNING: LLM call cancelled (safety interrupt)
+2026-05-12 19:11:47 [agent.core] INFO: <<< (empty)
+2026-05-12 19:11:47 [agent.core] WARNING: LLM produced empty response on action_command intent — injecting tool-call reminder (retry 1/1)
+2026-05-12 19:11:47 [main] INFO: Goodbye.
+2026-05-12 19:18:49 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-12.log
+2026-05-12 19:18:49 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 19:18:49 [main] INFO:   Mindcraft-Py — LLM-driven Minecraft Bot
+2026-05-12 19:18:49 [main] INFO:   LLM: openai/google/gemma-4-26b-a4b
+2026-05-12 19:18:49 [main] INFO:   MC Server: 127.0.0.1:55916
+2026-05-12 19:18:49 [main] INFO:   Bot: mindcraft-bot
+2026-05-12 19:18:49 [main] INFO:   Socket Bridge: tcp://127.0.0.1:9090
+2026-05-12 19:18:49 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 19:18:49 [main] INFO: No socket server on 127.0.0.1:9090 — starting subprocess…
+2026-05-12 19:18:50 [main] INFO: [socket-server] [socket-server] Listening on tcp://127.0.0.1:9090
+2026-05-12 19:18:50 [main] INFO: Socket server ready on port 9090
+2026-05-12 19:18:50 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-12 19:18:50 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-12 19:18:50 [main] INFO: Creating bot 'mindcraft-bot' on 127.0.0.1:55916 …
+2026-05-12 19:18:51 [main] INFO: Bot connected as mindcraft-bot
+2026-05-12 19:18:51 [skills.registry] INFO: SkillRegistry loaded: 10 skills
+2026-05-12 19:18:51 [knowledge.knowledge_graph] INFO: KnowledgeGraph loaded: 1415 items, 1105 blocks, 1606 recipes, 151 entities, 40 foods
+2026-05-12 19:18:51 [agent.core] INFO: KnowledgeGraph loaded for mindcraft-bot
+2026-05-12 19:18:51 [agent.safety_monitor] INFO: SafetyMonitor started (poll=0.25s, min_health=5.0, hostile<3.0m)
+2026-05-12 19:18:51 [agent.core] INFO: Agent mindcraft-bot started (model=openai/google/gemma-4-26b-a4b, router=on, safety=on)
+2026-05-12 19:18:51 [main] INFO: Bot is ready. Waiting for chat messages (Ctrl+C to stop).
+2026-05-12 19:18:51 [main] INFO: Connected to 127.0.0.1:55916 as mindcraft-bot (LLM: openai/google/gemma-4-26b-a4b)
+2026-05-12 19:18:57 [agent.core] INFO: >>> Wilson: craft a bed
+2026-05-12 19:18:57 [agent.core] INFO: InputRouter: source=Wilson intent=action_command match='^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b'
+2026-05-12 19:19:13 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-05-12 19:19:13 [llm.prompter] WARNING: LLM transient error (attempt 1/3), retrying in 1.5s: Error code: 400 - {'error': 'Model reloaded.'}
+2026-05-12 19:19:42 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:19:42 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:21:42 [llm.prompter] WARNING: LLM transient error (attempt 1/3), retrying in 1.5s: Request timed out.
+2026-05-12 19:23:32 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:23:32 [agent.core] INFO: <<< tools=action_crafting_plan_white_bed_x1_recipe_output_white_bed_x1_requires_crafting_table_no_ingredients_black_bed_x1_have_0_missing_1_white_dye_x1_have_0_missing_1_steps_2_gather_or_craft_missing_black_bed_x1_black_bed_x1_missing_1_white_dye_x1_have_0_missing_1_white_dye_x1_missing_1_steps_3_craft_white_bed, action_crafting_plan_white_bed_x1_recipe_out_put_white_bed_x1_requires_crafting_table_no_ingredients_black_behaviors_black_bed_x1_have_0_missing_1_black_bed_x1_missing_1_steps_behaviors_2_gather_or_craft_missing_black_bed_x1_black_bed_bed_white_dye_x1_have_0_missing_1_white_1_white_dye_x1_have_0_missing_1_white_dye_x1_missing_1_steps_3_craft_white_bed, action_crafting_plan_white_bed_x1_recipe_output_white_bed_x1_requires_crafting_table_no_no_ingredients_black_bed_x1_have_0_missing_1_black_bed_x1_missing_1_white_dye_x1_have_0_missing_1_white_dye_x1_missing_1_steps_3_craft_white_bed, action_crafting_plan_white_bed_x1__recipe_output_white_bed_x1_requires_crafting_table_no_ingredients_black_bed_x1_have_0_missing_1_black_bed_x1_missing_1_white_dye_x1_have_0_missing_1_white_dye_x1_missing_1_steps_3_craft_white_bed, action_crafting_plan_white_bed_x1__recipe_output_white_bed_x1_requires_crafting_table_no_ingredients_black_bed_x1_have_0_missing_1_black_bed_x1_missing_1_white_dye_x1_have_0_missing_1_white_dye_x1_missing_1_steps_3_craft_white_bed, action_crafting_plan_white_bed_x1__recipe_output_white_bed_x1_requires_crafting_table_no_ingredients_black_bed_x1_have_0_missing_1_black_bed_x1_missing_1_white_ly_dye_x1_have_0_missing_1_white_dye_x1_missing_1_steps_3_craft_white_bed
+2026-05-12 19:23:32 [agent.executor] WARNING: Unknown command: !action_crafting_plan_white_bed_x1_recipe_output_white_bed_x1_requires_crafting_table_no_ingredients_black_bed_x1_have_0_missing_1_white_dye_x1_have_0_missing_1_steps_2_gather_or_craft_missing_black_bed_x1_black_bed_x1_missing_1_white_dye_x1_have_0_missing_1_white_dye_x1_missing_1_steps_3_craft_white_bed
+2026-05-12 19:23:32 [agent.core] WARNING: Hard command failure — asking player: Command !action_crafting_plan_white_bed_x1_recipe_output_white_bed_x1_requires_crafting_table_no_ingredients_black_bed_x1_have_0_missing_1_white_dye_x1_have_0_missing_1_steps_2_gather_or_craft_missing_black_bed_x1_black_bed_x1_missing_1_white_dye_x1_have_0_missing_1_white_dye_x1_missing_1_steps_3_craft_white_bed does not exist.
+2026-05-12 19:24:08 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:24:08 [agent.core] INFO: <<< I'll go find some sheep to get wool. !searchForEntity(entity_type='sheep')
+2026-05-12 19:24:25 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:24:25 [agent.core] INFO: <<< !collectBlocks(block_type='white_wool', count=3)
+2026-05-12 19:24:25 [agent.executor] ERROR: Command !collectBlocks failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 105, in execute
+    result = await result
+             ^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 302, in _collect_blocks
+    return await bridge.collect_blocks(block_type, count)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 244, in collect_blocks
+    return await self._request("collect_blocks", {
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "block_type": block_type, "count": count,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    })
+    ^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 409, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+mc.socket_bridge.SocketBridgeError: No white_wool nearby (32 block radius).
+2026-05-12 19:25:09 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:25:09 [agent.core] INFO: <<< !attack(entity_type='sheep')***
+2026-05-12 19:25:09 [agent.executor] ERROR: Command !attack failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 105, in execute
+    result = await result
+             ^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/agent/executor.py", line 264, in _attack
+    return await bridge.attack(entity_type)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 196, in attack
+    return await self._request("attack", {
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "entity_type": entity_type, "range": range_val,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    })
+    ^^
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 409, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+mc.socket_bridge.SocketBridgeError: No hostile sheep nearby.
+2026-05-12 19:25:14 [main] INFO: Interrupted — shutting down…
+2026-05-12 19:25:14 [agent.safety_monitor] INFO: SafetyMonitor stopped
+2026-05-12 19:25:14 [mc.socket_bridge] ERROR: Read error in socket bridge
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 420, in _read_loop
+    line = await self._reader.readline()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 562, in readline
+    line = await self.readuntil(sep)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 677, in readuntil
+    await self._wait_for_data('readuntil')
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 539, in _wait_for_data
+    await self._waiter
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/selector_events.py", line 1009, in _read_ready__data_received
+    data = self._sock.recv(self.max_size)
+ConnectionResetError: [Errno 54] Connection reset by peer
+2026-05-12 19:25:15 [agent.core] WARNING: LLM call cancelled (safety interrupt)
+2026-05-12 19:25:15 [agent.core] INFO: <<< (empty)
+2026-05-12 19:25:15 [agent.core] WARNING: LLM produced empty response on action_command intent — injecting tool-call reminder (retry 1/1)
+2026-05-12 19:25:15 [main] INFO: Goodbye.
+2026-05-12 19:34:39 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-12.log
+2026-05-12 19:34:39 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 19:34:39 [main] INFO:   Mindcraft-Py — LLM-driven Minecraft Bot
+2026-05-12 19:34:39 [main] INFO:   LLM: openai/google/gemma-4-26b-a4b
+2026-05-12 19:34:39 [main] INFO:   MC Server: 127.0.0.1:55916
+2026-05-12 19:34:39 [main] INFO:   Bot: mindcraft-bot
+2026-05-12 19:34:39 [main] INFO:   Socket Bridge: tcp://127.0.0.1:9090
+2026-05-12 19:34:39 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-12 19:34:39 [main] INFO: No socket server on 127.0.0.1:9090 — starting subprocess…
+2026-05-12 19:34:39 [main] INFO: [socket-server] [socket-server] Listening on tcp://127.0.0.1:9090
+2026-05-12 19:34:39 [main] INFO: Socket server ready on port 9090
+2026-05-12 19:34:39 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-12 19:34:39 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-12 19:34:39 [main] INFO: Creating bot 'mindcraft-bot' on 127.0.0.1:55916 …
+2026-05-12 19:34:40 [main] INFO: Bot connected as mindcraft-bot
+2026-05-12 19:34:40 [llm.prompter] INFO: LLM thinking disabled (reasoning_effort=none)
+2026-05-12 19:34:41 [skills.registry] INFO: SkillRegistry loaded: 10 skills
+2026-05-12 19:34:41 [knowledge.knowledge_graph] INFO: KnowledgeGraph loaded: 1415 items, 1105 blocks, 1606 recipes, 151 entities, 40 foods
+2026-05-12 19:34:41 [agent.core] INFO: KnowledgeGraph loaded for mindcraft-bot
+2026-05-12 19:34:41 [agent.safety_monitor] INFO: SafetyMonitor started (poll=0.25s, min_health=5.0, hostile<3.0m)
+2026-05-12 19:34:41 [agent.core] INFO: Agent mindcraft-bot started (model=openai/google/gemma-4-26b-a4b, router=on, safety=on)
+2026-05-12 19:34:41 [main] INFO: Bot is ready. Waiting for chat messages (Ctrl+C to stop).
+2026-05-12 19:34:41 [main] INFO: Connected to 127.0.0.1:55916 as mindcraft-bot (LLM: openai/google/gemma-4-26b-a4b)
+2026-05-12 19:34:54 [agent.core] INFO: >>> Wilson: craft a bed
+2026-05-12 19:34:54 [agent.core] INFO: InputRouter: source=Wilson intent=action_command match='^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b'
+2026-05-12 19:35:17 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-05-12 19:35:17 [llm.prompter] ERROR: ChatOpenAI request failed (attempt 1)
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/llm/prompter.py", line 515, in send_request
+    raw_result: Any = await chain.ainvoke({
+                      ^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+    })
+    ^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/langchain_core/runnables/base.py", line 3375, in ainvoke
+    input_ = await coro_with_context(part(), context, create_task=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/langchain_core/runnables/base.py", line 5894, in ainvoke
+    return await self.bound.ainvoke(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/langchain_core/language_models/chat_models.py", line 497, in ainvoke
+    llm_result = await self.agenerate_prompt(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/langchain_core/language_models/chat_models.py", line 1834, in agenerate_prompt
+    return await self.agenerate(
+           ^^^^^^^^^^^^^^^^^^^^^
+        prompt_messages, stop=stop, callbacks=callbacks, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/langchain_core/language_models/chat_models.py", line 1792, in agenerate
+    raise exceptions[0]
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/langchain_core/language_models/chat_models.py", line 2127, in _agenerate_with_cache
+    result = await self._agenerate(
+             ^^^^^^^^^^^^^^^^^^^^^^
+        messages, stop=stop, run_manager=run_manager, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/langchain_openai/chat_models/base.py", line 1923, in _agenerate
+    _handle_openai_bad_request(e)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/langchain_openai/chat_models/base.py", line 1918, in _agenerate
+    raw_response = await self.async_client.with_raw_response.create(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **payload
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/_legacy_response.py", line 384, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/resources/chat/completions/completions.py", line 2739, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+    ...<53 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1931, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1716, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': 'The model has crashed without additional information. (Exit code: 18446744072635812000)'}
+2026-05-12 19:35:17 [agent.core] INFO: <<< My brain disconnected, try again.
+2026-05-12 19:35:17 [agent.core] WARNING: LLM produced no tool call on action_command intent — injecting reminder (retry 1/1)
+2026-05-12 19:35:45 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:35:45 [agent.core] INFO: <<< tools=action:getCraftingPlan
+2026-05-12 19:35:58 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:35:58 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:36:11 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:36:11 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:36:31 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:36:31 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:36:45 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:36:45 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:36:58 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:36:58 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:37:09 [agent.core] INFO: >>> Wilson: come to me
+2026-05-12 19:37:09 [agent.core] INFO: InputRouter: source=Wilson intent=action_command match='^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b'
+2026-05-12 19:37:29 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:37:29 [agent.core] INFO: <<< tools=action:goToPlayer
+2026-05-12 19:37:29 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:37:29 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:37:56 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:37:56 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:37:56 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:37:56 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:37:56 [agent.core] WARNING: LLM repeated query command searchWiki with same arguments — injecting next-step reminder
+2026-05-12 19:38:13 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:38:13 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:38:14 [httpx] INFO: HTTP Request: POST http://192.168.50.91:1235/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-12 19:38:14 [agent.core] INFO: <<< tools=action:searchWiki
+2026-05-12 19:39:02 [main] INFO: Interrupted — shutting down…
+2026-05-12 19:39:02 [agent.safety_monitor] INFO: SafetyMonitor stopped
+2026-05-12 19:39:02 [mc.socket_bridge] ERROR: Read error in socket bridge
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/src/mc/socket_bridge.py", line 420, in _read_loop
+    line = await self._reader.readline()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 562, in readline
+    line = await self.readuntil(sep)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 677, in readuntil
+    await self._wait_for_data('readuntil')
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/streams.py", line 539, in _wait_for_data
+    await self._waiter
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/selector_events.py", line 1009, in _read_ready__data_received
+    data = self._sock.recv(self.max_size)
+ConnectionResetError: [Errno 54] Connection reset by peer
+2026-05-12 19:39:03 [agent.core] WARNING: LLM call cancelled (safety interrupt)
+2026-05-12 19:39:03 [agent.core] INFO: <<< (empty)
+2026-05-12 19:39:03 [agent.core] WARNING: LLM call cancelled (safety interrupt)
+2026-05-12 19:39:03 [agent.core] INFO: <<< (empty)
+2026-05-12 19:39:03 [agent.core] WARNING: LLM produced empty response on action_command intent — injecting tool-call reminder (retry 1/1)
+2026-05-12 19:39:03 [main] INFO: Goodbye.

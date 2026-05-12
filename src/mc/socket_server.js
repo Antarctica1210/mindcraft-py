@@ -676,18 +676,27 @@ async function handleRequest(method, params) {
     case "attack": {
       if (!bot) throw new Error("No bot connected");
       const entityType = params.entity_type;
+      const range = params.range || 24;
       let target = null;
       for (const [, e] of Object.entries(bot.entities || {})) {
         if (!e.position) continue;
         const name = (e.name || "").toLowerCase();
-        if (name === entityType.toLowerCase() && e.type === "hostile") {
+        const displayName = (e.displayName || "").toLowerCase();
+        const matchName = entityType.toLowerCase();
+        if (name === matchName || displayName === matchName) {
           const dist = bot.entity.position.distanceTo(e.position);
-          if (dist <= (params.range || 16)) { target = e; break; }
+          if (dist <= range) { target = e; break; }
         }
       }
-      if (!target) throw new Error(`No hostile ${entityType} nearby.`);
+      if (!target) throw new Error(`No ${entityType} nearby (${range} block radius).`);
       bot.pvp.attack(target);
-      return `Attacking ${entityType}.`;
+      const started = Date.now();
+      while (bot.entities?.[target.id] && Date.now() - started < 30000) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      try { bot.pvp.stop(); } catch {}
+      try { await bot.collectBlock.collect(bot.nearestEntity((e) => e.name === "item")); } catch {}
+      return bot.entities?.[target.id] ? `Attacking ${entityType}.` : `Killed ${entityType} and picked up nearby drops.`;
     }
 
     case "attack_player": {
