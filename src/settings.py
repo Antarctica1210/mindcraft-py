@@ -2,8 +2,8 @@
 Settings — runtime configuration loaded from environment variables.
 
 Loads a .env file (if present) and exposes typed settings for:
-  - LLM provider (via LiteLLM unified interface)
-  - Embedding provider
+  - LLM provider (via LangChain ChatOpenAI)
+  - Embedding provider (via OpenAIEmbeddings)
   - Bot identity and behaviour
 
 Usage:
@@ -62,11 +62,11 @@ def _get_bool(key: str, default: bool) -> bool:
 
 @dataclass
 class LLMSettings:
-    """LLM provider configuration consumed by LiteLLM."""
+    """LLM provider configuration consumed by LangChain ChatOpenAI."""
 
-    # LiteLLM model string: "openai/gpt-4o", "deepseek/deepseek-chat", etc.
-    # For custom OpenAI-compatible endpoints (LM Studio), use "openai/<model>"
-    model: str = field(default_factory=lambda: _get("LLM_MODEL", "openai/qwen/qwen3.6-35b-a3b"))
+    # LangChain ChatOpenAI model string: "gpt-4o", "qwen/qwen3.6-35b-a3b", etc.
+    # For custom OpenAI-compatible endpoints (LM Studio), set LLM_BASE_URL
+    model: str = field(default_factory=lambda: _get("LLM_MODEL", "qwen/qwen3.6-35b-a3b"))
 
     # API base URL — only needed for custom providers (LM Studio, local proxies)
     base_url: str = field(default_factory=lambda: _get("LLM_BASE_URL", "http://localhost:1234/v1"))

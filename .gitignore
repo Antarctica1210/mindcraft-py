@@ -28,6 +28,4 @@ tasks/construction_tasks/train/**
 server_data*
 **/.DS_Store
 **/__pycache__/
-logs/
 .env
-log-js/

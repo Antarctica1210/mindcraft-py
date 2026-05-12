@@ -961,7 +961,7 @@ async function handleRequest(method, params) {
         prefix = `You already have ${existing} ${targetItem}. If you need more:\n`;
       }
       try {
-        const mc = await import("../../utils/mcdata.js");
+        const mc = await import("../utils/mcdata.js");
         const plan = mc.getDetailedCraftingPlan(targetItem, quantity, currInventory);
         return prefix + plan;
       } catch (e) {

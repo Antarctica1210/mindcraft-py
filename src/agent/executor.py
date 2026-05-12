@@ -17,6 +17,38 @@ COMMAND_DOCS: dict[str, dict[str, Any]] = {}
 """Per-command documentation populated by register_builtins()."""
 
 
+def _failure_hint(command_name: str, error: str) -> str | None:
+    """Return a short actionable hint for a known failure pattern, or None."""
+    el = error.lower()
+
+    if "no recipe for" in el or "does not exist" in el:
+        return (
+            "The recipe name is incorrect. Use getCraftingPlan to find the "
+            "exact item name, then retry with the correct name."
+        )
+    if "missing ingredient" in el or "don't have" in el or "not enough" in el:
+        return (
+            "You are missing materials. Check your inventory, then search for "
+            "and collect the missing items before retrying craftRecipe."
+        )
+    if "crafting table" in el:
+        return (
+            "You need a crafting table nearby. Check $STATS for nearby blocks "
+            "— if a table is nearby, move closer to it. If not, collect logs "
+            "and craft a crafting table first."
+        )
+    if "player not found" in el or "could not find" in el:
+        return "The target was not found nearby. Try searchForBlock or searchForEntity first."
+    if "path" in el and ("not found" in el or "cannot" in el):
+        return "The destination is unreachable. Try moveAway or a different route."
+    if "inventory full" in el or "no space" in el:
+        return "Your inventory is full. Discard unnecessary items or place a chest."
+    if "timeout" in el:
+        return "The operation timed out. The target may be too far or the server is lagging."
+
+    return None
+
+
 class ActionExecutor:
     """Executes parsed !command(args) calls against the bot bridge."""
 
@@ -53,7 +85,11 @@ class ActionExecutor:
             return str(result) if result is not None else None
         except Exception as exc:
             logger.exception("Command !%s failed", name)
-            return f"Command !{name} failed: {exc}"
+            err_msg = str(exc)
+            hint = _failure_hint(name, err_msg)
+            if hint:
+                return f"FAILED: {err_msg}\nHINT: {hint}"
+            return f"FAILED: {err_msg}\nHINT: Use getCraftingPlan to check requirements, or try a different approach."
 
     def has(self, name: str) -> bool:
         return name.lstrip("!") in self._handlers

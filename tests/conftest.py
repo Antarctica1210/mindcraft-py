@@ -2,19 +2,15 @@
 Shared pytest fixtures and import setup.
 
 Adds ``src/`` to ``sys.path`` so tests can import packages by their flat
-name (``from llm.input_router import ...``). When ``litellm`` is not
-installed the LLM completion calls are stubbed so the prompter / agent
-can be imported and exercised without the heavy dependency.
+name (``from llm.input_router import ...``).
 
-Real-end-to-end tests (``test_e2e.py``) bring their own dependencies and
-do not need these stubs — the stub is only installed when the real
-package is missing.
+LLM calls go through ``langchain-openai`` (ChatOpenAI / OpenAIEmbeddings)
+which is a required runtime dependency — no stubs needed.
 """
 from __future__ import annotations
 
 import os
 import sys
-import types
 from typing import Any
 
 # ── Path setup ──────────────────────────────────────────────────────
@@ -23,44 +19,6 @@ HERE = os.path.dirname(__file__)
 SRC = os.path.abspath(os.path.join(HERE, "..", "src"))
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
-
-# ── Optional litellm stub ───────────────────────────────────────────
-
-try:  # pragma: no cover — only the install-state matters
-    import litellm  # noqa: F401
-except ImportError:
-    _stub = types.ModuleType("litellm")
-    _stub.suppress_debug_info = True
-
-    class _StubMsg:
-        content = "stubbed reply"
-        tool_calls: list[Any] = []
-
-    class _StubChoice:
-        message = _StubMsg()
-        finish_reason = "stop"
-
-    class _StubResp:
-        choices = [_StubChoice()]
-        usage = None
-
-    async def _acompletion(**kwargs: Any) -> _StubResp:
-        return _StubResp()
-
-    async def _aembedding(**kwargs: Any) -> Any:
-        return types.SimpleNamespace(data=[{"embedding": [0.0] * 128}])
-
-    _stub.acompletion = _acompletion  # type: ignore[attr-defined]
-    _stub.aembedding = _aembedding    # type: ignore[attr-defined]
-
-    class _CtxErr(Exception):
-        """Stub for litellm.exceptions.ContextWindowExceededError."""
-
-    _stub.exceptions = types.SimpleNamespace(  # type: ignore[attr-defined]
-        ContextWindowExceededError=_CtxErr,
-    )
-    sys.modules["litellm"] = _stub
-    sys.modules["litellm.exceptions"] = _stub.exceptions  # type: ignore[attr-defined]
 
 
 # ── Shared fakes ────────────────────────────────────────────────────

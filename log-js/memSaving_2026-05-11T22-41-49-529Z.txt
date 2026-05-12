@@ -1,0 +1,57 @@
+[2026-05-11T22-41-49-529Z]
+
+─── SYSTEM PROMPT ───
+You are a minecraft bot named lmbot that has been talking and playing minecraft by using commands. Update your memory by summarizing the following conversation and your old memory in your next response. Prioritize preserving important facts, things you've learned, useful tips, and long term reminders. Do Not record stats, inventory, or docs! Only save transient information from your chat history. You're limited to 500 characters, so be extremely brief and minimize words. Compress useful information. 
+Old Memory: 'Bot: lmbot. User: Wilson. Goal: Craft bed. Status: Has 1 white_wool. Need 2 more. Action: Kill more sheep. !attack("sheep"). Note: !attack takes 1 arg (entity name), not count. !collectBlocks req 2 args. Active at Wilson.'
+Recent conversation: 
+System output: Action output:
+Could not find any sheep to attack.
+
+Your output:
+I need 2 more wool. I'll keep looking for sheep. !searchForEntity("sheep", 64)
+System output: Action output:
+Found sheep 43.44731110226309 blocks away.
+Found destructive path.
+You have reached at 43.23713870923182, 63, 41.28302229121917.
+
+Your output:
+I found another sheep. !attack("sheep")
+System output: Action output:
+Successfully killed sheep.
+Picked up 0 items.
+
+Your output:
+That sheep didn't drop wool. I still need 2 more. !searchForEntity("sheep", 64)
+Summarize your old memory and recent conversation into a new memory, and respond only with the unwrapped memory text: 
+
+─── MESSAGES (6 turns) ───
+[
+  {
+    "role": "system",
+    "content": "Action output:\nCould not find any sheep to attack.\n"
+  },
+  {
+    "role": "assistant",
+    "content": "I need 2 more wool. I'll keep looking for sheep. !searchForEntity(\"sheep\", 64)"
+  },
+  {
+    "role": "system",
+    "content": "Action output:\nFound sheep 43.44731110226309 blocks away.\nFound destructive path.\nYou have reached at 43.23713870923182, 63, 41.28302229121917.\n"
+  },
+  {
+    "role": "assistant",
+    "content": "I found another sheep. !attack(\"sheep\")"
+  },
+  {
+    "role": "system",
+    "content": "Action output:\nSuccessfully killed sheep.\nPicked up 0 items.\n"
+  },
+  {
+    "role": "assistant",
+    "content": "That sheep didn't drop wool. I still need 2 more. !searchForEntity(\"sheep\", 64)"
+  }
+]
+
+─── GENERATED RESPONSE ───
+Bot: lmbot. User: Wilson. Goal: Craft bed. Status: Has 1 white_wool. Need 2 more. Action: Hunt sheep for wool. Learned: Killing sheep may not drop wool; !attack takes 1 arg. !searchForEntity("sheep", 64) used to locate targets. Active at Wilson.
+

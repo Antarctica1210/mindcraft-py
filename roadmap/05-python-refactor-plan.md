@@ -7,7 +7,7 @@
 | Minecraft 协议 | Mineflayer (Node.js) via JSPyBridge | 官方 examples/python/ 已支持，无需重写 |
 | 桥接 | TCP Socket (JSON-line 协议) | 自建 Node.js TCP 服务端包裹 Mineflayer + Python async 客户端，替代 JSPyBridge |
 | 类型系统 | Pydantic v2 + mypy | 所有数据结构建模，运行时校验 |
-| LLM 调用 | litellm / 保留现有 provider adapter | 统一 20+ provider 接口，Python 生态更强 |
+| LLM 调用 | langchain-openai + langchain-core (ChatOpenAI) | 统一 provider 接口，LCEL chain 模式 (prompt \| model \| parser)，OpenAI 兼容即可用 |
 | 向量检索 | 文件扫描 → FAISS + rank-bm25（Phase 4b） | 初期零依赖，规模上来后替代手写 cosine 排序，双层混合检索 |
 | 记忆层 | 自定义 MemoryLayer + 文件 truth source + 可选 SQLite/Postgres 索引 | 统一管理短期/长期/语义/程序性记忆，避免各模块各自持久化 |
 | 图推理 | networkx | 动作状态图 + 知识图谱的内存查询/算法层，底层存储由 MemoryLayer 接管 |
@@ -23,8 +23,8 @@
 │                                                  │
 │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
 │  │ prompter │ │ memory_  │ │ agent_core       │ │
-│  │ (LLM)    │ │ (files,  │ │ (Pydantic models │ │
-│  │          │ │ later idx│ │  + decision loop)│ │
+│  │ (LangCh  │ │ (files,  │ │ (Pydantic models │ │
+│  │  ain)    │ │ later idx│ │  + decision loop)│ │
 │  └──────────┘ └──────────┘ └──────────────────┘ │
 │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
 │  │ working  │ │ episodic │ │ semantic memory  │ │
@@ -117,11 +117,17 @@ BackgroundReflectionWorker
 
 迁移 `models/prompter.js` (~800 行，含 20+ provider)：
 
-- [ ] 用 litellm 统一 provider 接口（OpenAI / Anthropic / Gemini / Ollama / Replicate 等）
-- [ ] 实现 `MessageBuilder`：system prompt + examples + conversation + tool definitions 拼接
-- [ ] 实现 `ToolCallParser`：解析 LLM 返回的 tool call，**1:1 映射到现有 `SocketBridge` 方法**（详见下文 SocketBridge 集成）
-- [ ] 实现 `InputRouter`：玩家消息进入主 LLM **之前**先做意图分类（详见下文）
-- [ ] 保留 history 压缩逻辑，用 Python 重写
+- [x] 用 LangChain ChatOpenAI 统一 provider 接口（任何 OpenAI 兼容 endpoint，含 LM Studio / DeepSeek / Qwen）
+- [x] 实现 Pydantic 类型化 I/O：`LLMInput`（system_message + history + tool_choice） → `LLMOutput`（content + tool_calls + usage + finish_reason），无 **kwargs
+- [x] 实现 LCEL chain 模式：`ChatPromptTemplate | ChatOpenAI.bind(tools=...) | LLMOutputParser`
+- [x] `LLMOutputParser` 继承 `BaseOutputParser`，将 LangChain 的 AIMessage.tool_calls 扁平格式转回 OpenAI 嵌套格式
+- [x] 实现 `MessageBuilder`：system prompt + examples + conversation + tool definitions 拼接
+- [x] 实现 `ToolCallParser`：解析 LLM 返回的 tool call，**1:1 映射到现有 `SocketBridge` 方法**（详见下文 SocketBridge 集成）
+- [x] 实现 `InputRouter`：玩家消息进入主 LLM **之前**先做意图分类（详见下文）
+- [x] 保留 history 压缩逻辑，用 Python 重写
+- [x] 保留 context-window 恢复（trim oldest turns）+ transient error 重试（3 attempts）
+- [x] 保留 think-tag 剥离（推理模型）
+- [x] Embedding 改用 `OpenAIEmbeddings`
 - [ ] 单元测试：各 provider 的 mock 调用验证；InputRouter 意图分类准确率验证；ToolCallParser 对 SocketBridge 全部方法签名的覆盖率验证
 
 **SocketBridge 集成（贴现有实现，避免重复造轮子）：**
@@ -163,7 +169,7 @@ Phase 1 不重新发明工具协议，直接对接：
 - [ ] L1 NDJSON `player_msg` 事件扩展 `intent` 字段，便于事后审计分类准确率
 - [ ] 关键词表可热加载（`config/intent_keywords.yaml`），多语言支持（中/英分表）
 
-**产出：`src/llm/prompter.py`, `src/llm/message_builder.py`, `src/llm/tool_parser.py`, `src/llm/input_router.py`**
+**产出：`src/llm/prompter.py`（LangChain ChatOpenAI + Pydantic I/O + chain 模式）, `src/llm/message_builder.py`, `src/llm/tool_parser.py`, `src/llm/input_router.py`**
 
 ### Phase 2: Agent 核心 + 类型建模 (5-7 天)
 
@@ -918,7 +924,7 @@ Phase 7b 只处理 World Facts，不重复实现 Phase 7a 的静态知识：
 |---|---|---|---|
 | ~~JSPyBridge 高频事件性能瓶颈~~ | ~~中~~ | ~~高~~ | **已解决** — 改用 TCP Socket 桥接，JSON-line 协议 |
 | ~~JSPyBridge 跨语言调试困难~~ | ~~高~~ | ~~中~~ | **已解决** — Socket 协议可独立抓包调试 |
-| litellm 覆盖不全某些 provider | 低 | 中 | 保留自定义 adapter 扩展能力 |
+| ChatOpenAI 不兼容某些非 OpenAI-API provider | 低 | 中 | 需 Anthropic/Gemini 时接入 langchain-anthropic / langchain-google-genai |
 | 记忆层过早复杂化 | 中 | 中 | Phase 3 只实现稳定接口 + policy；SQLite/FAISS/RRF 放到 Phase 3b/4b，按规模引入 |
 | 多套记忆重复写入导致上下文污染 | 中 | 高 | 统一通过 MemoryLayer policy 写入，记录 source/confidence/tags/ttl，定期 compact |
 | 图数据内存膨胀 | 低 | 低 | 设置节点/边上限，LRU 淘汰，底层持久化交给 MemoryLayer |
@@ -951,7 +957,7 @@ mindcraft-py/
 │   │   ├── bridge.py          # [已废弃] JSPyBridge 封装
 │   │   └── events.py          # [已废弃] JSPyBridge 事件注册
 │   ├── llm/
-│   │   ├── prompter.py        # LLM 调用统一接口
+│   │   ├── prompter.py        # LLM 调用统一接口 (LangChain ChatOpenAI + Pydantic I/O)
 │   │   ├── message_builder.py # Prompt 拼接
 │   │   ├── tool_parser.py     # Tool call 解析（LLM 输出端）
 │   │   └── input_router.py    # Phase 1: 玩家输入意图分类（LLM 输入端，五类分发）

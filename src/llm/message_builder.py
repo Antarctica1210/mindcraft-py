@@ -25,8 +25,12 @@ DEFAULT_CONVERSING_TEMPLATE = (
     "IMPORTANT — Crafting and multi-step tasks:\n"
     "  - Before crafting any complex item, use getCraftingPlan to see the "
     "full ingredient tree and required tools (e.g. crafting table, furnace).\n"
-    "  - Some recipes (beds, tools, armor) require a placed crafting table nearby "
-    "— check requirements before you craft.\n"
+    "  - Some recipes (beds, tools, armor) require a placed crafting table nearby. "
+    "Check $STATS for nearby blocks — if a crafting table is already in the "
+    "environment, use it instead of making a new one.\n"
+    "  - If no crafting table is nearby, collect logs and craft one. "
+    "The craftRecipe command automatically places a table if needed, "
+    "and automatically picks it up after crafting.\n"
     "  - Check your inventory first. If you lack materials, search for and "
     "collect them before crafting.\n"
     "  - Break complex requests into sequential steps: check requirements → "
@@ -92,12 +96,14 @@ class MessageBuilder:
         conversing_template: str | None = None,
         coding_template: str | None = None,
         self_prompt: str = "",
+        skill_registry: Any = None,
     ):
         self.bot_name = bot_name
         self.commands = commands or []
         self.conversing_template = conversing_template or DEFAULT_CONVERSING_TEMPLATE
         self.coding_template = coding_template or DEFAULT_CODING_TEMPLATE
         self.self_prompt = self_prompt
+        self._skill_registry = skill_registry
 
     # ── Placeholder substitution ──────────────────────────────────
 
@@ -202,6 +208,18 @@ class MessageBuilder:
                 msg["tool_call_id"] = turn.tool_call_id
             messages.append(msg)
         return messages
+
+    # ── Skill / code docs ────────────────────────────────────────
+
+    def build_code_docs(self, *, query: str = "", limit: int = 5) -> str:
+        """Generate the $CODE_DOCS string from the skill registry.
+
+        If a query is given, returns the most relevant skills.  Otherwise
+        returns all loaded skills.
+        """
+        if self._skill_registry is None:
+            return ""
+        return self._skill_registry.get_relevant(query, limit=limit)
 
     # ── Stats / inventory formatting ──────────────────────────────
 

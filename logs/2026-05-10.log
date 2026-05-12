@@ -1,0 +1,469 @@
+2026-05-10 14:07:29 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 14:07:29 [e2e] INFO: Creating bot: mindcraft-bot → 127.0.0.1:55916
+2026-05-10 14:07:29 [mc.bridge] INFO: Loaded plugin: mineflayer-pathfinder
+2026-05-10 14:07:29 [mc.bridge] INFO: Loaded plugin: mineflayer-pvp
+2026-05-10 14:07:29 [mc.bridge] INFO: Loaded plugin: mineflayer-collectblock
+2026-05-10 14:07:29 [mc.bridge] INFO: Loaded plugin: mineflayer-armor-manager
+2026-05-10 14:07:29 [mc.bridge] INFO: Loaded plugin: mineflayer-auto-eat
+2026-05-10 14:07:30 [e2e] INFO: Bot spawned at Vec3 { x: 642.5, y: 71, z: 486.5 }
+2026-05-10 14:07:31 [e2e] INFO: Viewer: http://localhost:3000
+2026-05-10 14:10:53 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 14:10:53 [e2e] INFO: Creating bot: mindcraft-bot → 127.0.0.1:55916
+2026-05-10 14:10:54 [mc.bridge] INFO: Loaded plugin: mineflayer-pathfinder
+2026-05-10 14:10:54 [mc.bridge] INFO: Loaded plugin: mineflayer-pvp
+2026-05-10 14:10:54 [mc.bridge] INFO: Loaded plugin: mineflayer-collectblock
+2026-05-10 14:10:54 [mc.bridge] INFO: Loaded plugin: mineflayer-armor-manager
+2026-05-10 14:10:54 [mc.bridge] INFO: Loaded plugin: mineflayer-auto-eat
+2026-05-10 14:10:54 [e2e] INFO: Bot spawned at Vec3 { x: 642.5, y: 71, z: 486.5 }
+2026-05-10 14:10:56 [e2e] INFO: Viewer: http://localhost:3000
+2026-05-10 14:15:54 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 14:15:54 [e2e] INFO: Creating bot: mindcraft-bot → 127.0.0.1:55916
+2026-05-10 14:15:55 [mc.bridge] INFO: Loaded plugin: mineflayer-pathfinder
+2026-05-10 14:15:55 [mc.bridge] INFO: Loaded plugin: mineflayer-pvp
+2026-05-10 14:15:55 [mc.bridge] INFO: Loaded plugin: mineflayer-collectblock
+2026-05-10 14:15:55 [mc.bridge] INFO: Loaded plugin: mineflayer-armor-manager
+2026-05-10 14:15:55 [mc.bridge] INFO: Loaded plugin: mineflayer-auto-eat
+2026-05-10 14:15:55 [e2e] INFO: Bot spawned at Vec3 { x: 642.5, y: 71, z: 486.5 }
+2026-05-10 14:15:56 [e2e] INFO: Viewer: http://localhost:3000
+2026-05-10 14:16:08 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.5 tools=True
+2026-05-10 14:16:08 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 14:16:32 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=32 finish=stop
+2026-05-10 14:20:33 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 14:20:33 [e2e] INFO: Creating bot: mindcraft-bot → 127.0.0.1:55916
+2026-05-10 14:20:34 [mc.bridge] INFO: Loaded plugin: mineflayer-pathfinder
+2026-05-10 14:20:34 [mc.bridge] INFO: Loaded plugin: mineflayer-pvp
+2026-05-10 14:20:34 [mc.bridge] INFO: Loaded plugin: mineflayer-collectblock
+2026-05-10 14:20:34 [mc.bridge] INFO: Loaded plugin: mineflayer-armor-manager
+2026-05-10 14:20:34 [mc.bridge] INFO: Loaded plugin: mineflayer-auto-eat
+2026-05-10 14:20:34 [e2e] INFO: Bot spawned at Vec3 { x: 642.5, y: 71, z: 486.5 }
+2026-05-10 14:20:36 [e2e] INFO: Viewer: http://localhost:3000
+2026-05-10 14:20:48 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.5 tools=True
+2026-05-10 14:20:48 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 14:21:04 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=34 finish=stop
+2026-05-10 14:21:04 [agent.executor] WARNING: Unknown command: !action_moveTo
+2026-05-10 14:30:27 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 14:30:27 [e2e] INFO: Creating bot: mindcraft-bot → 127.0.0.1:55916
+2026-05-10 14:30:27 [mc.bridge] INFO: Loaded plugin: mineflayer-pathfinder
+2026-05-10 14:30:27 [mc.bridge] INFO: Loaded plugin: mineflayer-pvp
+2026-05-10 14:30:27 [mc.bridge] INFO: Loaded plugin: mineflayer-collectblock
+2026-05-10 14:30:27 [mc.bridge] INFO: Loaded plugin: mineflayer-armor-manager
+2026-05-10 14:30:27 [mc.bridge] INFO: Loaded plugin: mineflayer-auto-eat
+2026-05-10 14:30:28 [e2e] INFO: Bot spawned at Vec3 { x: 642.5, y: 71, z: 486.5 }
+2026-05-10 14:30:30 [e2e] INFO: Viewer: http://localhost:3000
+2026-05-10 14:30:42 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.5 tools=True
+2026-05-10 14:30:42 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 14:30:56 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=0 finish=tool_calls
+2026-05-10 14:31:06 [agent.executor] ERROR: Command !moveTo failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/agent/executor.py", line 49, in execute
+    result = handler(self._bridge, *args)
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 322, in _move_to
+    if not hasattr(bot.pathfinder, "Movements"):
+                   ^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 230, in __getattr__
+    methodType, val = self._exe.getProp(self._pffid, attr)
+                      ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 150, in getProp
+    resp = self.ipc("get", ffid, method)
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 43, in ipc
+    raise Exception(f"Timed out accessing '{attr}'")
+Exception: Timed out accessing 'pathfinder'
+2026-05-10 14:33:56 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 14:33:56 [e2e] INFO: Creating bot: mindcraft-bot → 127.0.0.1:55916
+2026-05-10 14:33:56 [mc.bridge] INFO: Loaded plugin: mineflayer-pathfinder
+2026-05-10 14:33:56 [mc.bridge] INFO: Loaded plugin: mineflayer-pvp
+2026-05-10 14:33:56 [mc.bridge] INFO: Loaded plugin: mineflayer-collectblock
+2026-05-10 14:33:56 [mc.bridge] INFO: Loaded plugin: mineflayer-armor-manager
+2026-05-10 14:33:56 [mc.bridge] INFO: Loaded plugin: mineflayer-auto-eat
+2026-05-10 14:33:57 [e2e] INFO: Bot spawned at Vec3 { x: 642.5, y: 71, z: 486.5 }
+2026-05-10 14:34:10 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.5 tools=True
+2026-05-10 14:34:10 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 14:34:28 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=34 finish=stop
+2026-05-10 14:34:38 [agent.executor] ERROR: Command !moveTo failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/agent/executor.py", line 49, in execute
+    result = handler(self._bridge, *args)
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 322, in _move_to
+    if not hasattr(bot.pathfinder, "Movements"):
+                   ^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 230, in __getattr__
+    methodType, val = self._exe.getProp(self._pffid, attr)
+                      ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 150, in getProp
+    resp = self.ipc("get", ffid, method)
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 43, in ipc
+    raise Exception(f"Timed out accessing '{attr}'")
+Exception: Timed out accessing 'pathfinder'
+2026-05-10 14:40:14 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 14:40:14 [e2e] INFO: Creating bot: mindcraft-bot → 127.0.0.1:55916
+2026-05-10 14:40:15 [mc.bridge] INFO: Loaded plugin: mineflayer-pathfinder
+2026-05-10 14:40:15 [mc.bridge] INFO: Loaded plugin: mineflayer-pvp
+2026-05-10 14:40:15 [mc.bridge] INFO: Loaded plugin: mineflayer-collectblock
+2026-05-10 14:40:15 [mc.bridge] INFO: Loaded plugin: mineflayer-armor-manager
+2026-05-10 14:40:15 [mc.bridge] INFO: Loaded plugin: mineflayer-auto-eat
+2026-05-10 14:40:15 [e2e] INFO: Bot spawned at Vec3 { x: 642.5, y: 71, z: 486.5 }
+2026-05-10 14:40:29 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.5 tools=True
+2026-05-10 14:40:29 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 14:40:48 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=0 finish=tool_calls
+2026-05-10 14:40:58 [agent.executor] ERROR: Command !moveTo failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/agent/executor.py", line 49, in execute
+    result = handler(self._bridge, *args)
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 332, in _move_to
+    if not hasattr(bot.pathfinder, "Movements"):
+                   ^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 230, in __getattr__
+    methodType, val = self._exe.getProp(self._pffid, attr)
+                      ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 150, in getProp
+    resp = self.ipc("get", ffid, method)
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 43, in ipc
+    raise Exception(f"Timed out accessing '{attr}'")
+Exception: Timed out accessing 'pathfinder'
+2026-05-10 14:42:26 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 14:42:26 [e2e] INFO: Creating bot: mindcraft-bot → 127.0.0.1:55916
+2026-05-10 14:42:26 [mc.bridge] INFO: Loaded plugin: mineflayer-pathfinder
+2026-05-10 14:42:26 [mc.bridge] INFO: Loaded plugin: mineflayer-pvp
+2026-05-10 14:42:26 [mc.bridge] INFO: Loaded plugin: mineflayer-collectblock
+2026-05-10 14:42:26 [mc.bridge] INFO: Loaded plugin: mineflayer-armor-manager
+2026-05-10 14:42:26 [mc.bridge] INFO: Loaded plugin: mineflayer-auto-eat
+2026-05-10 14:42:27 [e2e] INFO: Bot spawned at Vec3 { x: 642.5, y: 71, z: 486.5 }
+2026-05-10 14:42:40 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.2 tools=True
+2026-05-10 14:42:40 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 14:42:56 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=0 finish=tool_calls
+2026-05-10 14:43:06 [agent.executor] ERROR: Command !moveTo failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/agent/executor.py", line 49, in execute
+    result = handler(self._bridge, *args)
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 332, in _move_to
+    if not hasattr(bot.pathfinder, "Movements"):
+                   ^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 230, in __getattr__
+    methodType, val = self._exe.getProp(self._pffid, attr)
+                      ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 150, in getProp
+    resp = self.ipc("get", ffid, method)
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/javascript/proxy.py", line 43, in ipc
+    raise Exception(f"Timed out accessing '{attr}'")
+Exception: Timed out accessing 'pathfinder'
+2026-05-10 15:32:19 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 15:32:19 [e2e] INFO: Socket server ready
+2026-05-10 15:32:19 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-10 15:32:19 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-10 15:32:21 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.2 tools=True
+2026-05-10 15:32:21 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:32:33 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=0 finish=tool_calls
+2026-05-10 15:33:16 [mc.socket_bridge] INFO: Disconnected from socket server
+2026-05-10 15:33:35 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 15:33:35 [e2e] INFO: Socket server ready
+2026-05-10 15:33:35 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-10 15:33:35 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-10 15:33:37 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.2 tools=True
+2026-05-10 15:33:37 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:33:53 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=102 finish=stop
+2026-05-10 15:34:32 [mc.socket_bridge] INFO: Disconnected from socket server
+2026-05-10 15:34:56 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 15:34:57 [e2e] INFO: Socket server ready
+2026-05-10 15:34:57 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-10 15:34:57 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-10 15:34:59 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.2 tools=True
+2026-05-10 15:34:59 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:35:07 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=0 finish=tool_calls
+2026-05-10 15:35:07 [agent.executor] ERROR: Command !collectBlocks failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/agent/executor.py", line 52, in execute
+    result = await result
+             ^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 255, in _collect_blocks
+    return await bridge.collect_blocks(block_type, count)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/mc/socket_bridge.py", line 138, in collect_blocks
+    return await self._request("collect_blocks", {
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "block_type": block_type, "count": count,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    })
+    ^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/mc/socket_bridge.py", line 208, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+mc.socket_bridge.SocketBridgeError: No oak_log nearby (32 block radius).
+2026-05-10 15:37:10 [mc.socket_bridge] INFO: Disconnected from socket server
+2026-05-10 15:37:15 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 15:37:15 [e2e] INFO: Socket server ready
+2026-05-10 15:37:15 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-10 15:37:15 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-10 15:37:17 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.2 tools=True
+2026-05-10 15:37:17 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:37:35 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=0 finish=tool_calls
+2026-05-10 15:37:35 [agent.executor] ERROR: Command !collectBlocks failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/agent/executor.py", line 52, in execute
+    result = await result
+             ^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 255, in _collect_blocks
+    return await bridge.collect_blocks(block_type, count)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/mc/socket_bridge.py", line 138, in collect_blocks
+    return await self._request("collect_blocks", {
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "block_type": block_type, "count": count,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    })
+    ^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/mc/socket_bridge.py", line 208, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+mc.socket_bridge.SocketBridgeError: No oak_log nearby (32 block radius).
+2026-05-10 15:38:22 [mc.socket_bridge] INFO: Disconnected from socket server
+2026-05-10 15:38:49 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 15:38:49 [e2e] INFO: Socket server ready
+2026-05-10 15:38:49 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-10 15:38:49 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-10 15:38:51 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.2 tools=True
+2026-05-10 15:38:51 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:39:26 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=21 finish=stop
+2026-05-10 15:41:45 [mc.socket_bridge] INFO: Disconnected from socket server
+2026-05-10 15:47:37 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 15:47:37 [e2e] INFO: Socket server ready
+2026-05-10 15:47:37 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-10 15:47:37 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-10 15:47:54 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.2 tools=True
+2026-05-10 15:47:54 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:50:47 [mc.socket_bridge] ERROR: Error in event handler for 'chat'
+Traceback (most recent call last):
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/mc/socket_bridge.py", line 208, in _request
+    return await asyncio.wait_for(fut, timeout=120)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 506, in wait_for
+    async with timeouts.timeout(timeout):
+               ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/timeouts.py", line 116, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/mc/socket_bridge.py", line 254, in _read_loop
+    await result
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 311, in on_chat
+    await harness.handle_message(sender, message)
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 156, in handle_message
+    state = await self.observe()
+            ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/test_e2e.py", line 122, in observe
+    s = await self._bridge.observe()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/mc/socket_bridge.py", line 126, in observe
+    return await self._request("observe")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/mc/socket_bridge.py", line 211, in _request
+    raise SocketBridgeError(f"Request '{method}' timed out after 120s")
+mc.socket_bridge.SocketBridgeError: Request 'observe' timed out after 120s
+2026-05-10 15:52:13 [mc.socket_bridge] INFO: Disconnected from socket server
+2026-05-10 15:53:51 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 15:53:51 [e2e] INFO: Socket server ready
+2026-05-10 15:53:51 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-10 15:53:51 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-10 15:53:54 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=2 temp=0.2 tools=True
+2026-05-10 15:53:54 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:54:22 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=47 finish=stop
+2026-05-10 15:54:53 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=4 temp=0.2 tools=True
+2026-05-10 15:54:53 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:55:23 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=10 finish=tool_calls
+2026-05-10 15:57:55 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=7 temp=0.2 tools=True
+2026-05-10 15:57:55 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 15:59:55 [openai._base_client] INFO: Retrying request to /chat/completions in 0.400633 seconds
+2026-05-10 16:01:55 [openai._base_client] INFO: Retrying request to /chat/completions in 0.791145 seconds
+2026-05-10 16:03:56 [llm.prompter] ERROR: LiteLLM request failed
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/custom_httpx/aiohttp_transport.py", line 61, in map_aiohttp_exceptions
+    yield
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/custom_httpx/aiohttp_transport.py", line 307, in handle_async_request
+    response = await self._make_aiohttp_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/custom_httpx/aiohttp_transport.py", line 285, in _make_aiohttp_request
+    response = await client_session.request(**request_kwargs).__aenter__()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/aiohttp/client.py", line 1521, in __aenter__
+    self._resp: _RetType = await self._coro
+                           ^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/aiohttp/client.py", line 788, in _request
+    resp = await handler(req)
+           ^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/aiohttp/client.py", line 766, in _connect_and_send_request
+    await resp.start(conn)
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/aiohttp/client_reqrep.py", line 539, in start
+    message, payload = await protocol.read()  # type: ignore[union-attr]
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/aiohttp/streams.py", line 707, in read
+    await self._waiter
+aiohttp.client_exceptions.SocketTimeoutError: Timeout on reading data from socket
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1604, in request
+    response = await self._client.send(
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/httpx/_client.py", line 1629, in send
+    response = await self._send_handling_auth(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/httpx/_client.py", line 1657, in _send_handling_auth
+    response = await self._send_handling_redirects(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/httpx/_client.py", line 1694, in _send_handling_redirects
+    response = await self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/httpx/_client.py", line 1730, in _send_single_request
+    response = await transport.handle_async_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/custom_httpx/aiohttp_transport.py", line 306, in handle_async_request
+    with map_aiohttp_exceptions():
+         ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/wilson/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/custom_httpx/aiohttp_transport.py", line 75, in map_aiohttp_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: Timeout on reading data from socket
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/openai/openai.py", line 930, in acompletion
+    headers, response = await self.make_openai_chat_completion_request(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/logging_utils.py", line 297, in async_wrapper
+    result = await func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/openai/openai.py", line 459, in make_openai_chat_completion_request
+    raise e
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/openai/openai.py", line 438, in make_openai_chat_completion_request
+    await openai_aclient.chat.completions.with_raw_response.create(
+        **data, timeout=timeout
+    )
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/_legacy_response.py", line 384, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/resources/chat/completions/completions.py", line 2700, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+    ...<49 lines>...
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1884, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1622, in request
+    raise APITimeoutError(request=request) from err
+openai.APITimeoutError: Request timed out.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/main.py", line 622, in acompletion
+    response = await init_response
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/llms/openai/openai.py", line 990, in acompletion
+    raise OpenAIError(
+    ...<4 lines>...
+    )
+litellm.llms.openai.common_utils.OpenAIError: Request timed out. - timeout value=120.0, time taken=361.29 seconds
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/wilson/work_space/mindcraft-py/tests/../src/llm/prompter.py", line 125, in send_request
+    response = await acompletion(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/utils.py", line 2097, in wrapper_async
+    raise e
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/utils.py", line 1896, in wrapper_async
+    result = await original_function(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/main.py", line 641, in acompletion
+    raise exception_type(
+          ~~~~~~~~~~~~~~^
+        model=model,
+        ^^^^^^^^^^^^
+    ...<3 lines>...
+        extra_kwargs=kwargs,
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 2456, in exception_type
+    raise e
+  File "/Users/wilson/work_space/mindcraft-py/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 342, in exception_type
+    raise Timeout(
+    ...<4 lines>...
+    )
+litellm.exceptions.Timeout: litellm.Timeout: APITimeoutError - Request timed out. Error_str: Request timed out. - timeout value=120.0, time taken=361.29 seconds LiteLLM Retried: 2 times
+2026-05-10 16:05:33 [llm.prompter] INFO: LiteLLM → model=openai/qwen/qwen3.6-35b-a3b msgs=9 temp=0.2 tools=True
+2026-05-10 16:05:33 [LiteLLM] INFO: 
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openai
+2026-05-10 16:06:34 [llm.prompter] INFO: LiteLLM ← model=openai/qwen/qwen3.6-35b-a3b chars=28 finish=stop
+2026-05-10 16:10:36 [mc.socket_bridge] INFO: Disconnected from socket server
+2026-05-10 19:22:48 [root] INFO: Logging to /Users/wilson/work_space/mindcraft-py/logs/2026-05-10.log
+2026-05-10 19:22:48 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-10 19:22:48 [main] INFO:   Mindcraft-Py — LLM-driven Minecraft Bot
+2026-05-10 19:22:48 [main] INFO:   LLM: openai/qwen/qwen3.6-35b-a3b
+2026-05-10 19:22:48 [main] INFO:   MC Server: 127.0.0.1:55916
+2026-05-10 19:22:48 [main] INFO:   Bot: mindcraft-bot
+2026-05-10 19:22:48 [main] INFO:   Socket Bridge: tcp://127.0.0.1:9090
+2026-05-10 19:22:48 [main] INFO: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-05-10 19:22:49 [main] INFO: No socket server on 127.0.0.1:9090 — starting subprocess…
+2026-05-10 19:22:49 [main] INFO: [socket-server] [socket-server] Listening on tcp://127.0.0.1:9090
+2026-05-10 19:22:49 [main] INFO: Socket server ready on port 9090
+2026-05-10 19:22:49 [mc.socket_bridge] INFO: Connecting to socket server at 127.0.0.1:9090
+2026-05-10 19:22:49 [mc.socket_bridge] INFO: Connected to socket server
+2026-05-10 19:22:49 [main] INFO: Creating bot 'mindcraft-bot' on 127.0.0.1:55916 …
+2026-05-10 19:22:57 [main] INFO: Interrupted — shutting down…
+2026-05-10 19:22:57 [mc.socket_bridge] INFO: Disconnected from socket server
+2026-05-10 19:22:57 [main] INFO: Shutdown complete.
+2026-05-10 19:22:57 [main] INFO: Goodbye.

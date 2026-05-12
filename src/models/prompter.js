@@ -335,28 +335,22 @@ export class Prompter {
     }
 
     async _saveLog(prompt, messages, generation, tag) {
-        if (!settings.log_all_prompts)
-            return;
+        // Always save to trace logs, not just when log_all_prompts is set.
+        const date = new Date().toISOString().split('T')[0];
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         let logEntry;
         let task_id = this.agent.task.task_id;
         if (task_id == null) {
-            logEntry = `[${timestamp}] \nPrompt:\n${prompt}\n\nConversation:\n${JSON.stringify(messages, null, 2)}\n\nResponse:\n${generation}\n\n`;
+            logEntry = `[${timestamp}]\n\n─── SYSTEM PROMPT ───\n${prompt}\n\n─── MESSAGES (${messages.length} turns) ───\n${JSON.stringify(messages, null, 2)}\n\n─── GENERATED RESPONSE ───\n${generation}\n\n`;
         } else {
-            logEntry = `[${timestamp}] Task ID: ${task_id}\nPrompt:\n${prompt}\n\nConversation:\n${JSON.stringify(messages, null, 2)}\n\nResponse:\n${generation}\n\n`;
+            logEntry = `[${timestamp}] Task ID: ${task_id}\n\n─── SYSTEM PROMPT ───\n${prompt}\n\n─── MESSAGES (${messages.length} turns) ───\n${JSON.stringify(messages, null, 2)}\n\n─── GENERATED RESPONSE ───\n${generation}\n\n`;
         }
-        const logFile = `${tag}_${timestamp}.txt`;
+        const logFile = `${tag}_${date}.txt`;
         await this._saveToFile(logFile, logEntry);
     }
 
     async _saveToFile(logFile, logEntry) {
-        let task_id = this.agent.task.task_id;
-        let logDir;
-        if (task_id == null) {
-            logDir = path.join(__dirname, `../../bots/${this.agent.name}/logs`);
-        } else {
-            logDir = path.join(__dirname, `../../bots/${this.agent.name}/logs/${task_id}`);
-        }
+        const logDir = path.join(__dirname, `../../log-js`);
 
         await fs.mkdir(logDir, { recursive: true });
 

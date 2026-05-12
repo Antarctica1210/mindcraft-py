@@ -12,7 +12,8 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
     "numpy>=1.26",
-    "litellm>=1.50",            # Unified LLM interface (100+ providers)
+    "langchain-openai>=0.3.0",  # ChatOpenAI + OpenAIEmbeddings
+    "langchain-core>=0.3.0",    # BaseOutputParser, ChatPromptTemplate, MessagesPlaceholder
     "python-dotenv>=1.0",       # .env file loading
 ]
 

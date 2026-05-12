@@ -198,9 +198,13 @@ class E2EHarness:
         )
 
         try:
+            from llm.prompter import LLMInput
+
             response = await self._prompter.send_request(
-                turns=messages[1:],
-                system_message=system_prompt,
+                LLMInput(
+                    history=messages[1:],
+                    system_message=system_prompt,
+                )
             )
         except Exception as exc:
             logger.exception("LLM call failed")

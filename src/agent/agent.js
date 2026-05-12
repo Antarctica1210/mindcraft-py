@@ -17,6 +17,59 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ── Trace logging (detailed operation tracing to file) ─────────────
+
+const _TRACE_ENABLED = true;  // set to false to disable trace logging
+let _traceDir = null;
+let _traceSeq = 0;
+let _traceFilename = null;
+
+function _getTraceDir(agent) {
+    if (!_traceDir) {
+        _traceDir = path.join(__dirname, `../../log-js`);
+        fs.mkdir(_traceDir, { recursive: true }).catch(() => {});
+    }
+    return _traceDir;
+}
+
+async function _traceAppend(agent, text) {
+    if (!_TRACE_ENABLED) return;
+    try {
+        const dir = _getTraceDir(agent);
+        if (!_traceFilename) {
+            const date = new Date().toISOString().split('T')[0];
+            _traceFilename = path.join(dir, `trace_${date}.log`);
+            await fs.writeFile(_traceFilename,
+                `=== MINDRAFT TRACE LOG ===\n` +
+                `Started: ${new Date().toISOString()}\n` +
+                `Agent: ${agent.name}\n` +
+                `========================================\n\n`
+            );
+        }
+        const ts = new Date().toISOString();
+        await fs.appendFile(_traceFilename, `[${ts}] ${text}\n`);
+    } catch (_) { /* quiet */ }
+}
+
+function _fmtHistory(history) {
+    if (!history || !history.length) return '(empty)';
+    const lines = [];
+    for (let i = 0; i < history.length; i++) {
+        const t = history[i];
+        let role = t.role || '?';
+        let content = (t.content || '').substring(0, 300);
+        if (t.content && t.content.length > 300) content += '...';
+        lines.push(`  [${i}] ${role}: ${content.replace(/\n/g, '\\n')}`);
+    }
+    return `\n${lines.join('\n')}`;
+}
 
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
@@ -266,12 +319,20 @@ export class Agent {
             max_responses = Infinity;
         }
 
+        _traceSeq++;
+        const _traceId = _traceSeq;
+        await _traceAppend(this, `\n${'='.repeat(60)}`);
+        await _traceAppend(this, `MSG #${_traceId} from=${source} max_responses=${max_responses === Infinity ? 'Infinity' : max_responses}`);
+        await _traceAppend(this, `MESSAGE: ${message}`);
+        await _traceAppend(this, `${'='.repeat(60)}`);
+
         const self_prompt = source === 'system' || source === this.name;
         const from_other_bot = convoManager.isOtherAgent(source);
 
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
             const user_command_name = containsCommand(message);
             if (user_command_name) {
+                await _traceAppend(this, `USER-FORCED-CMD: ${user_command_name} (bypassing LLM, direct execution)`);
                 if (!commandExists(user_command_name)) {
                     this.routeResponse(source, `Command '${user_command_name}' does not exist.`);
                     return false;
@@ -315,30 +376,41 @@ export class Agent {
         if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
             max_responses = 1; // force only respond to this message, then let self-prompting take over
         for (let i=0; i<max_responses; i++) {
-            if (checkInterrupt()) break;
+            if (checkInterrupt()) {
+                await _traceAppend(this, `ITER #${i}: INTERRUPTED (shut_up or self_prompter)`);
+                break;
+            }
+            await _traceAppend(this, `\n--- ITER #${i} (msg #${_traceId}) ---`);
             let history = this.history.getHistory();
+            await _traceAppend(this, `HISTORY before LLM (${history.length} turns):${_fmtHistory(history)}`);
             let res = await this.prompter.promptConvo(history);
+            await _traceAppend(this, `LLM RESPONSE: ""${res}""`);
 
             console.log(`${this.name} full response to ${source}: ""${res}""`);
 
             if (res.trim().length === 0) {
                 console.warn('no response')
+                await _traceAppend(this, `ITER #${i}: EMPTY response → BREAK`);
                 break; // empty response ends loop
             }
 
             let command_name = containsCommand(res);
-
             if (command_name) { // contains query or command
+                await _traceAppend(this, `ITER #${i}: COMMAND detected → ${command_name} | args from: ${res}`);
                 res = truncCommandMessage(res); // everything after the command is ignored
                 this.history.add(this.name, res);
-                
+
                 if (!commandExists(command_name)) {
+                    await _traceAppend(this, `ITER #${i}: HALLUCINATED command → CONTINUE`);
                     this.history.add('system', `Command ${command_name} does not exist.`);
                     console.warn('Agent hallucinated command:', command_name)
                     continue;
                 }
 
-                if (checkInterrupt()) break;
+                if (checkInterrupt()) {
+                    await _traceAppend(this, `ITER #${i}: INTERRUPTED before execution`);
+                    break;
+                }
                 this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
 
                 if (settings.show_command_syntax === "full") {
@@ -362,22 +434,30 @@ export class Agent {
                 let execute_res = await executeCommand(this, res);
 
                 console.log('Agent executed:', command_name, 'and got:', execute_res);
+                await _traceAppend(this, `ITER #${i}: EXECUTED ${command_name} → RESULT: ${execute_res || '(empty)'}`);
                 used_command = true;
 
-                if (execute_res)
+                if (execute_res) {
                     this.history.add('system', execute_res);
-                else
+                    await _traceAppend(this, `ITER #${i}: result appended to history → CONTINUE loop`);
+                }
+                else {
+                    await _traceAppend(this, `ITER #${i}: empty result → BREAK`);
                     break;
+                }
             }
             else { // conversation response
+                await _traceAppend(this, `ITER #${i}: NO command in response → CONVERSATION → speak + BREAK`);
                 this.history.add(this.name, res);
                 this.routeResponse(source, res);
                 break;
             }
-            
+
             this.history.save();
+            await _traceAppend(this, `HISTORY after iter #${i} (${this.history.getHistory().length} turns):${_fmtHistory(this.history.getHistory())}`);
         }
 
+        await _traceAppend(this, `\nMSG #${_traceId} DONE — used_command=${used_command}\n`);
         return used_command;
     }
 

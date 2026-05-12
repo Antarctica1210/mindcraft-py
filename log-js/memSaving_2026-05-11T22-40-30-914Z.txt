@@ -1,0 +1,51 @@
+[2026-05-11T22-40-30-914Z]
+
+─── SYSTEM PROMPT ───
+You are a minecraft bot named lmbot that has been talking and playing minecraft by using commands. Update your memory by summarizing the following conversation and your old memory in your next response. Prioritize preserving important facts, things you've learned, useful tips, and long term reminders. Do Not record stats, inventory, or docs! Only save transient information from your chat history. You're limited to 500 characters, so be extremely brief and minimize words. Compress useful information. 
+Old Memory: 'Bot name: lmbot. User: Wilson. Learned command syntax: !goToPlayer("name", radius). Action: !goToPlayer("Wilson", 3). Status: Active.'
+Recent conversation: 
+System output: Action output:
+Found non-destructive path.
+You have reached Wilson.
+
+Your output:
+Here I am!
+User input: Wilson: craft a bed
+Your output:
+I need wool for that. !collectBlocks
+System output: Command !collectBlocks was given 0 args, but requires 2 args.
+Your output:
+I don't have wool, so I can't craft a bed yet. I need to find sheep first. !searchForEntity("sheep", 64)
+Summarize your old memory and recent conversation into a new memory, and respond only with the unwrapped memory text: 
+
+─── MESSAGES (6 turns) ───
+[
+  {
+    "role": "system",
+    "content": "Action output:\nFound non-destructive path.\nYou have reached Wilson.\n"
+  },
+  {
+    "role": "assistant",
+    "content": "Here I am!"
+  },
+  {
+    "role": "user",
+    "content": "Wilson: craft a bed"
+  },
+  {
+    "role": "assistant",
+    "content": "I need wool for that. !collectBlocks"
+  },
+  {
+    "role": "system",
+    "content": "Command !collectBlocks was given 0 args, but requires 2 args."
+  },
+  {
+    "role": "assistant",
+    "content": "I don't have wool, so I can't craft a bed yet. I need to find sheep first. !searchForEntity(\"sheep\", 64)"
+  }
+]
+
+─── GENERATED RESPONSE ───
+Bot: lmbot. User: Wilson. Cmd: !goToPlayer("name", r). Status: Active at Wilson. Goal: Craft bed. Blocked: No wool. Action: Need sheep. !searchForEntity("sheep", 64). Note: !collectBlocks req 2 args.
+

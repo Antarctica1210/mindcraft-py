@@ -1,0 +1,52 @@
+[2026-05-11T22-43-07-507Z]
+
+─── SYSTEM PROMPT ───
+You are a minecraft bot named lmbot that has been talking and playing minecraft by using commands. Update your memory by summarizing the following conversation and your old memory in your next response. Prioritize preserving important facts, things you've learned, useful tips, and long term reminders. Do Not record stats, inventory, or docs! Only save transient information from your chat history. You're limited to 500 characters, so be extremely brief and minimize words. Compress useful information. 
+Old Memory: 'Bot: lmbot. User: Wilson. Goal: Craft bed. Status: Has 3 white_wool (enough). Need planks/sticks. Action: !craftRecipe("oak_plank", 3). Learned: Sheep kill didn't drop wool; inventory check needed. !searchForEntity("sheep", 64) finds sheep. Active at Wilson.'
+Recent conversation: 
+System output: Action output:
+Successfully crafted oak_planks, you now have 8 oak_planks.
+
+Your output:
+I have 8 oak_planks. I need 3 planks and 2 sticks for the bed. !craftRecipe("stick", 2)
+System output: Action output:
+Successfully crafted stick, you now have 8 stick.
+
+Your output:
+I have 8 planks and 8 sticks. I have enough to craft the bed. !craftRecipe("bed", 1)
+System output: Invalid item type: bed.
+Your output:
+Oops, I need to specify the color. !craftRecipe("white_bed", 1)
+Summarize your old memory and recent conversation into a new memory, and respond only with the unwrapped memory text: 
+
+─── MESSAGES (6 turns) ───
+[
+  {
+    "role": "system",
+    "content": "Action output:\nSuccessfully crafted oak_planks, you now have 8 oak_planks.\n"
+  },
+  {
+    "role": "assistant",
+    "content": "I have 8 oak_planks. I need 3 planks and 2 sticks for the bed. !craftRecipe(\"stick\", 2)"
+  },
+  {
+    "role": "system",
+    "content": "Action output:\nSuccessfully crafted stick, you now have 8 stick.\n"
+  },
+  {
+    "role": "assistant",
+    "content": "I have 8 planks and 8 sticks. I have enough to craft the bed. !craftRecipe(\"bed\", 1)"
+  },
+  {
+    "role": "system",
+    "content": "Invalid item type: bed."
+  },
+  {
+    "role": "assistant",
+    "content": "Oops, I need to specify the color. !craftRecipe(\"white_bed\", 1)"
+  }
+]
+
+─── GENERATED RESPONSE ───
+Bot: lmbot. User: Wilson. Goal: Craft bed. Status: Has 8 oak_planks, 8 sticks. Learned: !craftRecipe("bed") fails; must specify color e.g., "white_bed". Action: !craftRecipe("white_bed", 1).
+

@@ -80,25 +80,48 @@ def parse_legacy(response_text: str) -> list[CommandCall]:
     return commands
 
 
-def parse_tool_calls(tool_calls: list[dict[str, Any]]) -> list[CommandCall]:
+def _normalize_tc(tc: dict[str, Any] | object) -> dict[str, Any]:
+    """Convert a Pydantic ToolCallOutput or dict to a plain dict for parsing."""
+    if isinstance(tc, dict):
+        return tc
+    # ToolCallOutput (Pydantic model): extract via attribute access
+    if hasattr(tc, "function") and hasattr(tc, "id"):
+        fn = tc.function
+        return {
+            "id": tc.id,
+            "type": getattr(tc, "type", "function"),
+            "function": {
+                "name": fn.name,
+                "arguments": fn.arguments,
+            },
+        }
+    return {}
+
+
+def parse_tool_calls(tool_calls: list[dict[str, Any]] | list[object]) -> list[CommandCall]:
     """Convert OpenAI tool_calls into CommandCall objects.
 
-    Handles both the OpenAI-native format
-        {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
+    Accepts both raw dicts (legacy) and Pydantic ``ToolCallOutput``
+    objects from the LangChain Prompter.
+
+    Handles the OpenAI-native format
+        ``{"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}``
     and the legacy flattened format
-        {"id": "...", "name": "...", "arguments": "..."}.
+        ``{"id": "...", "name": "...", "arguments": "..."}``.
     """
     commands: list[CommandCall] = []
     for tc in tool_calls:
+        raw = _normalize_tc(tc)
+
         # OpenAI-native format: name/arguments live inside "function"
-        fn = tc.get("function", {})
+        fn = raw.get("function", {})
         if fn and isinstance(fn, dict):
             name = fn.get("name", "")
             raw_args = fn.get("arguments", "{}")
         else:
             # Legacy flattened format (backwards compatibility)
-            name = tc.get("name", "")
-            raw_args = tc.get("arguments", "{}")
+            name = raw.get("name", "")
+            raw_args = raw.get("arguments", "{}")
 
         # Remove "action:" prefix if present (JS convention)
         if name.startswith("action:"):
@@ -116,7 +139,7 @@ def parse_tool_calls(tool_calls: list[dict[str, Any]]) -> list[CommandCall]:
         commands.append(CommandCall(
             name=name,
             args=list(arguments.values()),
-            raw=json.dumps(tc),
+            raw=json.dumps(raw),
             source="tool_call",
         ))
 
@@ -157,7 +180,7 @@ def _clean_model_artifacts(text: str) -> str:
 
 def parse_response(
     response_text: str,
-    tool_calls: list[dict[str, Any]] | None = None,
+    tool_calls: list[dict[str, Any]] | list[object] | None = None,
 ) -> ParseResult:
     """Parse an LLM response into text + structured commands.
 

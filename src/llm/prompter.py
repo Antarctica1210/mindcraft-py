@@ -1,63 +1,272 @@
 """
-Phase 1 — LLM provider abstraction (LiteLLM backend).
+Phase 1 — LLM provider abstraction (LangChain backend).
 
-Uses LiteLLM as the unified interface for 100+ LLM providers.
-Supports LM Studio, DeepSeek, Qwen, OpenAI, Anthropic, and any
-OpenAI-compatible endpoint through a single `acompletion()` call.
+Uses LangChain 1.0+ ChatOpenAI as the unified interface for OpenAI-compatible
+LLM providers. Supports LM Studio, DeepSeek, Qwen, OpenAI, and any
+OpenAI-compatible endpoint through the chain pattern:
 
-Replaces direct `openai.OpenAI` client construction with LiteLLM's
-built-in provider routing, retry, and error handling.
+    prompt | model | parser
+
+Replaces the LiteLLM backend with Pydantic-typed I/O models — no **kwargs.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from dataclasses import dataclass, field
-from typing import Any
+import re
+from typing import Any, Literal
 
-import litellm
-from litellm import acompletion
-from litellm.exceptions import ContextWindowExceededError
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
+from langchain_core.output_parsers import BaseOutputParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import BaseModel, Field, SecretStr
 
 from settings import EmbeddingSettings, LLMSettings
 
 logger = logging.getLogger(__name__)
 
-# ── LiteLLM configuration ───────────────────────────────────────────
 
-# Drop noisy LiteLLM internal logs (set to False to debug provider issues)
-litellm.suppress_debug_info = True
+# ── Pydantic I/O models ────────────────────────────────────────────
 
 
-# ── Response dataclass ──────────────────────────────────────────────
+class ToolCallFunction(BaseModel):
+    """Function definition within a tool call (OpenAI format)."""
+
+    name: str = ""
+    arguments: str = "{}"
 
 
-@dataclass
-class LLMResponse:
+class ToolCallOutput(BaseModel):
+    """A single tool call extracted from LLM output (OpenAI format)."""
+
+    id: str = ""
+    type: str = "function"
+    function: ToolCallFunction = Field(default_factory=ToolCallFunction)
+
+
+class UsageOutput(BaseModel):
+    """Token usage statistics."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class LLMInput(BaseModel):
+    """Structured input for an LLM call — no **kwargs.
+
+    Every parameter is an explicit, typed field.  The ``history`` field
+    accepts plain dicts matching the existing ``MessageBuilder`` output
+    format so callers don't need to construct LangChain message objects.
+    """
+
+    system_message: str = Field(description="System prompt for the LLM")
+    history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Conversation turns as {role, content, tool_calls?, tool_call_id?}",
+    )
+    tool_choice: Literal["auto", "required", "none"] | None = Field(
+        default=None,
+        description="auto (default when tools registered), required (force tool call), "
+        "none (text-only reply)",
+    )
+
+
+class LLMOutput(BaseModel):
     """Structured result from an LLM call."""
 
-    content: str
-    model: str
-    finish_reason: str | None = None
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    usage: dict[str, int] = field(default_factory=dict)
+    content: str = Field(default="", description="Text content of the response")
+    model: str = Field(default="", description="Model identifier")
+    finish_reason: str | None = Field(default=None, description="Completion finish reason")
+    tool_calls: list[ToolCallOutput] = Field(
+        default_factory=list,
+        description="OpenAI-format tool calls: [{id, type, function: {name, arguments}}]",
+    )
+    usage: UsageOutput | None = Field(default=None, description="Token usage statistics")
 
 
-# ── Prompter ────────────────────────────────────────────────────────
+# ── Output parser ──────────────────────────────────────────────────
+
+
+class _LLMOutputParser(BaseOutputParser[LLMOutput]):
+    """Parse ChatOpenAI AIMessage → typed LLMOutput.
+
+    Follows the langchain_core BaseOutputParser interface — drop-in compatible
+    with the ``prompt | model | parser`` chain pattern.
+
+    Handles the LangChain-internal wrapping:
+    ``BaseOutputParser.invoke()`` calls ``parse_result([ChatGeneration(message=msg)])``,
+    so we must unwrap: list → ChatGeneration.message → AIMessage before extracting.
+    """
+
+    model_name: str = ""
+
+    def parse(self, text: str) -> LLMOutput:
+        """Fallback: parse raw text string."""
+        return LLMOutput(content=_strip_think_tags(text), model=self.model_name)
+
+    def parse_result(self, result: Any, *, partial: bool = False) -> LLMOutput:
+        """Extract LLMOutput — unwrap LangChain internals then delegate."""
+        msg = self._extract_ai_message(result)
+        if msg is not None:
+            return self._from_ai_message(msg)
+        if isinstance(result, str):
+            return LLMOutput(content=_strip_think_tags(result), model=self.model_name)
+        return LLMOutput(content=str(result), model=self.model_name)
+
+    @staticmethod
+    def _extract_ai_message(result: Any) -> AIMessage | None:
+        """Unwrap LangChain's internal wrappers to reach the raw AIMessage.
+
+        LangChain chains deliver the model output as:
+        (a) ``[ChatGeneration(message=AIMessage)]`` — common path
+        (b) ``ChatGeneration(message=AIMessage)`` — some versions
+        (c) ``AIMessage`` directly — if model.invoke() called standalone
+        """
+        # (a) list of Generations/ChatGenerations
+        if isinstance(result, list) and result:
+            first = result[0]
+            if hasattr(first, "message"):
+                msg = first.message
+                if isinstance(msg, AIMessage):
+                    return msg
+            if isinstance(first, AIMessage):
+                return first
+
+        # (b) single ChatGeneration
+        if hasattr(result, "message"):
+            msg = result.message
+            if isinstance(msg, AIMessage):
+                return msg
+
+        # (c) raw AIMessage
+        if isinstance(result, AIMessage):
+            return result
+
+        return None
+
+    def _from_ai_message(self, msg: AIMessage) -> LLMOutput:
+        """Convert LangChain AIMessage → LLMOutput.
+
+        Tool calls are extracted from BOTH ``msg.tool_calls`` (LangChain
+        normalized ``{name, args, id}``) AND ``msg.additional_kwargs["tool_calls"]``
+        (raw OpenAI format ``{id, type, function: {name, arguments}}``).
+        Both are converted to the OpenAI nested format so callers in
+        ``core.py`` and ``tool_parser.py`` see a consistent shape.
+        """
+        raw: Any = msg.content or ""
+        text = raw if isinstance(raw, str) else str(raw)
+        content = _strip_think_tags(text)
+
+        meta: dict[str, Any] = getattr(msg, "response_metadata", {}) or {}
+        finish_reason: str | None = meta.get("finish_reason")
+
+        # Collect tool calls from both LangChain-normalized and raw sources.
+        raw_tool_calls: list[dict[str, Any]] = list(
+            getattr(msg, "tool_calls", []) or []
+        )
+
+        # Fallback: some providers/models return tool_calls only in
+        # additional_kwargs (raw OpenAI format pass-through).
+        extra: dict[str, Any] = getattr(msg, "additional_kwargs", {}) or {}
+        if not raw_tool_calls and extra.get("tool_calls"):
+            raw_tool_calls = extra["tool_calls"]
+
+        tool_calls: list[ToolCallOutput] = []
+        for tc in raw_tool_calls:
+            tool_calls.append(_normalize_tool_call(tc))
+
+        # Token usage, preferring response_metadata, falling back to usage_metadata
+        usage: UsageOutput | None = None
+        token_usage = meta.get("token_usage") or meta.get("usage", {})
+        if not token_usage:
+            um = getattr(msg, "usage_metadata", None)
+            if um:
+                token_usage = {
+                    "prompt_tokens": getattr(um, "input_tokens", 0) or 0,
+                    "completion_tokens": getattr(um, "output_tokens", 0) or 0,
+                    "total_tokens": getattr(um, "total_tokens", 0) or 0,
+                }
+        if token_usage:
+            usage = UsageOutput(
+                prompt_tokens=token_usage.get("prompt_tokens", 0),
+                completion_tokens=token_usage.get("completion_tokens", 0),
+                total_tokens=token_usage.get("total_tokens", 0),
+            )
+
+        # Log reasoning_content for debugging (DeepSeek/Qwen reasoning models)
+        reasoning = extra.get("reasoning_content") or ""
+        if reasoning:
+            logger.debug("LLM reasoning_content (%d chars): %.200s", len(reasoning), reasoning)
+
+        return LLMOutput(
+            content=content,
+            model=self.model_name,
+            finish_reason=finish_reason,
+            tool_calls=tool_calls,
+            usage=usage,
+        )
+
+
+def _normalize_tool_call(tc: dict[str, Any]) -> ToolCallOutput:
+    """Normalize a single tool_call dict → ToolCallOutput.
+
+    Handles both formats:
+      - LangChain flat:   ``{name, args (dict), id}``
+      - OpenAI nested:    ``{id, type, function: {name, arguments (json str)}}``
+    """
+    # LangChain flat format
+    if "name" in tc and "args" not in tc.get("function", {}):
+        args = tc.get("args", {})
+        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
+        return ToolCallOutput(
+            id=str(tc.get("id", "")),
+            type="function",
+            function=ToolCallFunction(name=tc.get("name", ""), arguments=args_str),
+        )
+
+    # OpenAI nested format (or already-normalized)
+    fn = tc.get("function", {})
+    if isinstance(fn, dict):
+        name = fn.get("name", "")
+        raw_args = fn.get("arguments", "{}")
+        args_str = raw_args if isinstance(raw_args, str) else json.dumps(raw_args)
+    else:
+        name = tc.get("name", "")
+        args_str = json.dumps(tc.get("args", {}))
+    return ToolCallOutput(
+        id=str(tc.get("id", "")),
+        type=tc.get("type", "function"),
+        function=ToolCallFunction(name=name, arguments=args_str),
+    )
+
+
+# ── Prompter ──────────────────────────────────────────────────────
 
 
 class Prompter:
-    """Unified LLM interface backed by LiteLLM.
+    """Unified LLM interface backed by LangChain ChatOpenAI.
 
     Handles:
-    - Async chat completion via `litellm.acompletion()`
+    - Async chat completion via ``ChatOpenAI.ainvoke()``
     - Context-length recovery (trim oldest turns)
-    - Tool calling (OpenAI format)
+    - Tool calling (OpenAI format via ``model.bind(tools=...)``)
     - Think‑tag stripping for reasoning models
-    - Embeddings via LiteLLM or compatible endpoint
+    - Embeddings via ``OpenAIEmbeddings``
 
-    Usage:
+    Usage::
+
         prompter = Prompter(settings.llm, embedding=settings.embedding)
-        response = await prompter.send_request(turns=[...], system_message="...")
+        response = await prompter.send_request(
+            LLMInput(system_message="...", history=[...], tool_choice="auto")
+        )
     """
 
     def __init__(
@@ -66,15 +275,48 @@ class Prompter:
         *,
         embedding: EmbeddingSettings | None = None,
     ):
-        self._llm = llm
-        self._embedding = embedding
+        self._config = llm
         self._tools: list[dict[str, Any]] | None = None
+
+        # Strip LiteLLM provider prefix so old .env files are compatible
+        # (e.g. "openai/qwen/qwen3.6-35b-a3b" → "qwen/qwen3.6-35b-a3b")
+        model_name = llm.model
+        for prefix in ("openai/", "anthropic/", "deepseek/"):
+            if model_name.startswith(prefix):
+                model_name = model_name[len(prefix) :]
+                break
+
+        self._model = ChatOpenAI(  # type: ignore[call-arg]
+            model=model_name,
+            openai_api_base=llm.base_url or None,
+            openai_api_key=SecretStr(llm.api_key) if llm.api_key else SecretStr("not-needed"),
+            temperature=llm.temperature,
+            max_tokens=llm.max_tokens,
+            request_timeout=llm.timeout,
+            max_retries=0,  # retry loop is in send_request()
+        )
+
+        # Chain components (assembled per-call in _build_chain for tool binding)
+        self._prompt = ChatPromptTemplate.from_messages([
+            ("system", "{system_message}"),
+            MessagesPlaceholder(variable_name="history"),
+        ])
+
+        self._embedding_config = embedding
+        self._embeddings: OpenAIEmbeddings | None = None
+        if embedding and embedding.model:
+            emb_key = embedding.api_key or llm.api_key or "not-needed"
+            self._embeddings = OpenAIEmbeddings(  # type: ignore[call-arg]
+                model=embedding.model,
+                openai_api_base=embedding.base_url or llm.base_url or None,
+                openai_api_key=SecretStr(emb_key),
+            )
 
     # ── properties ──────────────────────────────────────────────────
 
     @property
     def model(self) -> str:
-        return self._llm.model
+        return self._config.model
 
     # ── tools ───────────────────────────────────────────────────────
 
@@ -84,264 +326,242 @@ class Prompter:
 
     # ── chat completion ─────────────────────────────────────────────
 
-    async def send_request(
-        self,
-        turns: list[dict[str, str]],
-        system_message: str,
-        *,
-        stop_sequence: str = "***",
-        tool_choice: str | None = None,
-    ) -> LLMResponse:
-        """Send a chat completion request through LiteLLM.
+    async def send_request(self, input: LLMInput) -> LLMOutput:
+        """Send a chat completion request via LangChain ChatOpenAI.
 
-        Args:
-            turns: Conversation history as [{"role": ..., "content": ...}].
-            system_message: System prompt.
-            stop_sequence: Token appended to each user/assistant message.
-            tool_choice: Override the default "auto" tool selection. Pass
-                "none" to force a pure-text reply (for question / chitchat
-                intents from InputRouter). Pass "required" to force a tool
-                call. Pass None to use the default ("auto" if tools
-                registered, else omitted).
-
-        Returns:
-            LLMResponse with content and metadata.
+        All parameters are in the typed ``LLMInput`` model — no **kwargs.
         """
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_message}
-        ]
-        for turn in turns:
-            content = turn.get("content", "")
-            role = turn.get("role", "user")
-            msg: dict[str, Any] = {"role": role, "content": content}
-            # Preserve tool_calls if present (for OpenAI tool-call protocol)
-            if turn.get("tool_calls"):
-                msg["tool_calls"] = turn["tool_calls"]
-            if turn.get("tool_call_id"):
-                msg["tool_call_id"] = turn["tool_call_id"]
-            messages.append(msg)
+        lc_history = _dicts_to_lc_messages(input.history)
+        chain = self._build_chain(tool_choice=input.tool_choice)
 
-        kwargs = self._build_kwargs(messages, tool_choice=tool_choice)
+        for attempt in range(3):
+            try:
+                raw_result: Any = await chain.ainvoke({
+                    "system_message": input.system_message,
+                    "history": lc_history,
+                })
+                # LLMOutputParser.parse_result() always returns LLMOutput;
+                # LangChain's Runnable.ainvoke() return type is opaque Any.
+                return raw_result  # type: ignore[no-any-return]
+            except Exception as exc:
+                err_msg = str(exc)
 
-        logger.info(
-            "LiteLLM → model=%s msgs=%d temp=%.1f tools=%s",
-            self._llm.model,
-            len(messages),
-            self._llm.temperature,
-            bool(self._tools),
-        )
+                # Context window overflow → trim oldest turn and retry
+                if _is_context_overflow(err_msg):
+                    if len(input.history) > 1:
+                        logger.warning(
+                            "Context window exceeded, trimming oldest turn (%d→%d)",
+                            len(input.history),
+                            len(input.history) - 1,
+                        )
+                        return await self.send_request(
+                            LLMInput(
+                                system_message=input.system_message,
+                                history=input.history[1:],
+                                tool_choice=input.tool_choice,
+                            )
+                        )
+                    logger.exception("Context window exceeded with single turn")
+                    return LLMOutput(
+                        content="Message too long, please shorten your request.",
+                        model=self.model,
+                    )
 
-        # Debug: print full request payload so we can compare with JS
-        _log_request(messages, self._tools, tool_choice)
+                # Transient error → backoff and retry
+                if _is_transient_error(err_msg) and attempt < 2:
+                    delay = 1.5 * (attempt + 1)
+                    logger.warning(
+                        "LLM transient error (attempt %d/3), retrying in %.1fs: %s",
+                        attempt + 1,
+                        delay,
+                        err_msg[:120],
+                    )
+                    await asyncio.sleep(delay)
+                    continue
 
-        try:
-            response = await acompletion(**kwargs)
-        except ContextWindowExceededError:
-            if len(turns) > 1:
-                logger.warning(
-                    "Context window exceeded, trimming oldest turn (%d→%d)",
-                    len(turns), len(turns) - 1,
+                logger.exception("ChatOpenAI request failed (attempt %d)", attempt + 1)
+                return LLMOutput(
+                    content="My brain disconnected, try again.",
+                    model=self.model,
                 )
-                return await self.send_request(
-                    turns[1:], system_message,
-                    stop_sequence=stop_sequence,
-                    tool_choice=tool_choice,
-                )
-            logger.exception("Context window exceeded with single turn")
-            return LLMResponse(
-                content="Message too long, please shorten your request.",
-                model=self._llm.model,
-            )
-        except Exception as exc:
-            err_msg = str(exc)
-            if "context_length_exceeded" in err_msg.lower() and len(turns) > 1:
-                logger.warning("Context length exceeded, trimming oldest turn")
-                return await self.send_request(
-                    turns[1:], system_message,
-                    stop_sequence=stop_sequence,
-                    tool_choice=tool_choice,
-                )
-            logger.exception("LiteLLM request failed")
-            return LLMResponse(
+        else:
+            logger.error("LLM request failed after 3 attempts")
+            return LLMOutput(
                 content="My brain disconnected, try again.",
-                model=self._llm.model,
+                model=self.model,
             )
-
-        return self._parse_response(response)
 
     # ── embeddings ──────────────────────────────────────────────────
 
     async def embed(self, text: str) -> list[float]:
-        """Generate an embedding vector via LiteLLM.
+        """Generate an embedding vector via OpenAIEmbeddings.
 
-        Falls back to the chat model if no embedding model is configured.
+        Returns a zero vector if no embedding model is configured or on failure.
         """
-        model = self._embedding.model if self._embedding else ""
-        if not model:
-            model = self._llm.model
+        if self._embeddings is None:
+            dim = self._embedding_config.dimension if self._embedding_config else 1536
+            return [0.0] * dim
 
-        dim = self._embedding.dimension if self._embedding else 1536
-
-        # Truncate text (rough token estimate: 4 chars ≈ 1 token)
         text = text[:8191] if len(text) > 8191 else text
-
         try:
-            resp = await litellm.aembedding(
-                model=model,
-                input=text,
-                **(self._extra_provider_kwargs(for_embedding=True)),
-            )
-            return list(resp.data[0]["embedding"])
+            result = await self._embeddings.aembed_query(text)
+            return list(result)
         except Exception:
             logger.exception("Embedding failed, returning zero vector")
+            dim = self._embedding_config.dimension if self._embedding_config else 1536
             return [0.0] * dim
 
     # ── internal ────────────────────────────────────────────────────
 
-    def _build_kwargs(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        tool_choice: str | None = None,
-    ) -> dict[str, Any]:
-        """Build the kwargs dict for litellm.acompletion()."""
-        kwargs: dict[str, Any] = {
-            "model": self._llm.model,
-            "messages": messages,
-            "temperature": self._llm.temperature,
-            "max_tokens": self._llm.max_tokens,
-            "timeout": self._llm.timeout,
-            "num_retries": self._llm.num_retries,
-        }
+    def _build_chain(self, *, tool_choice: str | None = None) -> Any:
+        """Build the ``prompt | model | parser`` chain, conditionally binding tools.
 
-        # LiteLLM reads api_base / api_key for custom OpenAI-compatible endpoints
-        if self._llm.base_url:
-            kwargs["api_base"] = self._llm.base_url
-        if self._llm.api_key:
-            kwargs["api_key"] = self._llm.api_key
+        Per-call chain construction is cheap (Runnables are lightweight objects)
+        and lets us vary tool binding per invocation — some calls need tools,
+        others are pure-text (question / chitchat intents).
+        """
+        parser = _LLMOutputParser(model_name=self.model)
 
-        if self._tools:
-            # tool_choice="none" forces a pure-text reply — used for question /
-            # chitchat intents from InputRouter so questions cannot trigger
-            # tool calls. Default "auto" lets the model decide.
-            if tool_choice == "none":
-                # Some providers reject "tools" + tool_choice="none" together,
-                # so we omit tools entirely in that branch.
-                kwargs["tool_choice"] = "none"
-            else:
-                kwargs["tools"] = self._tools
-                kwargs["tool_choice"] = tool_choice or "auto"
-
-        return kwargs
-
-    def _extra_provider_kwargs(
-        self, *, for_embedding: bool = False
-    ) -> dict[str, Any]:
-        """Extra kwargs for embedding calls (api_base, api_key)."""
-        extra: dict[str, Any] = {}
-        if for_embedding and self._embedding:
-            if self._embedding.base_url:
-                extra["api_base"] = self._embedding.base_url
-            if self._embedding.api_key:
-                extra["api_key"] = self._embedding.api_key
-        elif not for_embedding:
-            if self._llm.base_url:
-                extra["api_base"] = self._llm.base_url
-            if self._llm.api_key:
-                extra["api_key"] = self._llm.api_key
-        return extra
-
-    def _parse_response(self, response: Any) -> LLMResponse:
-        """Parse a LiteLLM ModelResponse into our LLMResponse."""
-        choice = response.choices[0]
-
-        if choice.finish_reason == "length":
-            return LLMResponse(
-                content="Response too long, please simplify your request.",
-                model=self._llm.model,
-                finish_reason="length",
+        if self._tools and tool_choice != "none":
+            bound_model = self._model.bind(
+                tools=self._tools,
+                tool_choice=tool_choice or "auto",
             )
+            return self._prompt | bound_model | parser
 
-        content = choice.message.content or ""
+        if tool_choice == "none":
+            # Explicitly disable tool calling for question/chitchat intents
+            bound_model = self._model.bind(tool_choice="none")
+            return self._prompt | bound_model | parser
 
-        # Strip <think>...</think> blocks from reasoning models
-        content = _strip_think_tags(content)
-
-        # Extract tool calls — preserve OpenAI-native format so they can be
-        # sent back to the API in subsequent turns without restructuring.
-        tool_calls_raw: list[dict[str, Any]] = []
-        if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                tc_dict: dict[str, Any] = {"id": getattr(tc, "id", "")}
-                if hasattr(tc, "type"):
-                    tc_dict["type"] = tc.type
-                else:
-                    tc_dict["type"] = "function"
-                if hasattr(tc, "function"):
-                    tc_dict["function"] = {
-                        "name": tc.function.name or "",
-                        "arguments": tc.function.arguments or "{}",
-                    }
-                tool_calls_raw.append(tc_dict)
-
-        usage: dict[str, int] = {}
-        if hasattr(response, "usage") and response.usage:
-            usage = {
-                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0) or 0,
-                "completion_tokens": getattr(response.usage, "completion_tokens", 0) or 0,
-                "total_tokens": getattr(response.usage, "total_tokens", 0) or 0,
-            }
-
-        logger.info(
-            "LiteLLM ← model=%s chars=%d finish=%s",
-            self._llm.model, len(content), choice.finish_reason,
-        )
-        return LLMResponse(
-            content=content,
-            model=self._llm.model,
-            finish_reason=choice.finish_reason,
-            tool_calls=tool_calls_raw,
-            usage=usage,
-        )
+        # No tools registered, no tool_choice override → plain model
+        return self._prompt | self._model | parser
 
 
-# ── Think-tag stripping ─────────────────────────────────────────────
+# ── Message conversion ─────────────────────────────────────────────
 
 
-def _log_request(
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None,
-    tool_choice: str | None,
-) -> None:
-    """Pretty-print the full LLM request for debugging prompt differences."""
-    import json
+def _dicts_to_lc_messages(turns: list[dict[str, Any]]) -> list[BaseMessage]:
+    """Convert dict-format conversation turns to LangChain message objects.
 
-    payload: dict[str, Any] = {"messages": messages}
-    if tools:
-        payload["tools"] = [
-            {
-                "type": t.get("type"),
-                "function": {
-                    "name": t["function"]["name"],
-                    "description": t["function"]["description"],
-                },
-            }
-            for t in tools
-        ]
-    if tool_choice:
-        payload["tool_choice"] = tool_choice
+    Preserves tool-call protocol round-tripping: assistant turns with
+    ``tool_calls`` are converted to ``AIMessage(tool_calls=[...])`` and
+    follow-up tool results become ``ToolMessage`` with matching ``tool_call_id``.
 
-    logger.info(
-        "LLM REQUEST:\n%s",
-        json.dumps(payload, indent=2, ensure_ascii=False, default=str),
-    )
+    Accepts tool_calls as either raw OpenAI dicts or Pydantic ``ToolCallOutput``
+    models (which are serialised to dicts before passing to LangChain).
+    """
+    messages: list[BaseMessage] = []
+    for turn in turns:
+        content = str(turn.get("content", ""))
+        role = turn.get("role", "user")
+
+        if role == "assistant":
+            lc_tool_calls = _serialise_tool_calls(turn.get("tool_calls"))
+            if lc_tool_calls:
+                msg = AIMessage(content=content, tool_calls=lc_tool_calls)
+            else:
+                msg = AIMessage(content=content)
+            messages.append(msg)
+        elif role == "tool":
+            messages.append(
+                ToolMessage(
+                    content=content,
+                    tool_call_id=str(turn.get("tool_call_id", "")),
+                )
+            )
+        else:
+            messages.append(HumanMessage(content=content))
+
+    return messages
+
+
+def _serialise_tool_calls(
+    raw: list[Any] | None,
+) -> list[dict[str, Any]] | None:
+    """Convert a mixed list of dicts / ToolCallOutput → LangChain-compatible dicts.
+
+    LangChain AIMessage expects ``[{name, args (dict), id, type}]`` format.
+    """
+    if not raw:
+        return None
+
+    out: list[dict[str, Any]] = []
+    for tc in raw:
+        if isinstance(tc, dict):
+            # Already a dict — use as-is (OpenAI format → LangChain format)
+            fn = tc.get("function", {})
+            if isinstance(fn, dict) and "name" in fn:
+                args = fn.get("arguments", "{}")
+                out.append({
+                    "name": fn.get("name", ""),
+                    "args": json.loads(args) if isinstance(args, str) else args,
+                    "id": tc.get("id", ""),
+                    "type": tc.get("type", "tool_call"),
+                })
+            else:
+                out.append(tc)
+        elif hasattr(tc, "function"):
+            # ToolCallOutput (Pydantic model)
+            args_str = tc.function.arguments
+            out.append({
+                "name": tc.function.name,
+                "args": json.loads(args_str) if isinstance(args_str, str) else args_str,
+                "id": tc.id,
+                "type": tc.type,
+            })
+    return out or None
+
+
+# ── Think-tag stripping ────────────────────────────────────────────
 
 
 def _strip_think_tags(text: str) -> str:
     """Remove <think>...</think> blocks from reasoning model output."""
-    import re
-
     result = re.sub(r"<think>[\s\S]*?</think>", "", text)
     if "<think>" in result:
         result = result.split("<think>")[0]
     return result.strip()
+
+
+# ── Error classification ──────────────────────────────────────────
+
+
+_CONTEXT_OVERFLOW_PATTERNS: tuple[str, ...] = (
+    "context_length_exceeded",
+    "maximum context length",
+    "reduce the length of the messages",
+    "too many tokens",
+    "requested token count exceeds",
+)
+
+
+def _is_context_overflow(error_message: str) -> bool:
+    """Return True if the error message indicates context-length exceeded."""
+    lower = error_message.lower()
+    return any(pat in lower for pat in _CONTEXT_OVERFLOW_PATTERNS)
+
+
+_TRANSIENT_ERROR_PATTERNS: tuple[str, ...] = (
+    "model reloaded",
+    "model is still loading",
+    "overloaded",
+    "rate_limit",
+    "rate limit",
+    "timed out",
+    "timeout",
+    "connection",
+    "service unavailable",
+    "internal server error",
+    "server error",
+    "bad gateway",
+    "too many requests",
+    "capacity",
+    "try again",
+)
+
+
+def _is_transient_error(error_message: str) -> bool:
+    """Return True if the error is likely transient and worth retrying."""
+    lower = error_message.lower()
+    return any(pat in lower for pat in _TRANSIENT_ERROR_PATTERNS)

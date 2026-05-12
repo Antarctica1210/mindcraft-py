@@ -23,8 +23,12 @@ from typing import Any
 
 from llm import InputIntent, InputRouter, Prompter
 from llm.message_builder import CommandDef, ConversationTurn, MessageBuilder
-from llm.prompter import LLMResponse
+from llm.prompter import LLMInput, LLMOutput
 from llm.tool_parser import parse_response
+from memory.file_store import FileMemoryStore
+from memory.models import MemoryQuery
+from memory.service import MemoryService
+from skills.registry import SkillRegistry
 
 from .conversation import ConversationManager
 from .executor import ActionExecutor
@@ -149,6 +153,10 @@ class Agent:
         self._pending_task: PendingTask | None = None
         self._guided_loop_task: asyncio.Task[None] | None = None
 
+        # Memory layer (Phase 3/4a)
+        self._memory: MemoryService | None = None
+        self._knowledge: Any = None  # KnowledgeGraph (loaded lazily)
+
         # Metrics
         self._tick_count: int = 0
         self._start_time: float = 0.0
@@ -180,12 +188,38 @@ class Agent:
         # Phase 1: input intent classifier — pure regex/keyword, no LLM dep
         self._router = InputRouter.from_config(self.DEFAULT_INTENT_CONFIG)
 
+        # Phase 5a: skill registry
+        skill_reg = SkillRegistry("src/skills/skills")
+        await skill_reg.load()
+
         # Phase 1: message builder
         self._msg_builder = MessageBuilder(
             bot_name=self.name,
             commands=list(_command_defs().values()),
             self_prompt="",
+            skill_registry=skill_reg,
         )
+
+        # Phase 3/4a: memory layer
+        from pathlib import Path
+        memory_dir = Path("bots") / self.name / "memory"
+        store = FileMemoryStore(memory_dir)
+        self._memory = MemoryService(
+            store,
+            bot_name=self.name,
+            base_dir=Path("bots") / self.name,
+        )
+        await self._memory.start()
+
+        # Phase 7a: static knowledge (load lazily if data present)
+        k_data = Path("data/minecraft/1.21.6")
+        if k_data.exists():
+            from knowledge.knowledge_graph import KnowledgeGraph
+            self._knowledge = KnowledgeGraph(k_data)
+            await self._knowledge.load()
+            logger.info("KnowledgeGraph loaded for %s", self.name)
+        else:
+            logger.info("No minecraft-data found — KnowledgeGraph disabled")
 
         # Phase 2: safety polling (Plan A — Python-side observe loop)
         self._safety = SafetyMonitor(bridge)
@@ -199,6 +233,8 @@ class Agent:
     async def stop(self) -> None:
         """Gracefully shut down the agent."""
         self._running = False
+        if self._memory:
+            await self._memory.stop()
         if self._safety:
             await self._safety.stop()
         if self._bridge:
@@ -301,7 +337,7 @@ class Agent:
         bot_state: BotState,
         *,
         tool_choice: str | None = None,
-    ) -> LLMResponse:
+    ) -> LLMOutput:
         """Build the prompt and query the LLM for the next action.
 
         Args:
@@ -310,10 +346,10 @@ class Agent:
                 tool calls (used for question / chitchat intents).
 
         Returns:
-            LLMResponse with content and any tool_calls.
+            LLMOutput with content and any tool_calls.
         """
         if self._prompter is None or self._msg_builder is None:
-            return LLMResponse(content="", model="")
+            return LLMOutput(content="", model="")
 
         stats = self._msg_builder.format_stats(
             health=bot_state.health,
@@ -332,8 +368,10 @@ class Agent:
             blocked_actions=set(self._config.blocked_actions)
         )
 
-        memory = ""  # TODO: wire up MemoryLayer (Phase 3)
-        examples = ""  # TODO: wire up example retrieval (Phase 3)
+        # Phase 3/4a: recall relevant long-term memory
+        memory = await self._recall_memory(message=self._last_message)
+
+        examples = ""  # TODO: wire up example retrieval (Phase 5)
 
         system_prompt = self._msg_builder.build_system_prompt(
             stats=stats,
@@ -349,11 +387,13 @@ class Agent:
         )
 
         # Wrap the LLM call so SafetyMonitor can cancel us on danger.
-        llm_task: asyncio.Task[LLMResponse] = asyncio.ensure_future(
+        llm_task: asyncio.Task[LLMOutput] = asyncio.ensure_future(
             self._prompter.send_request(
-                turns=messages[1:],  # exclude system message (already in turns)
-                system_message=system_prompt,
-                tool_choice=tool_choice,
+                LLMInput(
+                    history=messages[1:],  # exclude system message (already in turns)
+                    system_message=system_prompt,
+                    tool_choice=tool_choice,
+                )
             )
         )
         if self._safety:
@@ -362,7 +402,7 @@ class Agent:
             response = await llm_task
         except asyncio.CancelledError:
             logger.warning("LLM call cancelled (safety interrupt)")
-            return LLMResponse(content="", model=self._prompter.model)
+            return LLMOutput(content="", model=self._prompter.model)
         finally:
             if self._safety:
                 self._safety.clear_cancellables()
@@ -429,6 +469,12 @@ class Agent:
             source, intent.value, matched,
         )
 
+        # Record L1 player message event
+        await self._record_event("player_msg", {
+            "source": source, "message": message,
+            "intent": intent.value,
+        })
+
         # Include the sender's name so the LLM can reference them in
         # commands like followPlayer / goToPlayer.
         self._history.append(
@@ -472,6 +518,9 @@ class Agent:
         used_command = False
         bot_state = await self.observe()
         tool_choice = "required" if use_tools else "none"
+        consecutive_failures = 0
+        last_failed: tuple[str, str] | None = None  # (command, args_str)
+        no_tool_retries = 0  # F2: track re-prompts when LLM omits tool calls
 
         for _ in range(max_responses):
             if self._shut_up or not self._running:
@@ -489,7 +538,16 @@ class Agent:
                 )
 
             llm_response = await self.plan(bot_state, tool_choice=tool_choice)
-            logger.info("<<< %s", llm_response.content.strip() or "(tool calls only)")
+
+            # Concise action summary: tool calls first, then truncated reply
+            if llm_response.tool_calls:
+                tc_names = [tc.function.name for tc in llm_response.tool_calls]
+                logger.info("<<< tools=%s", ", ".join(tc_names))
+            elif llm_response.content.strip():
+                preview = llm_response.content.strip()[:80]
+                logger.info("<<< %s", preview)
+            else:
+                logger.info("<<< (empty)")
 
             # Append assistant turn — include tool_calls if present so
             # models that expect the OpenAI tool-call protocol see them.
@@ -518,7 +576,30 @@ class Agent:
                 break
 
             if not parsed.has_command:
-                # Action path but model chose plain text — speak it and stop.
+                # F2: Action path but model produced plain text with no tool
+                # calls.  If we haven't retried yet, inject a reminder and
+                # re-prompt once — the LLM may have forgotten it must produce
+                # a tool call.  If it still refuses, speak the text so the
+                # player at least sees the model's reasoning.
+                if use_tools and no_tool_retries < 1:
+                    no_tool_retries += 1
+                    logger.warning(
+                        "LLM produced no tool call on action_command intent — "
+                        "injecting reminder (retry %d/1)", no_tool_retries,
+                    )
+                    self._history.append(ConversationTurn(
+                        role="system",
+                        content=(
+                            "You must respond with a tool call (function call) "
+                            "for this request.  Do NOT output plain text — pick "
+                            "the most appropriate command and call it.  If you "
+                            "are unsure which command to use, call !help or "
+                            "!stats first."
+                        ),
+                    ))
+                    continue  # re-call plan() with tool_choice="required"
+
+                # Speak plain text (question/chitchat path, or retry exhausted)
                 await self._send_chat(llm_response.content.strip())
                 break
 
@@ -541,6 +622,9 @@ class Agent:
                 result = await self.execute_command(cmd.name, cmd.args)
                 used_command = True
                 self._record_action(cmd.name, cmd.args, result)
+                await self._record_event("action_result", {
+                    "command": cmd.name, "args": cmd.args, "result": result,
+                })
 
                 if result is None:
                     await self._send_chat(f"{action_desc} — no response")
@@ -552,14 +636,12 @@ class Agent:
                 result_role: str = "system"
                 result_tc_id: str | None = None
                 for tc in llm_response.tool_calls:
-                    # OpenAI-native format: name is inside "function"
-                    fn = tc.get("function", {})
-                    tc_name = fn.get("name", "") if isinstance(fn, dict) else tc.get("name", "")
+                    tc_name = tc.function.name
                     if tc_name.startswith("action:"):
                         tc_name = tc_name[7:]
                     if tc_name == cmd.name:
                         result_role = "tool"
-                        result_tc_id = tc.get("id")
+                        result_tc_id = tc.id
                         break
 
                 self._history.append(
@@ -570,11 +652,11 @@ class Agent:
                     ),
                 )
 
-                # Only halt the chain for *hard* failures that the LLM
-                # cannot fix by trying a different approach.
-                # Soft failures ("no oak_log nearby") are fed back to the
-                # LLM so it can replan — matching the JS behaviour where
-                # execute_res is appended to history and the loop continues.
+                # ── Failure classification ───────────────────────────
+                is_fail = result and "FAILED:" in result
+                args_str = ",".join(str(a) for a in cmd.args)
+                this_fail_key = (cmd.name, args_str) if is_fail else None
+
                 if _is_hard_failure(result):
                     logger.warning("Hard command failure — asking player: %s", result)
                     await self._send_chat(f"Failed: {result}")
@@ -587,6 +669,37 @@ class Agent:
                     )
                     tool_choice = "none"
                     break  # don't execute remaining commands in this batch
+
+                if is_fail:
+                    consecutive_failures += 1
+                    # Same command + args failed twice → inject hint
+                    if (
+                        last_failed is not None
+                        and this_fail_key is not None
+                        and this_fail_key == last_failed
+                    ):
+                        self._history.append(ConversationTurn(
+                            role="system",
+                            content=(
+                                f"You just tried {cmd.name}({args_str}) and it failed "
+                                f"again with the same error. Do NOT retry the same command "
+                                f"with the same arguments — try a completely different "
+                                f"approach instead. Check what went wrong and replan."
+                            ),
+                        ))
+                    last_failed = this_fail_key
+
+                    # 3 consecutive failures (any command) → stop and ask
+                    if consecutive_failures >= 3:
+                        logger.warning("3 consecutive failures — asking player to guide")
+                        await self._send_chat(
+                            "I'm stuck — I've tried several things but they're not working. "
+                            "What should I try next?"
+                        )
+                        break
+                else:
+                    consecutive_failures = 0
+                    last_failed = None
 
                 # Report success to the player
                 await self._send_chat(f"Done: {result}")
@@ -867,6 +980,50 @@ class Agent:
             players_nearby=s.get("players_nearby", ""),
         )
 
+    # ── Memory helpers (Phase 3/4a) ──────────────────────────────────
+
+    async def _recall_memory(self, *, message: str = "") -> str:
+        """Build a memory string from recalled long-term records."""
+        if self._memory is None:
+            return ""
+
+        keywords = [w for w in message.lower().split() if len(w) > 2] if message else []
+        results = await self._memory.recall(MemoryQuery(
+            keywords=keywords, limit=5, min_confidence=0.5,
+        ))
+        if not results:
+            return ""
+
+        parts: list[str] = []
+        for r in results:
+            parts.append(f"- {r.record.description} ({r.record.type.value}/{r.record.name})")
+        return "\n".join(parts)
+
+    async def _record_event(
+        self, event_type: str, payload: dict[str, Any],
+    ) -> None:
+        """Fire-and-forget L1 event recording."""
+        if self._memory is not None:
+            await self._memory.record_event(event_type, payload)
+
+    def _query_knowledge(
+        self, target: str, inventory: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Query the static KnowledgeGraph for recipe / tool info."""
+        if self._knowledge is None:
+            return None
+
+        missing = self._knowledge.get_missing_materials(target, inventory=inventory)
+        recipe = self._knowledge.get_recipe(target)
+        collection = self._knowledge.get_collection_path(target)
+
+        return {
+            "target": target,
+            "missing": missing,
+            "recipe": recipe[:3] if recipe else [],
+            "collection": collection,
+        }
+
     def _format_inventory(self, state: BotState) -> str:
         """Format inventory from a populated ``BotState`` for the prompt.
 
@@ -1135,10 +1292,11 @@ def _command_defs() -> dict[str, CommandDef]:
         # ── Crafting / Smelting ─────────────────────────────────────
         "craftRecipe": CommandDef(
             name="craftRecipe",
-            description="Craft a recipe using available materials. Some recipes (beds, "
-            "tools, armor, etc.) require a placed crafting table nearby. Use "
-            "getCraftingPlan to see the full ingredient tree and requirements "
-            "before crafting.",
+            description="Craft a recipe using available materials. Automatically "
+            "detects nearby crafting tables and uses them. If no table is nearby "
+            "but one is in inventory, places it, crafts, then picks it back up. "
+            "Some recipes (beds, tools, armor) require a placed crafting table. "
+            "Always use getCraftingPlan before crafting complex items.",
             params={
                 "recipe_name": {"type": "string", "description": "Item to craft, e.g. stick"},
                 "num": {"type": "int", "description": "Number to craft (default 1)"},
