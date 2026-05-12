@@ -1215,10 +1215,13 @@ class Agent:
             command,
             kwargs,
         )
+        # Send a SINGLE chat line before executing. Most Minecraft servers
+        # rate-limit chat to ~1.5 s/message, so sending 3 chats in 10 ms
+        # (preface + action_desc + result) gets the middle messages dropped
+        # by the server. The preface is the only player-facing one we need
+        # for direct actions — the executor logs already record the call.
         if preface:
             await self._send_chat(preface)
-        action_desc = _describe_action(command, list(kwargs.values()))
-        await self._send_chat(action_desc)
         result = await self._execute_agent_command(command, [], kwargs)
         self._record_action(command, [], result)
         await self._record_event("action_result", {
@@ -1228,7 +1231,11 @@ class Agent:
             "result": result,
             "direct": True,
         })
-        await self._send_chat(f"Done: {result}")
+        # Only chat back the result for one-shot commands. Long-running
+        # commands like followPlayer / goToPlayer keep going on the bridge
+        # side after returning, and a "Done: ..." line would be wrong.
+        if command not in {"followPlayer", "goToPlayer"}:
+            await self._send_chat(f"Done: {result}")
         return True
 
     async def _fallback_after_repeated_query(

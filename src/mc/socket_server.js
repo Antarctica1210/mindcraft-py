@@ -547,7 +547,15 @@ async function handleRequest(method, params) {
       ensureMovements(bot);
       const dist = params.follow_dist || 4;
       followingTarget = playerName;
-      bot.pathfinder.setGoal(new pathfinder.goals.GoalFollow(entity, dist));
+      // IMPORTANT: pass dynamic=true as the second arg so the goal is
+      // re-evaluated when the target moves. Without this, GoalFollow is
+      // a one-shot pathfind to the player's position at this instant and
+      // the bot will stop once it arrives, even if the player walks away.
+      // (Mirrors JS mindcraft library/skills.js:1349.)
+      bot.pathfinder.setGoal(
+        new pathfinder.goals.GoalFollow(entity, dist),
+        true,
+      );
       return `Following ${playerName} at distance ${dist}.`;
     }
 
