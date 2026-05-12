@@ -61,6 +61,29 @@ _QUERY_COMMANDS: frozenset[str] = frozenset({
     "showVillagerTrades",
 })
 
+# Loop guards for the plan loop (mitigations after the 2026-05-12 bed-craft
+# log where the model spammed searchWiki with paraphrased queries).
+#
+# _MAX_REPEATED_QUERY_PER_NAME: how many calls to the SAME query command (by
+# name, regardless of arguments) we tolerate inside one user turn before
+# injecting a "pivot to a concrete action" reminder. The pre-existing
+# exact-arg repeat check still runs first; this catches the paraphrased
+# case ("bed recipe" → "crafting bed" → "minecraft bed").
+#
+# _MAX_CONSECUTIVE_QUERY_CALLS: how many read-only queries the model may
+# emit IN A ROW before we bail. Resets on any non-query (action) command,
+# so legitimate alternating chains like searchForEntity → attack →
+# searchForEntity → attack (the JS bed-craft pattern, ~11 iterations) are
+# not penalised. This is the primary loop guard.
+#
+# _MAX_TOOL_CALLS_PER_TURN: absolute backstop on total tool-call attempts
+# within one user turn. Set generously above the JS empirical floor of 19
+# iterations so genuine multi-step crafting completes; this only fires
+# against truly runaway models.
+_MAX_REPEATED_QUERY_PER_NAME = 3
+_MAX_CONSECUTIVE_QUERY_CALLS = 4
+_MAX_TOOL_CALLS_PER_TURN = 25
+
 
 @dataclass
 class PendingTask:
@@ -542,6 +565,13 @@ class Agent:
         logger.info(">>> %s: %s", source, message)
         self._last_message = message
 
+        # F2: reset recent-action ring at the start of each user turn so
+        # task-specific context (e.g. five failed searchWiki calls from a
+        # previous "craft a bed" attempt) does not bleed into the next
+        # turn's feedback handler or plan loop. The L1 NDJSON event log
+        # remains intact as the durable record.
+        self._recent_actions.clear()
+
         # ── 0. Check for yes/no when we have a pending guided task ───
         if self._pending_task is not None:
             msg_lower = message.strip().lower()
@@ -604,20 +634,37 @@ class Agent:
         For ``use_tools=False`` (question/chitchat) the LLM is called with
         ``tool_choice="none"`` and the reply is spoken once, no commands.
 
-        For ``use_tools=True`` (action_command) we use ``tool_choice="required"``
-        to force the LLM to always return structured tool_calls.  This eliminates
-        the legacy ``!command(args)`` text-parsing path entirely — every response
-        is in OpenAI tool-call format, so there are no quote-escaping bugs,
-        model-artifact leaks, or regex mismatches.
+        For ``use_tools=True`` (action_command) we use ``tool_choice="auto"``
+        so the model can both reason in plain text AND emit tool calls in the
+        same response — this matches the JS original's "I need wool. !attack
+        ..." pattern, which is what carried weaker models through the bed-craft
+        trace. The F2 retry path catches the case where a model produces text
+        only without a tool call, re-prompting once with a reminder.
         """
         used_command = False
         bot_state = await self.observe()
-        tool_choice = "required" if use_tools else "none"
+        tool_choice = "auto" if use_tools else "none"
         consecutive_failures = 0
         last_failed: tuple[str, str] | None = None  # (command, args_str)
         no_tool_retries = 0  # F2: track re-prompts when LLM omits tool calls
         seen_query_results: dict[str, str] = {}
         warned_repeated_queries: set[str] = set()
+        # F1: count calls to each query command by name, regardless of args
+        # — catches the paraphrased-query loop case (searchWiki "bed recipe"
+        # → "crafting bed" → "minecraft bed") that the exact-arg check above
+        # misses.
+        query_command_counts: dict[str, int] = {}
+        warned_query_command_loops: set[str] = set()
+        # F3a: consecutive read-only query calls — the *primary* loop guard.
+        # Resets on any non-query (action) command, so legitimate chains
+        # like searchForEntity → attack → searchForEntity → attack are
+        # never penalised.  Targets the actual failure mode (query spam).
+        consecutive_query_calls = 0
+        # F3b: absolute backstop on total tool-call attempts per user turn.
+        # Set high (matches JS empirical iteration count + headroom) so
+        # genuine multi-step crafting (~19 iterations on bed-craft) is not
+        # cut off; only truly runaway models hit this.
+        total_tool_calls = 0
 
         for _ in range(max_responses):
             if self._shut_up or not self._running:
@@ -749,6 +796,55 @@ class Agent:
                 )
                 return used_command
 
+            # F1: count by command name only — catches paraphrased-arg loops
+            # that the exact-arg check above doesn't catch.
+            query_loop_name: str | None = None
+            if use_tools:
+                for cmd in parsed.commands:
+                    normalized = cmd.name.lstrip("!")
+                    if normalized in _QUERY_COMMANDS:
+                        query_command_counts[normalized] = (
+                            query_command_counts.get(normalized, 0) + 1
+                        )
+                        if (
+                            query_command_counts[normalized]
+                            >= _MAX_REPEATED_QUERY_PER_NAME
+                        ):
+                            query_loop_name = normalized
+                            break
+
+            if query_loop_name is not None:
+                count = query_command_counts[query_loop_name]
+                if query_loop_name not in warned_query_command_loops:
+                    warned_query_command_loops.add(query_loop_name)
+                    logger.warning(
+                        "LLM called %s %d times in this turn (different args) — "
+                        "forcing pivot to concrete action",
+                        query_loop_name, count,
+                    )
+                    self._history.append(ConversationTurn(
+                        role="system",
+                        content=(
+                            f"You have already called {query_loop_name} {count} "
+                            "times in this turn with different arguments. You "
+                            "have enough information. Choose a concrete next "
+                            "action NOW: craftRecipe, collectBlocks, "
+                            "searchForBlock, searchForEntity, or chat back to "
+                            "the player to ask for help. Do NOT call any "
+                            "read-only query command again this turn."
+                        ),
+                    ))
+                    continue
+                logger.warning(
+                    "LLM stuck on %s after pivot reminder — ending turn",
+                    query_loop_name,
+                )
+                await self._send_chat(
+                    f"I keep looking up '{query_loop_name}' instead of acting. "
+                    "Can you tell me what to do next?"
+                )
+                return used_command
+
             # Append assistant turn — include tool_calls if present so
             # models that expect the OpenAI tool-call protocol see them.
             self._history.append(
@@ -770,6 +866,46 @@ class Agent:
                 if self._safety and self._safety.state.interrupted:
                     logger.warning("Command chain halted: safety interrupt")
                     break
+
+                # F3a: track consecutive read-only queries. Resets to 0 on
+                # any non-query command, so the JS bed-craft pattern
+                # (search → attack → search → attack, ~11 iterations) is
+                # never penalised. Catches the real failure mode: pure
+                # query spam without any concrete action in between.
+                cmd_name_normalized = cmd.name.lstrip("!")
+                if cmd_name_normalized in _QUERY_COMMANDS:
+                    consecutive_query_calls += 1
+                    if consecutive_query_calls > _MAX_CONSECUTIVE_QUERY_CALLS:
+                        logger.warning(
+                            "Consecutive-query cap (%d) hit — bot is stuck "
+                            "in read-only loop; ending turn",
+                            _MAX_CONSECUTIVE_QUERY_CALLS,
+                        )
+                        await self._send_chat(
+                            f"I've looked things up {consecutive_query_calls} "
+                            "times in a row without doing anything. What "
+                            "should I actually do?"
+                        )
+                        return used_command
+                else:
+                    consecutive_query_calls = 0
+
+                # F3b: absolute total backstop. Counts everything; only
+                # fires against runaway models. Set above JS's 19-iter
+                # bed-craft floor so genuine long tasks complete.
+                total_tool_calls += 1
+                if total_tool_calls > _MAX_TOOL_CALLS_PER_TURN:
+                    logger.warning(
+                        "Total tool-call backstop (%d) reached — ending turn",
+                        _MAX_TOOL_CALLS_PER_TURN,
+                    )
+                    recent_names = [a["name"] for a in self._recent_actions]
+                    await self._send_chat(
+                        f"I've tried {_MAX_TOOL_CALLS_PER_TURN} steps without "
+                        f"finishing — most recently {', '.join(recent_names[-3:]) or cmd.name}. "
+                        "Could you tell me what to try next?"
+                    )
+                    return used_command
 
                 # Announce each step before executing
                 cmd_args = cmd.args
@@ -1571,9 +1707,22 @@ def _command_defs() -> dict[str, CommandDef]:
         # ── Combat ──────────────────────────────────────────────────
         "attack": CommandDef(
             name="attack",
-            description="Attack and kill the nearest hostile entity of the given type.",
+            description=(
+                "Attack and kill the nearest entity of the given type. "
+                "Works on hostile mobs (zombie, skeleton, creeper) AND on "
+                "passive mobs you need to harvest (sheep for wool, cow for "
+                "leather/beef, chicken for feathers/meat, pig for pork). "
+                "Use this whenever you need a resource that drops from a "
+                "mob — do NOT keep calling searchForEntity if the target is "
+                "already nearby."
+            ),
             params={
-                "entity_type": {"type": "string", "description": "Entity type, e.g. zombie"},
+                "entity_type": {
+                    "type": "string",
+                    "description": (
+                        "Entity type, e.g. zombie, sheep, cow, chicken, pig"
+                    ),
+                },
             },
         ),
         "attackPlayer": CommandDef(
