@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Callable
@@ -29,6 +30,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 EventHandler = Callable[..., Any]
+_POLLING_METHODS: frozenset[str] = frozenset({
+    "observe",
+    "should_place_torch",
+    "get_goal",
+})
 
 
 class SocketBridgeError(Exception):
@@ -191,7 +197,7 @@ class SocketBridge:
         await self._request("set_control_state", {"control": control, "state": state})
 
     # ── Combat ──────────────────────────────────────────────────────
-    async def attack(self, entity_type: str, range_val: float = 16) -> Any:
+    async def attack(self, entity_type: str, range_val: float = 64) -> Any:
         """Attack the nearest hostile entity of the given type."""
         return await self._request("attack", {
             "entity_type": entity_type, "range": range_val,
@@ -402,13 +408,37 @@ class SocketBridge:
         fut: asyncio.Future[Any] = asyncio.Future()
         self._pending[req_id] = fut
 
+        started = time.perf_counter()
+        log = logger.debug if method in _POLLING_METHODS else logger.info
+        log(
+            "SocketBridge request start: id=%s method=%s params=%s",
+            req_id,
+            method,
+            _preview(params or {}),
+        )
         self._writer.write(payload.encode())
         await self._writer.drain()
 
         try:
-            return await asyncio.wait_for(fut, timeout=120)
+            result = await asyncio.wait_for(fut, timeout=120)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            log(
+                "SocketBridge request done: id=%s method=%s elapsed_ms=%.1f result=%s",
+                req_id,
+                method,
+                elapsed_ms,
+                _preview(result),
+            )
+            return result
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            logger.warning(
+                "SocketBridge request timeout: id=%s method=%s elapsed_ms=%.1f",
+                req_id,
+                method,
+                elapsed_ms,
+            )
             raise SocketBridgeError(f"Request '{method}' timed out after 120s")
 
     async def _read_loop(self) -> None:
@@ -465,3 +495,11 @@ class SocketBridge:
 
                         task = asyncio.create_task(result)
                         task.add_done_callback(_done_callback)
+
+
+def _preview(value: Any, *, limit: int = 500) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        text = str(value)
+    return text if len(text) <= limit else text[:limit] + "..."

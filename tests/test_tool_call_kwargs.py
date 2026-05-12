@@ -64,3 +64,24 @@ async def test_executor_normalizes_camel_case_tool_kwargs() -> None:
 
     assert result == "oak_log:3"
     assert seen == {"block_type": "oak_log", "count": 3}
+
+
+async def test_executor_maps_attack_range_kwarg_to_range_val() -> None:
+    seen: dict[str, Any] = {}
+
+    async def handler(_bridge: Any, entity_type: str, range_val: float = 64) -> str:
+        seen["entity_type"] = entity_type
+        seen["range_val"] = range_val
+        return f"{entity_type}:{range_val}"
+
+    executor = ActionExecutor()
+    executor.register("attack", handler)
+
+    result = await executor.execute(
+        "attack",
+        [],
+        {"entity_type": "sheep", "range": 64},
+    )
+
+    assert result == "sheep:64"
+    assert seen == {"entity_type": "sheep", "range_val": 64}

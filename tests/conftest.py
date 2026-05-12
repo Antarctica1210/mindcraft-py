@@ -95,20 +95,36 @@ class FakeBridge:
         self.calls.append(("move_to", x, y, z))
         return f"moved to ({x},{y},{z})"
 
+    async def go_to_player(self, player_name: str, closeness: float = 3) -> str:
+        self.calls.append(("go_to_player", player_name, closeness))
+        return f"went to {player_name}"
+
+    async def follow_player(self, player_name: str, follow_dist: float = 4) -> str:
+        self.calls.append(("follow_player", player_name, follow_dist))
+        return f"following {player_name}"
+
     async def move_away(self, distance: float = 16) -> str:
         self.calls.append(("move_away", distance))
         return f"moved away {distance}"
 
+    async def search_for_entity(self, entity_type: str, search_range: float = 64) -> str:
+        self.calls.append(("search_for_entity", entity_type, search_range))
+        return f"found {entity_type}"
+
     async def set_control_state(self, control: str, state: bool = True) -> None:
         self.calls.append(("set_control_state", control, state))
 
-    async def attack(self, entity_type: str, range_val: float = 16) -> str:
+    async def attack(self, entity_type: str, range_val: float = 64) -> str:
         self.calls.append(("attack", entity_type, range_val))
         return f"attacking {entity_type}"
 
     async def pickup_nearby_items(self, distance: float = 8) -> str:
         self.calls.append(("pickup_nearby_items", distance))
         return f"picked up items within {distance}"
+
+    async def get_crafting_plan(self, target_item: str, quantity: int = 1) -> str:
+        self.calls.append(("get_crafting_plan", target_item, quantity))
+        return f"plan for {quantity} {target_item}"
 
     async def should_place_torch(self) -> dict[str, Any]:
         self.calls.append(("should_place_torch",))

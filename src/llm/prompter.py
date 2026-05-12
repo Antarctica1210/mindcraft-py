@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -34,6 +35,7 @@ from settings import EmbeddingSettings, LLMSettings
 
 logger = logging.getLogger(__name__)
 _RAW_RESPONSE_LOGGER_NAME = "llm.raw_response"
+_INTERACTION_LOGGER_NAME = "llm.interaction"
 
 
 # ── Pydantic I/O models ────────────────────────────────────────────
@@ -340,6 +342,26 @@ def _raw_response_logger() -> logging.Logger:
     return raw_logger
 
 
+def _jsonl_logger(name: str, filename_suffix: str) -> logging.Logger:
+    """Return a dedicated JSONL logger under logs/."""
+    json_logger = logging.getLogger(name)
+    json_logger.setLevel(logging.INFO)
+    json_logger.propagate = False
+
+    if not json_logger.handlers:
+        log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        handler = logging.FileHandler(
+            log_dir / f"{today}.{filename_suffix}.jsonl",
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        json_logger.addHandler(handler)
+
+    return json_logger
+
+
 def _log_raw_response(
     *,
     model: str,
@@ -359,6 +381,36 @@ def _log_raw_response(
         "parsed": _to_jsonable(parsed) if parsed is not None else None,
     }
     _raw_response_logger().info(json.dumps(record, ensure_ascii=False, default=str))
+
+
+def _log_llm_interaction(
+    *,
+    model: str,
+    tool_choice: str | None,
+    attempt: int,
+    elapsed_ms: float,
+    system_message: str,
+    history: list[dict[str, Any]],
+    parsed: LLMOutput,
+) -> None:
+    """Append one full LLM interaction record for debugging."""
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "tool_choice": tool_choice,
+        "attempt": attempt,
+        "elapsed_ms": round(elapsed_ms, 2),
+        "request": {
+            "system_chars": len(system_message),
+            "history_count": len(history),
+            "system_message": system_message,
+            "history": _to_jsonable(history),
+        },
+        "response": _to_jsonable(parsed),
+    }
+    _jsonl_logger(_INTERACTION_LOGGER_NAME, "llm_interactions").info(
+        json.dumps(record, ensure_ascii=False, default=str)
+    )
 
 
 def _allowed_tool_names(tools: list[dict[str, Any]]) -> set[str]:
@@ -527,17 +579,49 @@ class Prompter:
 
         for attempt in range(3):
             try:
+                started = time.perf_counter()
+                logger.info(
+                    "LLM request start: model=%s tool_choice=%s history=%d "
+                    "system_chars=%d tools=%s attempt=%d/3",
+                    self.model,
+                    input.tool_choice,
+                    len(input.history),
+                    len(input.system_message),
+                    bool(self._tools),
+                    attempt + 1,
+                )
                 raw_result: Any = await chain.ainvoke({
                     "system_message": input.system_message,
                     "history": lc_history,
                 })
+                elapsed_ms = (time.perf_counter() - started) * 1000
                 parsed = parser.parse_result(raw_result)
                 parsed = self._filter_unknown_tool_calls(parsed)
+                usage = parsed.usage
+                logger.info(
+                    "LLM response parsed: model=%s elapsed_ms=%.1f "
+                    "content_chars=%d tool_calls=%d finish=%s usage=%s",
+                    self.model,
+                    elapsed_ms,
+                    len(parsed.content),
+                    len(parsed.tool_calls),
+                    parsed.finish_reason,
+                    usage.model_dump() if usage else None,
+                )
                 _log_raw_response(
                     model=self.model,
                     tool_choice=input.tool_choice,
                     attempt=attempt + 1,
                     raw_result=raw_result,
+                    parsed=parsed,
+                )
+                _log_llm_interaction(
+                    model=self.model,
+                    tool_choice=input.tool_choice,
+                    attempt=attempt + 1,
+                    elapsed_ms=elapsed_ms,
+                    system_message=input.system_message,
+                    history=input.history,
                     parsed=parsed,
                 )
                 return parsed

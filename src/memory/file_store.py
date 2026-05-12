@@ -11,15 +11,13 @@ in ``bots/<name>/memory/<type>/<name>.md``, with a ``MEMORY.md`` index file.
 
 from __future__ import annotations
 
-import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import MemoryQuery, MemoryRecord, MemoryResult, MemoryType, Scope
+from .index import MemoryIndex
+from .models import MemoryQuery, MemoryRecord, MemoryResult, Scope
 from .store import MemoryStore
-
-logger = logging.getLogger(__name__)
 
 _YAML_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
@@ -41,7 +39,11 @@ def _yaml_value(v: object) -> str:
         return f"[{items}]"
     if isinstance(v, str):
         # Quote if it contains special chars
-        if any(c in v for c in ('"', "\n", ":", "#", "{", "}", "[", "]", ",", "&", "*", "?", "|", "-", "<", ">", "=", "!", "%", "@", "`")):
+        yaml_special_chars = (
+            '"', "\n", ":", "#", "{", "}", "[", "]", ",", "&", "*", "?",
+            "|", "-", "<", ">", "=", "!", "%", "@", "`",
+        )
+        if any(c in v for c in yaml_special_chars):
             escaped = v.replace("\\", "\\\\").replace('"', '\\"')
             return f'"{escaped}"'
         if v == "":
@@ -109,6 +111,7 @@ class FileMemoryStore(MemoryStore):
 
     def __init__(self, root_dir: str | Path = "bots/default/memory") -> None:
         self._root = Path(root_dir)
+        self._index = MemoryIndex(self._index_path())
 
     # ── Path helpers ──────────────────────────────────────────────────
 
@@ -206,17 +209,7 @@ class FileMemoryStore(MemoryStore):
 
     async def _rebuild_index(self) -> None:
         """Rebuild MEMORY.md from all record files."""
-        records = await self.list()
-        lines = [
-            "# Memory Index",
-            "",
-            f"_Last rebuilt: {datetime.now(timezone.utc).isoformat()}_",
-            "",
-        ]
-        for record in records:
-            lines.append(record.index_line())
-        self._index_path().parent.mkdir(parents=True, exist_ok=True)
-        self._index_path().write_text("\n".join(lines) + "\n")
+        await self._index.rebuild(await self.list(limit=10_000))
 
     # ── CRUD ──────────────────────────────────────────────────────────
 
@@ -361,7 +354,6 @@ class FileMemoryStore(MemoryStore):
                 if record.is_expired(now):
                     md_file.unlink()
                     removed += 1
-                    logger.info("Compact: expired %s/%s", record.type.value, record.name)
         if removed:
             await self._rebuild_index()
         return removed
@@ -401,3 +393,80 @@ class FileMemoryStore(MemoryStore):
     async def count(self, *, scope: Scope | None = None) -> int:
         records = await self.list(scope=scope, limit=10_000)
         return len(records)
+
+
+class ScopedFileMemoryStore(MemoryStore):
+    """File store using the Phase 4a bot/world directory layout.
+
+    Layout:
+      - ``bots/<name>/universal/memory`` for scope=bot
+      - ``bots/<name>/worlds/<world_id>/memory`` for scope=world
+    """
+
+    def __init__(self, bot_root: str | Path, *, world_id: str = "default") -> None:
+        self._bot_root = Path(bot_root)
+        self._world_id = world_id
+        self._bot_store = FileMemoryStore(self._bot_root / "universal" / "memory")
+        self._world_store = FileMemoryStore(
+            self._bot_root / "worlds" / world_id / "memory"
+        )
+
+    def _store_for_scope(self, scope: Scope | None) -> FileMemoryStore:
+        if scope == Scope.BOT:
+            return self._bot_store
+        return self._world_store
+
+    def _stores_for_query(self, scope: Scope | None) -> list[FileMemoryStore]:
+        if scope == Scope.BOT:
+            return [self._bot_store]
+        if scope == Scope.WORLD:
+            return [self._world_store]
+        return [self._world_store, self._bot_store]
+
+    async def put(self, record: MemoryRecord) -> str:
+        if record.scope == Scope.WORLD:
+            record.world_id = self._world_id
+        return await self._store_for_scope(record.scope).put(record)
+
+    async def get(
+        self, name: str, *, scope: Scope | None = None, type: str | None = None,
+    ) -> MemoryRecord | None:
+        for store in self._stores_for_query(scope):
+            record = await store.get(name, scope=scope, type=type)
+            if record is not None:
+                return record
+        return None
+
+    async def search(self, query: MemoryQuery) -> list[MemoryResult]:
+        results: list[MemoryResult] = []
+        for store in self._stores_for_query(query.scope):
+            results.extend(await store.search(query))
+        results.sort(key=lambda r: r.score, reverse=True)
+        return results[: query.limit]
+
+    async def update(self, record: MemoryRecord) -> str:
+        return await self._store_for_scope(record.scope).update(record)
+
+    async def delete(
+        self, name: str, *, scope: Scope | None = None, type: str | None = None,
+    ) -> bool:
+        deleted = False
+        for store in self._stores_for_query(scope):
+            deleted = await store.delete(name, scope=scope, type=type) or deleted
+        return deleted
+
+    async def compact(self) -> int:
+        return await self._world_store.compact() + await self._bot_store.compact()
+
+    async def list(
+        self, *, scope: Scope | None = None, type: str | None = None,
+        limit: int = 200,
+    ) -> list[MemoryRecord]:
+        records: list[MemoryRecord] = []
+        for store in self._stores_for_query(scope):
+            records.extend(await store.list(scope=scope, type=type, limit=limit))
+        records.sort(key=lambda r: (r.updated.timestamp(), r.confidence), reverse=True)
+        return records[:limit]
+
+    async def count(self, *, scope: Scope | None = None) -> int:
+        return len(await self.list(scope=scope, limit=10_000))

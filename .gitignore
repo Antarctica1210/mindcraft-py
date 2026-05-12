@@ -6,6 +6,17 @@ code_records/
 scratch.js
 bots/**/action-code/**
 bots/**/
+!bots/
+!bots/*/
+bots/*/*
+!bots/*/universal/
+!bots/*/universal/skills/
+!bots/*/universal/skills/*.md
+!bots/*/worlds/
+!bots/*/worlds/*/
+bots/*/worlds/*/*
+!bots/*/worlds/*/skills/
+!bots/*/worlds/*/skills/.gitkeep
 keys.json
 services/viaproxy/jars/**
 services/viaproxy/logs/**

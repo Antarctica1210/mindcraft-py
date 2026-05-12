@@ -27,9 +27,11 @@ from llm import ExampleStore, InputIntent, InputRouter, Prompter
 from llm.message_builder import CommandDef, ConversationTurn, MessageBuilder
 from llm.prompter import LLMInput, LLMOutput
 from llm.tool_parser import parse_response
-from memory.file_store import FileMemoryStore
-from memory.models import MemoryQuery
+from memory.file_store import ScopedFileMemoryStore
+from memory.models import MemoryQuery, MemoryRecord, MemoryType, Scope
 from memory.service import MemoryService
+from skills.loader import SkillStore
+from skills.matcher import SkillMatch, SkillMatcher
 from skills.registry import SkillRegistry
 
 from .conversation import ConversationManager
@@ -150,12 +152,72 @@ def _tool_call_required_reminder() -> str:
     """
     return (
         "You must use a command to respond to this request — either emit "
-        "a tool/function call OR use the !commandName(args) syntax in your "
+        "a tool call/function call OR use the !commandName(args) syntax in your "
         "text reply (e.g. !craftRecipe(\"oak_planks\", 1) or "
         "!searchForEntity(\"sheep\", 64)). Do NOT respond with plain text "
         "alone. If you are unsure which command fits, call !help or !stats "
         "first."
     )
+
+
+def _strip_memory_verbs(message: str) -> str:
+    text = message.strip()
+    patterns = [
+        r"^\s*remember\s+(that\s+)?",
+        r"^\s*mark\s+(this|that|here)\s+(as\s+)?",
+        r"^\s*prefer\s+",
+        r"^\s*avoid\s+",
+        r"^\s*记住[:：]?\s*",
+        r"^\s*记得[:：]?\s*",
+        r"^\s*标记[:：]?\s*",
+        r"^\s*偏好[:：]?\s*",
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+    return text or message.strip()
+
+
+def _memory_name_from_message(
+    message: str,
+    *,
+    verbs: tuple[str, ...] = (),
+    default: str = "memory",
+) -> str:
+    text = message.strip()
+    for verb in verbs:
+        text = re.sub(rf"^\s*{re.escape(verb)}\s+", "", text, flags=re.IGNORECASE)
+    text = _strip_memory_verbs(text)
+
+    # Prefer explicit "as NAME" / "called NAME" markers for place names.
+    explicit = re.search(r"\b(?:as|called|named)\s+([A-Za-z0-9_\- ]{2,40})", text, re.I)
+    if explicit:
+        text = explicit.group(1)
+
+    words = re.findall(r"[A-Za-z0-9_]+", text.lower())
+    if not words:
+        return default
+    stop = {
+        "that", "this", "the", "a", "an", "is", "are", "at", "to", "here",
+        "place", "location", "please", "me", "my", "as", "called", "named",
+    }
+    filtered = [w for w in words if w not in stop]
+    return "_".join(filtered[:6]) or default
+
+
+def _craft_target_from_message(message: str) -> str:
+    lower = message.lower()
+    match = re.search(r"\bcraft\s+(?:a|an|the|some)?\s*([a-zA-Z0-9_ -]+)", lower)
+    if not match:
+        return ""
+    target = match.group(1).strip()
+    target = re.split(r"\b(?:for|please|now|and|then)\b", target)[0].strip()
+    words = [w for w in re.findall(r"[a-zA-Z0-9_]+", target) if w not in {"a", "an", "the"}]
+    return "_".join(words[:3])
+
+
+def _log_preview(value: Any, *, limit: int = 500) -> str:
+    text = "" if value is None else str(value)
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _command_call_key(
@@ -276,6 +338,8 @@ class Agent:
         # Memory layer (Phase 3/4a)
         self._memory: MemoryService | None = None
         self._knowledge: Any = None  # KnowledgeGraph (loaded lazily)
+        self._skill_store: SkillStore | None = None
+        self._skill_matcher: SkillMatcher | None = None
 
         # Metrics
         self._tick_count: int = 0
@@ -329,14 +393,19 @@ class Agent:
 
         # Phase 3/4a: memory layer
         from pathlib import Path
-        memory_dir = Path("bots") / self.name / "memory"
-        store = FileMemoryStore(memory_dir)
+        bot_dir = Path("bots") / self.name
+        store = ScopedFileMemoryStore(bot_dir)
         self._memory = MemoryService(
             store,
             bot_name=self.name,
-            base_dir=Path("bots") / self.name,
+            base_dir=bot_dir,
         )
         await self._memory.start()
+
+        # Phase 5a: executable workflow skills (separate from code-doc skills)
+        self._skill_store = SkillStore.for_bot(self.name, memory=self._memory)
+        await self._skill_store.load()
+        self._skill_matcher = SkillMatcher(self._skill_store)
 
         # Phase 7a: static knowledge (load lazily if data present)
         k_data = Path("data/minecraft/1.21.6")
@@ -479,6 +548,21 @@ class Agent:
         if self._prompter is None or self._msg_builder is None:
             return LLMOutput(content="", model="")
 
+        logger.info(
+            "Plan start: tool_choice=%s goal=%s pos=(%.1f, %.1f, %.1f) "
+            "health=%.1f food=%.1f inventory_items=%d nearby_blocks=%d "
+            "last_message=%r",
+            tool_choice,
+            bot_state.current_goal,
+            bot_state.position.x,
+            bot_state.position.y,
+            bot_state.position.z,
+            bot_state.health,
+            bot_state.food,
+            len(bot_state.inventory),
+            len(bot_state.nearby_block_types),
+            self._last_message,
+        )
         stats = self._msg_builder.format_stats(
             health=bot_state.health,
             food=bot_state.food,
@@ -506,6 +590,11 @@ class Agent:
 
         # Phase 3/4a: recall relevant long-term memory
         memory = await self._recall_memory(message=self._last_message)
+        logger.info(
+            "Plan memory context: chars=%d has_memory=%s",
+            len(memory),
+            bool(memory),
+        )
 
         # Few-shot examples: keyword-overlap retrieval against the last
         # player message. Mirrors JS prompter.js which selects top-N
@@ -530,6 +619,15 @@ class Agent:
             history=self._history,
             system_prompt=system_prompt,
         )
+        logger.info(
+            "Plan prompt built: system_chars=%d messages=%d history_turns=%d "
+            "command_docs_chars=%d examples_chars=%d",
+            len(system_prompt),
+            len(messages),
+            len(self._history),
+            len(command_docs),
+            len(examples),
+        )
 
         # Wrap the LLM call so SafetyMonitor can cancel us on danger.
         llm_task: asyncio.Task[LLMOutput] = asyncio.ensure_future(
@@ -552,6 +650,13 @@ class Agent:
             if self._safety:
                 self._safety.clear_cancellables()
 
+        logger.info(
+            "Plan response: model=%s content_chars=%d tool_calls=%d finish=%s",
+            response.model,
+            len(response.content),
+            len(response.tool_calls),
+            response.finish_reason,
+        )
         return response
 
     # ── Execution ───────────────────────────────────────────────────
@@ -675,6 +780,13 @@ class Agent:
         """
         used_command = False
         bot_state = await self.observe()
+        if use_tools:
+            direct_result = await self._try_direct_action_command()
+            if direct_result is not None:
+                return direct_result
+            skill_used = await self._try_phase5a_skill(self._last_message, bot_state)
+            if skill_used:
+                return True
         tool_choice = "auto" if use_tools else "none"
         consecutive_failures = 0
         last_failed: tuple[str, str] | None = None  # (command, args_str)
@@ -820,9 +932,16 @@ class Agent:
                     ))
                     continue
                 logger.warning(
-                    "LLM repeated query command %s after reminder — ending turn",
+                    "LLM repeated query command %s after reminder — attempting fallback",
                     normalized_name,
                 )
+                fallback_result = await self._fallback_after_repeated_query(
+                    normalized_name,
+                    bot_state,
+                    seen_query_results.get(cmd_key, ""),
+                )
+                if fallback_result is not None:
+                    return fallback_result or used_command
                 await self._send_chat(
                     "I'm stuck repeating the same check instead of taking the next step."
                 )
@@ -948,9 +1067,24 @@ class Agent:
                     cmd.name,
                     cmd_args if cmd_args else list((cmd_kwargs or {}).values()),
                 )
+                logger.info(
+                    "Bot action step start: command=%s args=%s kwargs=%s desc=%s",
+                    cmd.name,
+                    cmd_args,
+                    cmd_kwargs or {},
+                    action_desc,
+                )
                 await self._send_chat(action_desc)
 
+                action_started = time.perf_counter()
                 result = await self._execute_agent_command(cmd.name, cmd_args, cmd_kwargs)
+                action_elapsed_ms = (time.perf_counter() - action_started) * 1000
+                logger.info(
+                    "Bot action step result: command=%s elapsed_ms=%.1f result=%s",
+                    cmd.name,
+                    action_elapsed_ms,
+                    _log_preview(result),
+                )
                 used_command = True
                 self._record_action(cmd.name, cmd_args, result)
                 await self._record_event("action_result", {
@@ -1050,6 +1184,235 @@ class Agent:
         self._history = self._convo_mgr.compress_history(self._history)
         return used_command
 
+    async def _try_direct_action_command(self) -> bool | None:
+        """Handle simple player commands without spending an LLM turn."""
+        if not self._last_sender:
+            return None
+
+        text = self._last_message.strip().lower()
+        command: str | None = None
+        kwargs: dict[str, Any] = {}
+        preface = ""
+
+        if re.fullmatch(r"(come\s+to\s+me|come\s+here|get\s+over\s+here|come)", text):
+            command = "goToPlayer"
+            kwargs = {"player_name": self._last_sender, "closeness": 3}
+            preface = "On my way."
+        elif re.fullmatch(r"(follow\s+me|follow|escort\s+me)", text):
+            command = "followPlayer"
+            kwargs = {"player_name": self._last_sender, "follow_dist": 4}
+            preface = "I'll follow you."
+        elif re.fullmatch(r"(stop\s+following|stop\s+follow|stop)", text):
+            command = "stop"
+            preface = "Stopping."
+
+        if command is None:
+            return None
+
+        logger.info(
+            "Direct action command matched: message=%r command=%s kwargs=%s",
+            self._last_message,
+            command,
+            kwargs,
+        )
+        if preface:
+            await self._send_chat(preface)
+        action_desc = _describe_action(command, list(kwargs.values()))
+        await self._send_chat(action_desc)
+        result = await self._execute_agent_command(command, [], kwargs)
+        self._record_action(command, [], result)
+        await self._record_event("action_result", {
+            "command": command,
+            "args": [],
+            "kwargs": kwargs,
+            "result": result,
+            "direct": True,
+        })
+        await self._send_chat(f"Done: {result}")
+        return True
+
+    async def _fallback_after_repeated_query(
+        self,
+        query_name: str,
+        bot_state: BotState,
+        last_result: str,
+    ) -> bool | None:
+        """Deterministic escape hatch when the LLM repeats a read-only query."""
+        goal = self._last_message.lower()
+        if query_name != "inventory" or "craft" not in goal:
+            return None
+        target = _craft_target_from_message(self._last_message)
+        if not target:
+            return None
+
+        logger.info(
+            "Fallback after repeated inventory: target=%s inventory=%s",
+            target,
+            _log_preview(last_result),
+        )
+        plan = await self._execute_agent_command(
+            "getCraftingPlan",
+            [],
+            {"target_item": target, "quantity": 1},
+        )
+        self._record_action("getCraftingPlan", [target, 1], plan)
+        await self._record_event("action_result", {
+            "command": "getCraftingPlan",
+            "args": [],
+            "kwargs": {"target_item": target, "quantity": 1},
+            "result": plan,
+            "fallback": "repeated_inventory",
+        })
+        if plan:
+            self._history.append(ConversationTurn(role="system", content=plan))
+            await self._send_chat(f"I already checked inventory. Next plan:\n{plan[:300]}")
+
+        next_actions = self._next_crafting_actions_from_state(target, bot_state)
+        if not next_actions:
+            return True
+
+        for command, args, kwargs in next_actions:
+            action_desc = _describe_action(command, args if args else list(kwargs.values()))
+            await self._send_chat(action_desc)
+            result = await self._execute_agent_command(command, args, kwargs)
+            self._record_action(command, args, result)
+            await self._record_event("action_result", {
+                "command": command,
+                "args": args,
+                "kwargs": kwargs,
+                "result": result,
+                "fallback": "repeated_inventory",
+            })
+            await self._send_chat(f"Done: {result}")
+            if result is None or "FAILED:" in str(result):
+                break
+        return True
+
+    def _next_crafting_actions_from_state(
+        self, target: str, bot_state: BotState,
+    ) -> list[tuple[str, list[Any], dict[str, Any]]]:
+        """Pick a conservative concrete action for common repeated-query craft loops."""
+        inventory = {item.name: item.count for item in bot_state.inventory}
+        if target == "bed":
+            bed = next((name for name in inventory if name.endswith("_bed")), None)
+            if bed:
+                return []
+            knowledge_action = self._bed_actions_from_knowledge(inventory)
+            if knowledge_action:
+                return knowledge_action
+            wool_counts = {
+                name: count for name, count in inventory.items()
+                if name.endswith("_wool")
+            }
+            for wool_name, count in wool_counts.items():
+                if count >= 3:
+                    bed_name = wool_name.removesuffix("_wool") + "_bed"
+                    return [("craftRecipe", [], {"recipe_name": bed_name, "num": 1})]
+            return [("searchForEntity", [], {"entity_type": "sheep", "search_range": 64})]
+        return []
+
+    def _bed_actions_from_knowledge(
+        self, inventory: dict[str, int],
+    ) -> list[tuple[str, list[Any], dict[str, Any]]]:
+        """Use the KnowledgeGraph missing-counts to make bed collection finite."""
+        if self._knowledge is None:
+            return []
+        try:
+            plan = self._knowledge.get_missing_materials("bed", inventory=inventory)
+        except Exception:
+            logger.exception("KnowledgeGraph missing-material query failed")
+            return []
+
+        target = str(plan.get("target") or "bed")
+        if plan.get("have_all"):
+            return [("craftRecipe", [], {"recipe_name": target, "num": 1})]
+
+        missing_counts = plan.get("missing_counts", {}) or {}
+        wool_missing = [
+            int(count)
+            for name, count in missing_counts.items()
+            if str(name).endswith("_wool")
+        ]
+        if not wool_missing:
+            return []
+
+        # One sheep normally drops one wool. Cap the deterministic fallback so
+        # a malformed recipe or inventory state cannot run the bot forever.
+        sheep_to_try = min(max(max(wool_missing), 1), 3)
+        actions: list[tuple[str, list[Any], dict[str, Any]]] = []
+        for _ in range(sheep_to_try):
+            actions.append((
+                "searchForEntity",
+                [],
+                {"entity_type": "sheep", "search_range": 64},
+            ))
+            actions.append((
+                "attack",
+                [],
+                {"entity_type": "sheep", "range": 64},
+            ))
+        return actions
+
+    async def _try_phase5a_skill(self, situation: str, bot_state: BotState) -> bool:
+        """Run a high-confidence Phase 5a workflow skill before calling the LLM."""
+        if self._skill_matcher is None or self._skill_store is None:
+            return False
+        match = await self._skill_matcher.match(situation, bot_state, min_score=0.9)
+        if match is None:
+            return False
+
+        skill = match.skill
+        logger.info("Phase5a skill matched: %s score=%.2f", skill.name, match.score)
+        self._history.append(ConversationTurn(
+            role="system",
+            content=f"Phase5a skill selected: {skill.name} ({match.score:.2f})",
+        ))
+        await self._send_chat(f"Using skill: {skill.description or skill.name}")
+
+        success = True
+        for step in skill.steps:
+            if self._shut_up or not self._running:
+                success = False
+                break
+            action_desc = _describe_action(
+                step.command,
+                step.args if step.args else list(step.kwargs.values()),
+            )
+            await self._send_chat(action_desc)
+            result = await self._execute_agent_command(step.command, step.args, step.kwargs)
+            self._record_action(step.command, step.args, result)
+            await self._record_event("action_result", {
+                "command": step.command,
+                "args": step.args,
+                "kwargs": step.kwargs,
+                "result": result,
+                "skill": skill.name,
+            })
+            if result is None or "FAILED:" in result:
+                success = False
+                fallback = self._skill_failure_hint(match, result or "")
+                if fallback:
+                    self._history.append(ConversationTurn(role="system", content=fallback))
+                await self._send_chat(f"Skill failed: {result or 'no response'}")
+                break
+            self._history.append(ConversationTurn(role="system", content=result))
+            await self._send_chat(f"Done: {result}")
+
+        await self._skill_store.record_outcome(skill, success=success)
+        return success
+
+    def _skill_failure_hint(self, match: SkillMatch, result: str) -> str | None:
+        result_lower = result.lower()
+        for mode in match.skill.failure_modes:
+            if mode.pattern.lower() in result_lower:
+                parts = [f"Skill failure mode matched: {mode.pattern}."]
+                if mode.next_skill:
+                    parts.append(f"Try skill '{mode.next_skill}' next.")
+                if mode.hint:
+                    parts.append(mode.hint)
+                return " ".join(parts)
+        return None
+
     async def _execute_agent_command(
         self,
         command_name: str,
@@ -1076,12 +1439,17 @@ class Agent:
                 (kwargs or {}).get("code_prompt", values[0] if values else self._last_message)
             )
             return await self._execute_dynamic_action(prompt)
+        args, kwargs = self._normalize_player_command_args(name, args, kwargs)
         if name == "getCraftingPlan":
             target = str((kwargs or {}).get("target_item", values[0] if values else ""))
             quantity = int((kwargs or {}).get("quantity", values[1] if len(values) > 1 else 1) or 1)
             kg_plan = await self._get_knowledge_crafting_plan(target, quantity)
             if kg_plan is not None:
                 return kg_plan
+        if name in {"goToCoordinates", "moveTo"}:
+            coord_error = self._validate_coordinates_before_move(args, kwargs)
+            if coord_error:
+                return f"FAILED: {coord_error}"
         if name == "craftRecipe":
             dye_hint = await self._bed_dye_misconception_hint(args, kwargs)
             if dye_hint:
@@ -1098,35 +1466,203 @@ class Agent:
             return "Chat history cleared."
         return await self.execute_command(command_name, args, kwargs)
 
+    def _normalize_player_command_args(
+        self,
+        command_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any] | None,
+    ) -> tuple[list[Any], dict[str, Any] | None]:
+        """Preserve actual chat-sender casing for player-target commands."""
+        if not self._last_sender:
+            return args, kwargs
+        player_commands = {
+            "goToPlayer": "player_name",
+            "followPlayer": "player_name",
+            "attackPlayer": "player_name",
+            "givePlayer": "player_name",
+            "startConversation": "player_name",
+            "endConversation": "player_name",
+            "lookAtPlayer": "player_name",
+        }
+        param = player_commands.get(command_name)
+        if param is None:
+            return args, kwargs
+
+        sender = self._last_sender
+        new_args = list(args)
+        new_kwargs = dict(kwargs or {})
+        if param in new_kwargs:
+            current = str(new_kwargs[param])
+            if current.lower() == sender.lower() or current.lower() in {"me", "player"}:
+                new_kwargs[param] = sender
+            return new_args, new_kwargs
+        if new_args:
+            current = str(new_args[0])
+            if current.lower() == sender.lower() or current.lower() in {"me", "player"}:
+                new_args[0] = sender
+        return new_args, new_kwargs or kwargs
+
+    def _validate_coordinates_before_move(
+        self, args: list[Any], kwargs: dict[str, Any] | None,
+    ) -> str | None:
+        """Validate recalled/manual coordinates before movement."""
+        values = args if args else list((kwargs or {}).values())
+        raw_x = (kwargs or {}).get("x", values[0] if len(values) > 0 else None)
+        raw_y = (kwargs or {}).get("y", values[1] if len(values) > 1 else None)
+        raw_z = (kwargs or {}).get("z", values[2] if len(values) > 2 else None)
+        try:
+            x, y, z = float(raw_x), float(raw_y), float(raw_z)
+        except (TypeError, ValueError):
+            return "coordinates must include numeric x, y, and z before moving"
+        if not (-64 <= y <= 320):
+            return f"coordinate y={y:g} is outside the valid world height"
+        if abs(x) > 30_000_000 or abs(z) > 30_000_000:
+            return "coordinates are outside the Minecraft world border"
+        return None
+
     # ── Intent-specific handlers ────────────────────────────────────
 
     async def _handle_meta_command(self, message: str, source: str) -> None:
-        """Phase 3/4a hook — route to MemoryService write candidate.
-
-        For now: log + acknowledge. Wired into MemoryPolicy once Phase 3
-        lands.
-        """
+        """Route player memory commands to MemoryService."""
         logger.info("META_COMMAND from %s: %s", source, message)
-        await self._send_chat(
-            f"Memory command noted: '{message}'. "
-            "(MemoryService lands in Phase 3/4a.)"
+        if self._memory is None:
+            await self._send_chat("Memory is not available right now.")
+            return
+
+        lowered = message.lower().strip()
+        try:
+            if re.search(r"\bforget\b|忘记", lowered):
+                name = _memory_name_from_message(message, verbs=("forget", "unforget"))
+                deleted = await self._memory.forget(name)
+                await self._send_chat(
+                    f"Forgot memory '{name}'." if deleted else f"I don't know '{name}'."
+                )
+                return
+            if re.search(r"\bunforget\b", lowered):
+                name = _memory_name_from_message(message, verbs=("unforget",))
+                restored = await self._memory.unforget(name)
+                await self._send_chat(
+                    f"Memory '{name}' can be written again."
+                    if restored else f"'{name}' was not forgotten."
+                )
+                return
+
+            record = await self._build_memory_record_from_meta(message, source)
+            path = await self._memory.remember(record, is_player_requested=True)
+            await self._send_chat(f"Remembered {record.name} ({record.type.value}).")
+            logger.info("Memory command wrote %s to %s", record.name, path)
+        except Exception as exc:
+            logger.exception("Memory command failed")
+            await self._send_chat(f"I couldn't save that memory: {exc}")
+
+    async def _build_memory_record_from_meta(self, message: str, source: str) -> MemoryRecord:
+        """Create a deterministic memory candidate from a meta command."""
+        state = await self.observe()
+        lowered = message.lower()
+        text = _strip_memory_verbs(message)
+        now_desc = text[:120] or message[:120]
+
+        is_here = bool(
+            re.search(r"\b(here|this place|mark this|mark here)\b|这里|这儿|当前位置", lowered)
+        )
+        is_feedback_like = bool(re.search(r"\b(prefer|avoid)\b|偏好|避免|不要|别", lowered))
+
+        if is_here:
+            name = _memory_name_from_message(text, default="marked_place")
+            pos = state.position
+            body = (
+                f"{text}\n\n"
+                f"Position: ({pos.x:.0f}, {pos.y:.0f}, {pos.z:.0f})\n"
+                f"World: default\n"
+                f"Marked by: {source}\n\n"
+                "**Why:** Player explicitly asked me to remember this location.\n\n"
+                "**How to apply:** Recall this place by name before navigating, "
+                "then verify the destination is still reachable before moving."
+            )
+            return MemoryRecord(
+                name=name,
+                description=now_desc,
+                type=MemoryType.PLACE,
+                scope=Scope.WORLD,
+                confidence=0.95,
+                source="player_marked",
+                tags=["place", "player_marked"],
+                body=body,
+            )
+
+        if is_feedback_like:
+            name = _memory_name_from_message(text, default="player_preference")
+            return MemoryRecord(
+                name=name,
+                description=now_desc,
+                type=MemoryType.FEEDBACK,
+                scope=Scope.BOT,
+                confidence=0.9,
+                source="player_confirmed",
+                tags=["preference", "feedback"],
+                body=(
+                    f"{text}\n\n"
+                    f"**Why:** {source} explicitly gave this preference or avoidance rule.\n\n"
+                    "**How to apply:** Check current state before acting; if the rule "
+                    "does not fit the situation, ask for clarification instead of forcing it."
+                ),
+            )
+
+        name = _memory_name_from_message(text, default="remembered_fact")
+        return MemoryRecord(
+            name=name,
+            description=now_desc,
+            type=MemoryType.FACT,
+            scope=Scope.WORLD,
+            confidence=0.9,
+            source="player_confirmed",
+            tags=["player_memory"],
+            body=(
+                f"{text}\n\n"
+                f"**Why:** {source} explicitly asked me to remember this.\n\n"
+                "**How to apply:** Recall this fact when answering related questions "
+                "or planning actions in this world."
+            ),
         )
 
     async def _handle_feedback(self, message: str, source: str) -> None:
-        """Phase 4a hook — feedback candidate + recent action trace.
-
-        Logs the last few action_calls so a future feedback generator can
-        correlate the complaint with what the bot just did.
-        """
+        """Persist player feedback with recent action context."""
         recent = [a["name"] for a in self._recent_actions]
         logger.info(
             "FEEDBACK from %s: %s (last %d actions: %s)",
             source, message, len(self._recent_actions), recent,
         )
-        await self._send_chat(
-            f"Got it — I'll learn from '{message}'. "
-            "(Feedback memory lands in Phase 4a.)"
+        if self._memory is None:
+            await self._send_chat(f"Got it — I'll learn from '{message}'.")
+            return
+
+        name = _memory_name_from_message(message, default="player_feedback")
+        trace = "\n".join(
+            f"- {a['name']} args={a['args']} result={a['result']}"
+            for a in self._recent_actions
+        ) or "- No recent action trace."
+        record = MemoryRecord(
+            name=name,
+            description=message[:120],
+            type=MemoryType.FEEDBACK,
+            scope=Scope.BOT,
+            confidence=0.9,
+            source="player_confirmed",
+            tags=["feedback", "player_correction"],
+            body=(
+                f"{message}\n\n"
+                f"**Why:** {source} corrected my recent behavior.\n\n"
+                f"**Recent action trace:**\n{trace}\n\n"
+                "**How to apply:** Avoid repeating the corrected behavior in similar "
+                "state/action contexts. If unsure, ask before acting."
+            ),
         )
+        try:
+            await self._memory.remember(record, is_player_requested=True)
+            await self._send_chat(f"Got it — saved feedback '{record.name}'.")
+        except Exception as exc:
+            logger.exception("Feedback memory write failed")
+            await self._send_chat(f"Got it, but I couldn't save the feedback: {exc}")
 
     async def _handle_ambiguous(self, message: str) -> None:
         """Ask the player to clarify rather than guess."""
@@ -1393,10 +1929,10 @@ class Agent:
 
     # ── Main loop ───────────────────────────────────────────────────
 
-    async def run_loop(self, tick_interval: float = 0.05) -> None:
+    async def run_loop(self, tick_interval: float = 0.25) -> None:
         """Run the agent main loop: safety check → quick observe → modes.
 
-        Top-level loop, default 20 TPS (50 ms). Only does a *quick* observe
+        Top-level loop, default 4 TPS (250 ms). Only does a *quick* observe
         (single ``bridge.observe()`` call) — the full concurrent gather is
         reserved for ``handle_message``. SafetyMonitor runs its own poll
         independently at 250 ms.
@@ -1484,20 +2020,54 @@ class Agent:
     # ── Memory helpers (Phase 3/4a) ──────────────────────────────────
 
     async def _recall_memory(self, *, message: str = "") -> str:
-        """Build a memory string from recalled long-term records."""
+        """Build a memory string from index + recalled long-term records."""
         if self._memory is None:
             return ""
+
+        parts: list[str] = []
+        injection = await self._memory.plan_injection(token_budget=1200)
+        if injection.full or injection.summary or injection.index:
+            parts.append("Memory index:")
+            for record in injection.full[:3]:
+                parts.append(
+                    f"- {record.description} ({record.type.value}/{record.name})\n"
+                    f"  {record.body[:300]}"
+                )
+            for record in injection.summary[:8]:
+                parts.append(f"- {record.description} ({record.type.value}/{record.name})")
+            for name in injection.index[:20]:
+                parts.append(f"- {name}")
+        logger.info(
+            "Agent memory injection selected: full=%s summary=%s index=%s",
+            [r.name for r in injection.full[:3]],
+            [r.name for r in injection.summary[:8]],
+            injection.index[:20],
+        )
 
         keywords = [w for w in message.lower().split() if len(w) > 2] if message else []
         results = await self._memory.recall(MemoryQuery(
             keywords=keywords, limit=5, min_confidence=0.5,
         ))
-        if not results:
-            return ""
-
-        parts: list[str] = []
-        for r in results:
-            parts.append(f"- {r.record.description} ({r.record.type.value}/{r.record.name})")
+        if results:
+            parts.append("Matched memory details:")
+            for r in results:
+                parts.append(
+                    f"- {r.record.description} ({r.record.type.value}/{r.record.name})"
+                )
+        logger.info(
+            "Agent memory recall for prompt: message=%r keywords=%s hits=%s",
+            message,
+            keywords,
+            [
+                {
+                    "name": r.record.name,
+                    "score": round(r.score, 3),
+                    "type": r.record.type.value,
+                    "scope": r.record.scope.value,
+                }
+                for r in results
+            ],
+        )
         return "\n".join(parts)
 
     async def _record_event(
@@ -1782,7 +2352,7 @@ def _command_defs() -> dict[str, CommandDef]:
                 "leather/beef, chicken for feathers/meat, pig for pork). "
                 "Use this whenever you need a resource that drops from a "
                 "mob — do NOT keep calling searchForEntity if the target is "
-                "already nearby."
+                "already nearby. Default search radius is 64 blocks."
             ),
             params={
                 "entity_type": {
@@ -1790,6 +2360,11 @@ def _command_defs() -> dict[str, CommandDef]:
                     "description": (
                         "Entity type, e.g. zombie, sheep, cow, chicken, pig"
                     ),
+                },
+                "range": {
+                    "type": "float",
+                    "description": "Search radius in blocks. Default: 64.",
+                    "default": 64,
                 },
             },
         ),

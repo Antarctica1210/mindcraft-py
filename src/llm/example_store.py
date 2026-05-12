@@ -51,6 +51,9 @@ class Example:
             return 0.0
         q = query.lower()
         score = 0.0
+        for keyword in self.keywords:
+            if len(keyword) >= 4 and keyword in q:
+                score += 3.0
         for word in q.split():
             if len(word) < 3:
                 continue

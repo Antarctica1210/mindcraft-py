@@ -58,12 +58,13 @@ class MemoryService:
 
         # Paths
         if base_dir is None:
-            base_dir = Path("bots") / bot_name / "worlds" / world_id
+            base_dir = Path("bots") / bot_name
         self._base_dir = Path(base_dir)
+        self._world_dir = self._base_dir / "worlds" / world_id
         self._tombstones = TombstoneStore(
-            self._base_dir / "memory" / ".tombstones.json"
+            self._world_dir / "memory" / ".tombstones.json"
         )
-        self._sink = SessionSink(base_dir=self._base_dir, world_id=world_id)
+        self._sink = SessionSink(base_dir=self._base_dir / "worlds", world_id=world_id)
         self._working = WorkingMemoryBuilder()
 
         # Reflection worker (started separately)
@@ -102,6 +103,16 @@ class MemoryService:
         is_player_requested: bool = False,
     ) -> str:
         """Store a memory record.  Returns the record's stable identifier (name)."""
+        logger.info(
+            "Memory remember start: name=%s type=%s scope=%s confidence=%.2f "
+            "player_requested=%s tags=%s",
+            record.name,
+            record.type.value,
+            record.scope.value,
+            record.confidence,
+            is_player_requested,
+            record.tags,
+        )
 
         # Enforce world_id on scope=world records
         if record.scope == Scope.WORLD and not record.world_id:
@@ -173,6 +184,18 @@ class MemoryService:
         Results are ordered by scope priority (WORLD > BOT > MINECRAFT),
         then by relevance score descending.
         """
+        logger.info(
+            "Memory recall start: name=%s type=%s scope=%s keywords=%s tags=%s "
+            "min_conf=%.2f limit=%d world_id=%s",
+            query.name,
+            query.type.value if query.type else None,
+            query.scope.value if query.scope else None,
+            query.keywords,
+            query.tags,
+            query.min_confidence,
+            query.limit,
+            query.world_id,
+        )
         results = await self._store.search(query)
         # Sort by scope priority, then by score
         from .models import SCOPE_PRIORITY
@@ -183,7 +206,22 @@ class MemoryService:
                 -r.score,
             )
         )
-        return results[: query.limit]
+        limited = results[: query.limit]
+        logger.info(
+            "Memory recall done: count=%d hits=%s",
+            len(limited),
+            [
+                {
+                    "name": r.record.name,
+                    "type": r.record.type.value,
+                    "scope": r.record.scope.value,
+                    "score": round(r.score, 3),
+                    "matched_on": r.matched_on,
+                }
+                for r in limited
+            ],
+        )
+        return limited
 
     async def forget(
         self, name: str, *, scope: Scope | None = None, type: str | None = None
@@ -265,7 +303,15 @@ class MemoryService:
             scope=Scope.BOT, limit=50,
         )
         records.extend(bot_records)
-        return self._policy.plan_injection(records, token_budget=token_budget)
+        plan = self._policy.plan_injection(records, token_budget=token_budget)
+        logger.info(
+            "Memory injection plan: full=%d summary=%d index=%d tokens_est=%d",
+            len(plan.full),
+            len(plan.summary),
+            len(plan.index),
+            plan.total_tokens_est,
+        )
+        return plan
 
     # ═══════════════════════════════════════════════════════════════
     #  Maintenance

@@ -45,7 +45,7 @@
     "name": "craft_a_torch",
     "keywords": ["torch", "light", "dark", "coal", "stick"],
     "turns": [
-      {"role": "user", "content": "wilson: make a torch"},
+      {"role": "user", "content": "Wilson: make a torch"},
       {"role": "assistant", "content": "Torches need a stick and coal. !inventory"},
       {"role": "system", "content": "INVENTORY\n- oak_log: 2"},
       {"role": "assistant", "content": "I need planks first to get sticks. !craftRecipe(\"oak_planks\", 1)"},
@@ -65,7 +65,7 @@
     "name": "collect_resource",
     "keywords": ["collect", "gather", "get", "log", "stone", "iron", "ore"],
     "turns": [
-      {"role": "user", "content": "wilson: collect 5 oak_log"},
+      {"role": "user", "content": "Wilson: collect 5 oak_log"},
       {"role": "assistant", "content": "On it. !searchForBlock(\"oak_log\", 64)"},
       {"role": "system", "content": "Action output:\nFound oak_log 22 blocks away. You have arrived."},
       {"role": "assistant", "content": "!collectBlocks(\"oak_log\", 5)"},
@@ -75,12 +75,148 @@
   },
   {
     "name": "come_to_player",
-    "keywords": ["come", "here", "follow", "go", "to me"],
+    "keywords": ["come", "here", "go", "to me", "come to me", "one time"],
     "turns": [
-      {"role": "user", "content": "wilson: come to me"},
-      {"role": "assistant", "content": "On my way. !goToPlayer(\"wilson\", 3)"},
-      {"role": "system", "content": "Action output:\nFound path. You have reached wilson."},
+      {"role": "user", "content": "Wilson: come to me"},
+      {"role": "assistant", "content": "On my way. !goToPlayer(\"Wilson\", 3)"},
+      {"role": "system", "content": "Action output:\nFound path. You have reached Wilson."},
       {"role": "assistant", "content": "Here I am."}
+    ]
+  },
+  {
+    "name": "follow_player_continuously",
+    "keywords": ["follow", "follow me", "keep following", "trail", "escort", "跟随", "跟着我"],
+    "turns": [
+      {"role": "user", "content": "Wilson: follow me"},
+      {"role": "assistant", "content": "I'll keep following you. !followPlayer(\"Wilson\", 4)"},
+      {"role": "system", "content": "Action output:\nFollowing Wilson at distance 4. This keeps tracking the player as they move."},
+      {"role": "assistant", "content": "Following. Tell me to stop when you're done."}
+    ]
+  },
+  {
+    "name": "stop_following_player",
+    "keywords": ["stop following", "stop follow", "stop chasing", "stay there", "wait there", "停止跟随", "别跟着"],
+    "turns": [
+      {"role": "user", "content": "Wilson: stop following me"},
+      {"role": "assistant", "content": "Stopping now. !stop"},
+      {"role": "system", "content": "Action output:\nStopped all current movement and following."},
+      {"role": "assistant", "content": "Stopped following."}
+    ]
+  },
+  {
+    "name": "go_to_coordinates",
+    "keywords": ["go to coordinates", "move to", "coordinates", "position", "x y z", "坐标"],
+    "turns": [
+      {"role": "user", "content": "Wilson: go to x 120 y 64 z -30"},
+      {"role": "assistant", "content": "Heading to those coordinates. !goToCoordinates(120, 64, -30, 2)"},
+      {"role": "system", "content": "Action output:\nArrived near (120, 64, -30)."},
+      {"role": "assistant", "content": "I'm there."}
+    ]
+  },
+  {
+    "name": "find_nearby_entity",
+    "keywords": ["find", "search", "locate", "entity", "sheep", "cow", "villager", "寻找"],
+    "turns": [
+      {"role": "user", "content": "Wilson: find a cow"},
+      {"role": "assistant", "content": "I'll search nearby and move to it. !searchForEntity(\"cow\", 64)"},
+      {"role": "system", "content": "Action output:\nFound cow 31 blocks away. You have arrived."},
+      {"role": "assistant", "content": "I found a cow."}
+    ]
+  },
+  {
+    "name": "fight_hostile_mob",
+    "keywords": ["attack", "fight", "kill", "zombie", "skeleton", "creeper", "hostile", "攻击"],
+    "turns": [
+      {"role": "user", "content": "Wilson: kill the zombie"},
+      {"role": "assistant", "content": "I'll attack the nearest zombie. !attack(\"zombie\", 64)"},
+      {"role": "system", "content": "Action output:\nKilled zombie and picked up nearby drops."},
+      {"role": "assistant", "content": "Zombie dealt with."}
+    ]
+  },
+  {
+    "name": "get_food_from_animals",
+    "keywords": ["food", "hungry", "meat", "mutton", "beef", "chicken", "sheep", "cow", "吃的"],
+    "turns": [
+      {"role": "user", "content": "Wilson: get some food"},
+      {"role": "assistant", "content": "I'll hunt a nearby food animal. !searchForEntity(\"sheep\", 64)"},
+      {"role": "system", "content": "Action output:\nFound sheep 18 blocks away. You have arrived."},
+      {"role": "assistant", "content": "!attack(\"sheep\", 64)"},
+      {"role": "system", "content": "Action output:\nKilled sheep and picked up nearby drops."},
+      {"role": "assistant", "content": "I got food drops."}
+    ]
+  },
+  {
+    "name": "equip_and_consume",
+    "keywords": ["equip", "wear", "hold", "eat", "consume", "food", "sword", "shield", "装备", "吃"],
+    "turns": [
+      {"role": "user", "content": "Wilson: eat bread"},
+      {"role": "assistant", "content": "I'll eat bread from my inventory. !consume(\"bread\")"},
+      {"role": "system", "content": "Action output:\nConsumed bread."},
+      {"role": "assistant", "content": "Ate bread."},
+      {"role": "user", "content": "Wilson: equip the iron sword"},
+      {"role": "assistant", "content": "Equipping it now. !equip(\"iron_sword\")"}
+    ]
+  },
+  {
+    "name": "place_block_here",
+    "keywords": ["place", "put", "block", "torch", "crafting table", "chest", "放置"],
+    "turns": [
+      {"role": "user", "content": "Wilson: place a crafting table"},
+      {"role": "assistant", "content": "I'll place one from my inventory. !placeHere(\"crafting_table\")"},
+      {"role": "system", "content": "Action output:\nPlaced crafting_table."},
+      {"role": "assistant", "content": "Crafting table placed."}
+    ]
+  },
+  {
+    "name": "smelt_item",
+    "keywords": ["smelt", "cook", "furnace", "iron", "raw", "ore", "烧炼", "熔炼"],
+    "turns": [
+      {"role": "user", "content": "Wilson: smelt raw iron"},
+      {"role": "assistant", "content": "I'll use the nearby furnace. !smeltItem(\"raw_iron\", 1)"},
+      {"role": "system", "content": "Action output:\nSmelted raw_iron into iron_ingot."},
+      {"role": "assistant", "content": "Smelting done."}
+    ]
+  },
+  {
+    "name": "chest_inventory",
+    "keywords": ["chest", "store", "take", "put away", "deposit", "取出", "箱子"],
+    "turns": [
+      {"role": "user", "content": "Wilson: put the oak logs in the chest"},
+      {"role": "assistant", "content": "I'll store them in the nearest chest. !putInChest(\"oak_log\", -1)"},
+      {"role": "system", "content": "Action output:\nStored oak_log in chest."},
+      {"role": "assistant", "content": "Stored the logs."},
+      {"role": "user", "content": "Wilson: take coal from the chest"},
+      {"role": "assistant", "content": "I'll take coal from the nearest chest. !takeFromChest(\"coal\", -1)"}
+    ]
+  },
+  {
+    "name": "give_item_to_player",
+    "keywords": ["give", "hand", "bring", "deliver", "item", "player", "给我"],
+    "turns": [
+      {"role": "user", "content": "Wilson: give me 3 oak planks"},
+      {"role": "assistant", "content": "I'll hand them to you. !givePlayer(\"Wilson\", \"oak_planks\", 3)"},
+      {"role": "system", "content": "Action output:\nWilson received oak_planks."},
+      {"role": "assistant", "content": "Gave you 3 oak planks."}
+    ]
+  },
+  {
+    "name": "sleep_or_bed",
+    "keywords": ["sleep", "bed", "night", "rest", "go to bed", "睡觉"],
+    "turns": [
+      {"role": "user", "content": "Wilson: go sleep"},
+      {"role": "assistant", "content": "I'll find a nearby bed and sleep. !goToBed"},
+      {"role": "system", "content": "Action output:\nFound bed and slept."},
+      {"role": "assistant", "content": "Sleeping handled."}
+    ]
+  },
+  {
+    "name": "stop_current_action",
+    "keywords": ["stop", "cancel", "halt", "freeze", "don't move", "停止", "停下"],
+    "turns": [
+      {"role": "user", "content": "Wilson: stop what you're doing"},
+      {"role": "assistant", "content": "Stopping now. !stop"},
+      {"role": "system", "content": "Action output:\nStopped all current actions."},
+      {"role": "assistant", "content": "Stopped."}
     ]
   }
 ]

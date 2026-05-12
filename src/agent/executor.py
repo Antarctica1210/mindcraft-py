@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import logging
 import re
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -55,6 +56,11 @@ def _failure_hint(command_name: str, error: str) -> str | None:
     return None
 
 
+def _preview(value: Any, *, limit: int = 300) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 class ActionExecutor:
     """Executes parsed !command(args) calls against the bot bridge."""
 
@@ -83,6 +89,14 @@ class ActionExecutor:
         if handler is None:
             logger.warning("Unknown command: !%s", name)
             return f"Command !{name} does not exist."
+        started = time.perf_counter()
+        logger.info(
+            "ActionExecutor start: command=%s args=%s kwargs=%s handler=%s",
+            name,
+            args,
+            kwargs or {},
+            getattr(handler, "__name__", str(handler)),
+        )
         try:
             # Map positional args to handler parameter names so ordering
             # doesn't matter — tool_calls JSON key order can differ from
@@ -94,6 +108,8 @@ class ActionExecutor:
                 snake = _to_snake(key)
                 if key in handler_params:
                     call_kwargs[key] = value
+                elif key == "range" and "range_val" in handler_params:
+                    call_kwargs["range_val"] = value
                 elif snake in handler_params:
                     call_kwargs[snake] = value
                 else:
@@ -103,14 +119,33 @@ class ActionExecutor:
             result = handler(self._bridge, **call_kwargs)
             if hasattr(result, "__await__"):
                 result = await result
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            logger.info(
+                "ActionExecutor done: command=%s elapsed_ms=%.1f result=%s",
+                name,
+                elapsed_ms,
+                _preview(result),
+            )
             return str(result) if result is not None else None
         except Exception as exc:
+            elapsed_ms = (time.perf_counter() - started) * 1000
             logger.exception("Command !%s failed", name)
             err_msg = str(exc)
             hint = _failure_hint(name, err_msg)
+            logger.info(
+                "ActionExecutor failed: command=%s elapsed_ms=%.1f error=%s hint=%s",
+                name,
+                elapsed_ms,
+                err_msg,
+                hint,
+            )
             if hint:
                 return f"FAILED: {err_msg}\nHINT: {hint}"
-            return f"FAILED: {err_msg}\nHINT: Use getCraftingPlan to check requirements, or try a different approach."
+            return (
+                f"FAILED: {err_msg}\n"
+                "HINT: Use getCraftingPlan to check requirements, "
+                "or try a different approach."
+            )
 
     def has(self, name: str) -> bool:
         return name.lstrip("!") in self._handlers
@@ -260,8 +295,8 @@ class ActionExecutor:
     # ── Combat ──────────────────────────────────────────────────────
 
     @staticmethod
-    async def _attack(bridge: Any, entity_type: str) -> Any:
-        return await bridge.attack(entity_type)
+    async def _attack(bridge: Any, entity_type: str, range_val: float = 64) -> Any:
+        return await bridge.attack(entity_type, range_val)
 
     @staticmethod
     async def _attack_player(bridge: Any, player_name: str) -> Any:

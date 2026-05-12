@@ -51,6 +51,16 @@ MODE_PRIORITY: list[BehaviorMode] = [
     BehaviorMode.CODING,
 ]
 
+# Modes that are safe to run without an explicit player command.  Everything
+# else is opt-in via setMode so an idle bot does not wander, hunt, stare,
+# collect random drops, or interrupt navigation.
+DEFAULT_ENABLED_MODES: frozenset[BehaviorMode] = frozenset({
+    BehaviorMode.SELF_PRESERVATION,
+    BehaviorMode.UNSTUCK,
+    BehaviorMode.COWARDICE,
+    BehaviorMode.SELF_DEFENSE,
+})
+
 
 @dataclass
 class ModeState:
@@ -86,7 +96,7 @@ class ModeEvaluator:
 
     def __init__(self) -> None:
         self._states: dict[BehaviorMode, ModeState] = {
-            m: ModeState(mode=m) for m in BehaviorMode
+            m: ModeState(mode=m, on=m in DEFAULT_ENABLED_MODES) for m in BehaviorMode
         }
         self._active_mode: BehaviorMode | None = None
         self._frame_count: int = 0
@@ -227,6 +237,10 @@ class ModeEvaluator:
         return False
 
     async def _eval_unstuck(self, state: ModeState, bot_state: Any, bridge: Any) -> bool:
+        current_goal = getattr(bot_state, "current_goal", None)
+        if not current_goal or "No current" in str(current_goal):
+            state._stuck_since = 0.0
+            return False
         if state.on_cooldown(8):
             return False
         if state._stuck_since == 0.0:
@@ -305,6 +319,7 @@ class ModeEvaluator:
         if state.on_cooldown(20):
             return False
         try:
+            state.mark_triggered()
             decision = await bridge.should_place_torch()
             if not isinstance(decision, dict) or not decision.get("should_place"):
                 return False
@@ -392,6 +407,24 @@ def _nearest_named(
 
 
 def _player_too_close(players_nearby: str) -> bool:
-    # observe() only gives player coordinates, not distance. Treat a player line
-    # as close enough to make room; the cooldown keeps this from thrashing.
-    return "player:" in (players_nearby or "").lower()
+    return _nearest_player_distance(players_nearby) is not None
+
+
+def _nearest_player_distance(players_nearby: str, max_distance: float = 3.0) -> float | None:
+    text = players_nearby or ""
+    for line in text.splitlines():
+        # Preferred shape from observe(): "player:Wilson at (150.0, 68.0, 14.0) dist:2.5"
+        dist_match = re.search(r"\bdist(?:ance)?[:=]\s*(\d+(?:\.\d+)?)", line, re.I)
+        if dist_match:
+            dist = float(dist_match.group(1))
+            if dist <= max_distance:
+                return dist
+            continue
+
+        # Fallback for summaries that already contain "Name (2m)".
+        meters_match = re.search(r"\((\d+(?:\.\d+)?)m\)", line, re.I)
+        if meters_match:
+            dist = float(meters_match.group(1))
+            if dist <= max_distance:
+                return dist
+    return None

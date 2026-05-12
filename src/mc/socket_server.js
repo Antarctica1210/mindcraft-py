@@ -105,6 +105,32 @@ function isAirLike(block) {
   return !block || block.name === "air" || block.name === "cave_air" || block.name === "void_air";
 }
 
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function placeBlockAndVerify(ref, face, targetPos, blockName) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await bot.placeBlock(ref, face);
+    } catch (e) {
+      lastError = e;
+      const message = String(e?.message || e);
+      if (!message.includes("blockUpdate") && !message.includes("timeout")) {
+        throw e;
+      }
+    }
+
+    for (let i = 0; i < 5; i++) {
+      const placed = bot.blockAt(targetPos);
+      if (placed?.name === blockName) return placed;
+      await sleepMs(200);
+    }
+  }
+  throw lastError || new Error(`Could not verify placed ${blockName}.`);
+}
+
 async function placeInventoryBlockNearBot(blockName) {
   if (!bot) throw new Error("No bot connected");
   const item = bot.inventory.items().find((i) => i.name === blockName);
@@ -130,8 +156,7 @@ async function placeInventoryBlockNearBot(blockName) {
           if (bot.entity.position.distanceTo(targetPos) > 4.5) continue;
           const target = bot.blockAt(targetPos);
           if (!isAirLike(target)) continue;
-          await bot.placeBlock(ref, face);
-          return bot.blockAt(targetPos);
+          return await placeBlockAndVerify(ref, face, targetPos, blockName);
         }
       }
     }
@@ -377,6 +402,10 @@ function ensureMovements(b) {
 function findPlayer(b, username) {
   const player = b.players[username];
   if (player?.entity) return player.entity;
+  const wanted = String(username || "").toLowerCase();
+  for (const [name, p] of Object.entries(b.players || {})) {
+    if (name.toLowerCase() === wanted && p?.entity) return p.entity;
+  }
   return null;
 }
 
@@ -676,7 +705,7 @@ async function handleRequest(method, params) {
     case "attack": {
       if (!bot) throw new Error("No bot connected");
       const entityType = params.entity_type;
-      const range = params.range || 24;
+      const range = params.range || 64;
       let target = null;
       for (const [, e] of Object.entries(bot.entities || {})) {
         if (!e.position) continue;
