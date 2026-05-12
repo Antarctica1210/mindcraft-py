@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -102,6 +103,32 @@ def _describe_action(name: str, args: list[Any]) -> str:
     return f"{name}({', '.join(parts)})"
 
 
+def _extract_js_code(text: str) -> str:
+    """Extract the first JavaScript code block, or return stripped text."""
+    match = re.search(r"```(?:js|javascript)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    stripped = text.strip()
+    if stripped.startswith("async ") or "bot." in stripped or "await " in stripped:
+        return stripped
+    return ""
+
+
+def _as_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"false", "0", "off", "no", "disable", "disabled"}:
+        return False
+    if text in {"true", "1", "on", "yes", "enable", "enabled"}:
+        return True
+    return default
+
+
 # ── Agent ───────────────────────────────────────────────────────────
 
 
@@ -152,6 +179,9 @@ class Agent:
         # Error recovery — guided task resumption
         self._pending_task: PendingTask | None = None
         self._guided_loop_task: asyncio.Task[None] | None = None
+        self._self_prompt_goal: str | None = None
+        self._self_prompt_task: asyncio.Task[None] | None = None
+        self._self_prompt_running: bool = False
 
         # Memory layer (Phase 3/4a)
         self._memory: MemoryService | None = None
@@ -233,6 +263,7 @@ class Agent:
     async def stop(self) -> None:
         """Gracefully shut down the agent."""
         self._running = False
+        self._cancel_self_prompt()
         if self._memory:
             await self._memory.stop()
         if self._safety:
@@ -367,6 +398,14 @@ class Agent:
         command_docs = self._msg_builder.build_command_docs(
             blocked_actions=set(self._config.blocked_actions)
         )
+        if self._self_prompt_goal:
+            self._msg_builder.self_prompt = (
+                f"CURRENT SELF-GOAL: {self._self_prompt_goal}\n"
+                "Keep making progress toward this goal until you call endGoal. "
+                "Prefer concrete tool calls over commentary.\n"
+            )
+        else:
+            self._msg_builder.self_prompt = ""
 
         # Phase 3/4a: recall relevant long-term memory
         memory = await self._recall_memory(message=self._last_message)
@@ -619,7 +658,7 @@ class Agent:
                 action_desc = _describe_action(cmd.name, cmd.args)
                 await self._send_chat(action_desc)
 
-                result = await self.execute_command(cmd.name, cmd.args)
+                result = await self._execute_agent_command(cmd.name, cmd.args)
                 used_command = True
                 self._record_action(cmd.name, cmd.args, result)
                 await self._record_event("action_result", {
@@ -711,6 +750,34 @@ class Agent:
         self._history = self._convo_mgr.compress_history(self._history)
         return used_command
 
+    async def _execute_agent_command(self, command_name: str, args: list[Any]) -> str | None:
+        """Handle commands that need Agent runtime state, else use executor."""
+        name = command_name.lstrip("!")
+        if name == "setGoal":
+            goal = str(args[0]) if args else ""
+            return await self._set_self_goal(goal)
+        if name == "endGoal":
+            return await self._end_self_goal()
+        if name == "setMode":
+            mode_name = str(args[0]) if args else ""
+            on = _as_bool(args[1], default=True) if len(args) > 1 else True
+            return self._modes.set_enabled(mode_name, on)
+        if name == "modes":
+            return self._modes.status_text()
+        if name == "newAction":
+            prompt = str(args[0]) if args else self._last_message
+            return await self._execute_dynamic_action(prompt)
+        if name == "stfu":
+            self.shut_up()
+            return "Bot muted."
+        if name == "unshut":
+            self.unshut()
+            return "Bot unmuted."
+        if name == "clearChat":
+            self._history.clear()
+            return "Chat history cleared."
+        return await self.execute_command(command_name, args)
+
     # ── Intent-specific handlers ────────────────────────────────────
 
     async def _handle_meta_command(self, message: str, source: str) -> None:
@@ -788,6 +855,120 @@ class Agent:
         if self._guided_loop_task and not self._guided_loop_task.done():
             self._guided_loop_task.cancel()
         self._guided_loop_task = None
+
+    async def _set_self_goal(self, goal: str) -> str:
+        goal = goal.strip()
+        if not goal:
+            return "FAILED: setGoal requires a non-empty goal."
+        self._self_prompt_goal = goal
+        self._cancel_self_prompt()
+        self._self_prompt_task = asyncio.create_task(self._run_self_prompt_loop(goal))
+        self._history.append(ConversationTurn(
+            role="system",
+            content=(
+                f"Persistent self-goal set: {goal}. Continue planning steps "
+                "toward it until endGoal is called."
+            ),
+        ))
+        return f"Goal set: {goal}. Self-prompting is active."
+
+    async def _end_self_goal(self) -> str:
+        old_goal = self._self_prompt_goal
+        self._self_prompt_goal = None
+        self._cancel_self_prompt()
+        self._history.append(ConversationTurn(
+            role="system",
+            content=f"Persistent self-goal ended: {old_goal or 'none'}.",
+        ))
+        return "Goal ended. Self-prompting stopped."
+
+    def _cancel_self_prompt(self) -> None:
+        if self._self_prompt_task and not self._self_prompt_task.done():
+            self._self_prompt_task.cancel()
+        self._self_prompt_task = None
+
+    async def _run_self_prompt_loop(self, goal: str) -> None:
+        """Periodic autonomous plan loop for setGoal, mirroring JS self_prompter."""
+        try:
+            while self._running and self._self_prompt_goal == goal:
+                await asyncio.sleep(5)
+                if (
+                    self._shut_up
+                    or self._pending_task is not None
+                    or self._self_prompt_running
+                    or self._prompter is None
+                ):
+                    continue
+                self._self_prompt_running = True
+                try:
+                    self._history.append(ConversationTurn(
+                        role="user",
+                        content=(
+                            f"system: Continue working toward your current "
+                            f"self-goal: {goal}. Call exactly one useful tool. "
+                            "If the goal is complete, call endGoal."
+                        ),
+                    ))
+                    await self._run_plan_loop(max_responses=1, use_tools=True)
+                finally:
+                    self._self_prompt_running = False
+        except asyncio.CancelledError:
+            pass
+
+    async def _execute_dynamic_action(self, prompt: str) -> str:
+        """Ask the LLM for a JavaScript action and execute it through the bridge."""
+        if self._prompter is None or self._msg_builder is None:
+            return "FAILED: LLM is not initialized."
+        if self._bridge is None or not hasattr(self._bridge, "execute_code"):
+            return "FAILED: Socket bridge does not support dynamic code execution."
+
+        bot_state = await self.observe()
+        stats = self._msg_builder.format_stats(
+            health=bot_state.health,
+            food=bot_state.food,
+            position=(bot_state.position.x, bot_state.position.y, bot_state.position.z),
+            gamemode=bot_state.gamemode,
+            time_of_day=bot_state.time_of_day,
+            biome=bot_state.biome,
+            entities_nearby=bot_state.entities_nearby,
+            blocks_nearby=bot_state.blocks_nearby,
+        )
+        code_docs = self._msg_builder.build_code_docs(query=prompt, limit=8)
+        memory = await self._recall_memory(message=prompt)
+        system_prompt = self._msg_builder.build_system_prompt(
+            stats=stats,
+            inventory=self._format_inventory(bot_state),
+            code_docs=code_docs,
+            memory=memory,
+            for_coding=True,
+        )
+        messages = self._msg_builder.build_messages(
+            history=[
+                *self._history[-12:],
+                ConversationTurn(
+                    role="user",
+                    content=(
+                        "Write one JavaScript code block for this Minecraft action: "
+                        f"{prompt}"
+                    ),
+                ),
+            ],
+            system_prompt=system_prompt,
+        )
+        response = await self._prompter.send_request(LLMInput(
+            history=messages[1:],
+            system_message=system_prompt,
+            tool_choice="none",
+        ))
+        code = _extract_js_code(response.content)
+        if not code:
+            return "FAILED: LLM did not return a JavaScript code block."
+        exec_result = await self._bridge.execute_code(code, timeout_ms=60000)
+        if isinstance(exec_result, dict):
+            status = "ok" if exec_result.get("ok", True) else "failed"
+            output = exec_result.get("output") or exec_result.get("result") or ""
+            return f"Dynamic action {status}:\n{output}".strip()
+        return f"Dynamic action result:\n{exec_result}"
 
     async def _run_guided_loop(
         self, pt: PendingTask, player_name: str,
@@ -1063,6 +1244,10 @@ def _command_defs() -> dict[str, CommandDef]:
         "stfu": CommandDef(
             name="stfu",
             description="Stop chatting and self-narration, but continue current actions.",
+        ),
+        "unshut": CommandDef(
+            name="unshut",
+            description="Resume chatting and self-narration after stfu.",
         ),
         "restart": CommandDef(
             name="restart",
@@ -1368,6 +1553,19 @@ def _command_defs() -> dict[str, CommandDef]:
         "endGoal": CommandDef(
             name="endGoal",
             description="End the current goal and stop self-prompting.",
+        ),
+        "newAction": CommandDef(
+            name="newAction",
+            description=(
+                "Generate and run a one-off JavaScript Mineflayer action when "
+                "built-in commands are not expressive enough."
+            ),
+            params={
+                "code_prompt": {
+                    "type": "string",
+                    "description": "Natural language description of the custom action to code.",
+                },
+            },
         ),
         # ── Skills ──────────────────────────────────────────────────
         "pickupNearbyItems": CommandDef(

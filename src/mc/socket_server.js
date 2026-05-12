@@ -53,6 +53,98 @@ let clientSocket = null;
 let lineBuffer = "";
 let followingTarget = null;   // player name being followed
 let stayingUntil = 0;         // timestamp when stay() ends (0 = not staying)
+let actionOutput = [];        // detailed action log, flushed to Python on demand
+
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+function logAction(message) {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  actionOutput.push(line);
+  if (actionOutput.length > 200) actionOutput = actionOutput.slice(-200);
+  console.log(`[action] ${message}`);
+}
+
+function flushActionOutput() {
+  const out = actionOutput.join("\n");
+  actionOutput = [];
+  return out;
+}
+
+function positionSummary(b) {
+  const p = b.entity?.position;
+  if (!p) return "(unknown)";
+  return `(${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`;
+}
+
+function inventoryCounts(b) {
+  const counts = {};
+  for (const item of inventoryItems(b)) counts[item.name] = (counts[item.name] || 0) + item.count;
+  return counts;
+}
+
+function inventoryDelta(before, after) {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const parts = [];
+  for (const key of [...keys].sort()) {
+    const diff = (after[key] || 0) - (before[key] || 0);
+    if (diff !== 0) parts.push(`${key} ${diff > 0 ? "+" : ""}${diff}`);
+  }
+  return parts.length ? parts.join(", ") : "no inventory change";
+}
+
+async function waitForPathfinderDone(timeoutMs = 60000, target = null, range = 2) {
+  if (!bot?.pathfinder) return "pathfinder unavailable";
+  const started = Date.now();
+  return await new Promise((resolve, reject) => {
+    const done = (message) => {
+      cleanup();
+      resolve(message);
+    };
+    const fail = (err) => {
+      cleanup();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    const onGoal = () => done("goal reached");
+    const onPathReset = (reason) => {
+      if (reason && reason !== "goal_updated") done(`path reset: ${reason}`);
+    };
+    const cleanup = () => {
+      clearInterval(interval);
+      clearTimeout(timer);
+      try { bot.removeListener("goal_reached", onGoal); } catch {}
+      try { bot.removeListener("path_reset", onPathReset); } catch {}
+    };
+    const interval = setInterval(() => {
+      if (target && bot.entity?.position?.distanceTo(target) <= range) done("arrived within range");
+      else if (!bot.pathfinder.goal) done("no current goal");
+    }, 250);
+    const timer = setTimeout(() => fail(new Error(`Action timed out after ${timeoutMs}ms`)), timeoutMs);
+    bot.once("goal_reached", onGoal);
+    bot.once("path_reset", onPathReset);
+    if (!bot.pathfinder.goal) done("no current goal");
+  });
+}
+
+async function gotoAndSummarize(label, goal, targetPos = null, range = 2, timeoutMs = 60000) {
+  if (!bot) throw new Error("No bot connected");
+  if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
+  ensureMovements(bot);
+  const beforePos = positionSummary(bot);
+  const beforeInv = inventoryCounts(bot);
+  logAction(`${label}: started at ${beforePos}`);
+  bot.pathfinder.setGoal(goal);
+  const waitResult = await waitForPathfinderDone(timeoutMs, targetPos, range);
+  const afterPos = positionSummary(bot);
+  const afterInv = inventoryCounts(bot);
+  const delta = inventoryDelta(beforeInv, afterInv);
+  const detail = flushActionOutput();
+  return [
+    `${label}: ${waitResult}.`,
+    `Position: ${beforePos} -> ${afterPos}.`,
+    `Inventory: ${delta}.`,
+    detail ? `Output:\n${detail}` : "",
+  ].filter(Boolean).join("\n");
+}
 
 // ── Fuzzy name matching ────────────────────────────────────────────────
 
@@ -321,9 +413,13 @@ async function handleRequest(method, params) {
     case "move_to": {
       if (!bot) throw new Error("No bot connected");
       if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
-      ensureMovements(bot);
-      bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(params.x, params.y, params.z, 1));
-      return `Moving to (${Math.round(params.x)}, ${Math.round(params.y)}, ${Math.round(params.z)}).`;
+      const target = new vec3(params.x, params.y, params.z);
+      return await gotoAndSummarize(
+        `move_to (${Math.round(params.x)}, ${Math.round(params.y)}, ${Math.round(params.z)})`,
+        new pathfinder.goals.GoalNear(params.x, params.y, params.z, 1),
+        target,
+        1.5,
+      );
     }
 
     case "go_to_player": {
@@ -331,12 +427,15 @@ async function handleRequest(method, params) {
       if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
       const target = findPlayer(bot, params.player_name);
       if (!target) throw new Error(`Player "${params.player_name}" not found nearby.`);
-      ensureMovements(bot);
       const closeness = params.closeness || 3;
-      bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(
-        target.position.x, target.position.y, target.position.z, closeness,
-      ));
-      return `Moving to player ${params.player_name}.`;
+      return await gotoAndSummarize(
+        `go_to_player ${params.player_name}`,
+        new pathfinder.goals.GoalNear(
+          target.position.x, target.position.y, target.position.z, closeness,
+        ),
+        target.position,
+        closeness + 0.5,
+      );
     }
 
     case "follow_player": {
@@ -359,11 +458,17 @@ async function handleRequest(method, params) {
       const angle = Math.random() * Math.PI * 2;
       const dx = Math.cos(angle) * distance;
       const dz = Math.sin(angle) * distance;
-      ensureMovements(bot);
-      bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(
-        bot.entity.position.x + dx, bot.entity.position.y, bot.entity.position.z + dz, 2,
-      ));
-      return `Moving away by ${distance.toFixed(0)} blocks.`;
+      const target = new vec3(
+        bot.entity.position.x + dx,
+        bot.entity.position.y,
+        bot.entity.position.z + dz,
+      );
+      return await gotoAndSummarize(
+        `move_away ${distance.toFixed(0)} blocks`,
+        new pathfinder.goals.GoalNear(target.x, target.y, target.z, 2),
+        target,
+        3,
+      );
     }
 
     case "search_for_block": {
@@ -376,9 +481,12 @@ async function handleRequest(method, params) {
       if (!bd) throw new Error(`Unknown block type: ${blockType}`);
       const target = bot.findBlock({ matching: bd.id, maxDistance: range });
       if (!target) throw new Error(`No ${blockType} nearby (${range} block radius).`);
-      ensureMovements(bot);
-      bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(target.position.x, target.position.y, target.position.z, 2));
-      return `Moving to nearest ${blockType} at (${target.position.x}, ${target.position.y}, ${target.position.z}).`;
+      return await gotoAndSummarize(
+        `search_for_block ${blockType} at (${target.position.x}, ${target.position.y}, ${target.position.z})`,
+        new pathfinder.goals.GoalNear(target.position.x, target.position.y, target.position.z, 2),
+        target.position,
+        2.5,
+      );
     }
 
     case "search_for_entity": {
@@ -401,9 +509,12 @@ async function handleRequest(method, params) {
         }
       }
       if (!target) throw new Error(`No ${entityType} nearby (${range} block radius).`);
-      ensureMovements(bot);
-      bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(target.position.x, target.position.y, target.position.z, 2));
-      return `Moving to nearest ${entityType}.`;
+      return await gotoAndSummarize(
+        `search_for_entity ${entityType}`,
+        new pathfinder.goals.GoalNear(target.position.x, target.position.y, target.position.z, 2),
+        target.position,
+        2.5,
+      );
     }
 
     case "go_to_bed": {
@@ -414,14 +525,13 @@ async function handleRequest(method, params) {
         maxDistance: 64,
       });
       if (!bed) throw new Error("No bed found nearby (64 block radius).");
-      ensureMovements(bot);
-      bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(bed.position.x, bed.position.y, bed.position.z, 2));
-      await new Promise((resolve) => {
-        const check = setInterval(() => {
-          if (bot.pathfinder.goal === null) { clearInterval(check); resolve(); }
-        }, 500);
-        setTimeout(() => { clearInterval(check); resolve(); }, 30000);
-      });
+      await gotoAndSummarize(
+        `go_to_bed at (${bed.position.x}, ${bed.position.y}, ${bed.position.z})`,
+        new pathfinder.goals.GoalNear(bed.position.x, bed.position.y, bed.position.z, 2),
+        bed.position,
+        2.5,
+        30000,
+      );
       try { await bot.sleep(bed); } catch (e) { throw new Error("Could not sleep: " + e.message); }
       return "Sleeping in bed.";
     }
@@ -437,16 +547,23 @@ async function handleRequest(method, params) {
       if (surface) {
         const below = bot.blockAt(surface.position.offset(0, -1, 0));
         if (below && below.name !== "air") {
-          ensureMovements(bot);
-          bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(surface.position.x, surface.position.y, surface.position.z, 1));
-          return "Moving to surface.";
+          return await gotoAndSummarize(
+            "go_to_surface",
+            new pathfinder.goals.GoalNear(surface.position.x, surface.position.y, surface.position.z, 1),
+            surface.position,
+            1.5,
+          );
         }
       }
       // Fallback: go up
       const y = bot.entity.position.y + 50;
-      ensureMovements(bot);
-      bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(bot.entity.position.x, y, bot.entity.position.z, 1));
-      return "Moving upward to surface.";
+      const target = new vec3(bot.entity.position.x, y, bot.entity.position.z);
+      return await gotoAndSummarize(
+        "go_to_surface upward fallback",
+        new pathfinder.goals.GoalNear(target.x, target.y, target.z, 1),
+        target,
+        1.5,
+      );
     }
 
     case "dig_down": {
@@ -628,10 +745,27 @@ async function handleRequest(method, params) {
       const mcData = (await import("minecraft-data")).default(bot.version);
       const bd = mcData.blocksByName[blockType];
       if (!bd) throw new Error(`Unknown block type: ${blockType}`);
-      const target = bot.findBlock({ matching: bd.id, maxDistance: 32 });
-      if (!target) throw new Error(`No ${blockType} nearby (32 block radius).`);
-      bot.collectBlock.collect(target);
-      return `Collecting ${count || 1}x ${blockType}.`;
+      const wanted = count || 1;
+      const positions = bot.findBlocks({ matching: bd.id, maxDistance: 32, count: wanted });
+      if (!positions.length) throw new Error(`No ${blockType} nearby (32 block radius).`);
+      const targets = positions
+        .map((pos) => bot.blockAt(pos))
+        .filter((block) => block && block.name === blockType)
+        .slice(0, wanted);
+      if (!targets.length) throw new Error(`No reachable ${blockType} targets found.`);
+      const beforePos = positionSummary(bot);
+      const beforeInv = inventoryCounts(bot);
+      logAction(`collect_blocks ${wanted}x ${blockType}: found ${targets.length} targets`);
+      await bot.collectBlock.collect(targets.length === 1 ? targets[0] : targets);
+      const afterPos = positionSummary(bot);
+      const afterInv = inventoryCounts(bot);
+      const detail = flushActionOutput();
+      return [
+        `Collected ${targets.length}x ${blockType}.`,
+        `Position: ${beforePos} -> ${afterPos}.`,
+        `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
+        detail ? `Output:\n${detail}` : "",
+      ].filter(Boolean).join("\n");
     }
 
     // ── Chest operations ────────────────────────────────────────────
@@ -1024,6 +1158,94 @@ async function handleRequest(method, params) {
         return prefix + plan;
       } catch (e) {
         throw new Error(`Crafting plan failed: ${e.message}`);
+      }
+    }
+
+    // ── Dynamic code / action output ───────────────────────────────
+    case "wait_for_action": {
+      if (!bot) throw new Error("No bot connected");
+      const result = await waitForPathfinderDone(params.timeout_ms || 60000);
+      const detail = flushActionOutput();
+      return detail ? `${result}\n${detail}` : result;
+    }
+
+    case "get_action_output": {
+      return flushActionOutput();
+    }
+
+    case "execute_code": {
+      if (!bot) throw new Error("No bot connected");
+      const code = String(params.code || "").trim();
+      if (!code) throw new Error("No code provided.");
+      const timeoutMs = params.timeout_ms || 60000;
+      const localOutput = [];
+      const log = (...args) => {
+        const msg = args.map((arg) => {
+          if (typeof arg === "string") return arg;
+          try { return JSON.stringify(arg); } catch { return String(arg); }
+        }).join(" ");
+        localOutput.push(msg);
+        logAction(`code: ${msg}`);
+      };
+      const api = {
+        chat: async (message) => handleRequest("chat", { message }),
+        observe: async () => handleRequest("observe", {}),
+        inventory: async () => handleRequest("get_inventory", {}),
+        entities: async () => handleRequest("get_entities", {}),
+        moveTo: async (x, y, z) => handleRequest("move_to", { x, y, z }),
+        goToPlayer: async (player_name, closeness = 3) =>
+          handleRequest("go_to_player", { player_name, closeness }),
+        searchForBlock: async (block_type, search_range = 64) =>
+          handleRequest("search_for_block", { block_type, search_range }),
+        searchForEntity: async (entity_type, search_range = 64) =>
+          handleRequest("search_for_entity", { entity_type, search_range }),
+        collectBlocks: async (block_type, count = 1) =>
+          handleRequest("collect_blocks", { block_type, count }),
+        attack: async (entity_type, range = 16) =>
+          handleRequest("attack", { entity_type, range }),
+        equip: async (item_name, destination = "hand") =>
+          handleRequest("equip", { item_name, destination }),
+        placeBlock: async (block_type) => handleRequest("place_block", { block_type }),
+        waitForAction: async (ms = 60000) => handleRequest("wait_for_action", { timeout_ms: ms }),
+        stop: async () => handleRequest("stop", {}),
+        log,
+      };
+      const beforePos = positionSummary(bot);
+      const beforeInv = inventoryCounts(bot);
+      logAction(`execute_code: started at ${beforePos}`);
+      try {
+        const fn = new AsyncFunction("bot", "api", "Vec3", "log", code);
+        const result = await Promise.race([
+          fn(bot, api, vec3, log),
+          new Promise((_, reject) => setTimeout(
+            () => reject(new Error(`Dynamic code timed out after ${timeoutMs}ms`)),
+            timeoutMs,
+          )),
+        ]);
+        const afterPos = positionSummary(bot);
+        const afterInv = inventoryCounts(bot);
+        const detail = flushActionOutput();
+        return {
+          ok: true,
+          result: result == null ? "" : String(result),
+          output: [
+            ...localOutput,
+            `Position: ${beforePos} -> ${afterPos}.`,
+            `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
+            detail,
+          ].filter(Boolean).join("\n"),
+        };
+      } catch (e) {
+        const detail = flushActionOutput();
+        return {
+          ok: false,
+          result: "",
+          output: [
+            `FAILED: ${e.message}`,
+            ...localOutput,
+            detail,
+          ].filter(Boolean).join("\n"),
+        };
       }
     }
 

@@ -95,6 +95,37 @@ class FakeBridge:
         self.calls.append(("move_to", x, y, z))
         return f"moved to ({x},{y},{z})"
 
+    async def move_away(self, distance: float = 16) -> str:
+        self.calls.append(("move_away", distance))
+        return f"moved away {distance}"
+
+    async def set_control_state(self, control: str, state: bool = True) -> None:
+        self.calls.append(("set_control_state", control, state))
+
+    async def attack(self, entity_type: str, range_val: float = 16) -> str:
+        self.calls.append(("attack", entity_type, range_val))
+        return f"attacking {entity_type}"
+
+    async def pickup_nearby_items(self, distance: float = 8) -> str:
+        self.calls.append(("pickup_nearby_items", distance))
+        return f"picked up items within {distance}"
+
+    async def should_place_torch(self) -> dict[str, Any]:
+        self.calls.append(("should_place_torch",))
+        return {"should_place": False}
+
+    async def place_torch(self) -> str:
+        self.calls.append(("place_torch",))
+        return "placed torch"
+
+    async def look_at_position(self, x: float, y: float, z: float) -> str:
+        self.calls.append(("look_at_position", x, y, z))
+        return "looked"
+
+    async def execute_code(self, code: str, timeout_ms: int = 60000) -> dict[str, Any]:
+        self.calls.append(("execute_code", code, timeout_ms))
+        return {"ok": True, "output": "ran code"}
+
     # ── helpers for tests ─────────────────────────────────────────
     def action_calls(self) -> list[tuple[Any, ...]]:
         """Return calls excluding observation/chat/query traffic."""

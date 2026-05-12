@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import enum
 import logging
+import random
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -21,7 +23,13 @@ logger = logging.getLogger(__name__)
 class BehaviorMode(enum.StrEnum):
     SELF_PRESERVATION = "self_preservation"
     UNSTUCK = "unstuck"
+    COWARDICE = "cowardice"
+    SELF_DEFENSE = "self_defense"
     HUNTING = "hunting"
+    ITEM_COLLECTING = "item_collecting"
+    TORCH_PLACING = "torch_placing"
+    ELBOW_ROOM = "elbow_room"
+    IDLE_STARING = "idle_staring"
     IDLE = "idle"
     CONVERSING = "conversing"
     CODING = "coding"
@@ -31,7 +39,13 @@ class BehaviorMode(enum.StrEnum):
 MODE_PRIORITY: list[BehaviorMode] = [
     BehaviorMode.SELF_PRESERVATION,
     BehaviorMode.UNSTUCK,
+    BehaviorMode.COWARDICE,
+    BehaviorMode.SELF_DEFENSE,
     BehaviorMode.HUNTING,
+    BehaviorMode.ITEM_COLLECTING,
+    BehaviorMode.TORCH_PLACING,
+    BehaviorMode.ELBOW_ROOM,
+    BehaviorMode.IDLE_STARING,
     BehaviorMode.IDLE,
     BehaviorMode.CONVERSING,
     BehaviorMode.CODING,
@@ -51,6 +65,7 @@ class ModeState:
     _stuck_since: float = 0.0
     _prev_position: tuple[float, float, float] = (0, 0, 0)
     _logged_stuck: bool = False  # only log once per stuck episode
+    _last_triggered: float = 0.0
 
     def frame(self, position: tuple[float, float, float]) -> None:
         """Called once per tick to update mode-specific state."""
@@ -58,6 +73,12 @@ class ModeState:
             self._stuck_since = 0.0
             self._logged_stuck = False
         self._prev_position = position
+
+    def on_cooldown(self, seconds: float) -> bool:
+        return time.time() - self._last_triggered < seconds
+
+    def mark_triggered(self) -> None:
+        self._last_triggered = time.time()
 
 
 class ModeEvaluator:
@@ -73,6 +94,30 @@ class ModeEvaluator:
 
     def active_mode(self) -> BehaviorMode | None:
         return self._active_mode
+
+    def set_enabled(self, mode_name: str, on: bool) -> str:
+        """Enable or disable a behavior mode by JS-compatible name."""
+        try:
+            mode = BehaviorMode(mode_name)
+        except ValueError:
+            known = ", ".join(m.value for m in BehaviorMode)
+            return f"FAILED: Unknown mode '{mode_name}'. Known modes: {known}"
+        state = self._states[mode]
+        state.on = on
+        if not on and state.active:
+            self.release(mode)
+        status = "enabled" if on else "disabled"
+        self.log_behavior(f"{mode.value} {status}")
+        return f"Mode '{mode.value}' {status}."
+
+    def status_text(self) -> str:
+        """Return a concise status list for the !modes command."""
+        parts = []
+        for mode in MODE_PRIORITY:
+            state = self._states[mode]
+            marker = "active" if state.active else "on" if state.on else "off"
+            parts.append(f"{mode.value}:{marker}")
+        return "Modes: " + ", ".join(parts)
 
     def is_active(self, mode: BehaviorMode) -> bool:
         return self._active_mode == mode
@@ -122,7 +167,10 @@ class ModeEvaluator:
             if not state.on or state.paused:
                 continue
             if await self._evaluate(mode, bot_state, bridge):
+                state.mark_triggered()
                 self.log_behavior(f"{mode.value} triggered on tick {self._frame_count}")
+                if state.active:
+                    self.release(mode)
                 return mode
         return None
 
@@ -134,9 +182,21 @@ class ModeEvaluator:
         if mode == BehaviorMode.SELF_PRESERVATION:
             return await self._eval_self_preservation(bot_state, bridge)
         elif mode == BehaviorMode.UNSTUCK:
-            return await self._eval_unstuck(state)
+            return await self._eval_unstuck(state, bot_state, bridge)
+        elif mode == BehaviorMode.COWARDICE:
+            return await self._eval_cowardice(state, bot_state, bridge)
+        elif mode == BehaviorMode.SELF_DEFENSE:
+            return await self._eval_self_defense(state, bot_state, bridge)
         elif mode == BehaviorMode.HUNTING:
-            return False
+            return await self._eval_hunting(state, bot_state, bridge)
+        elif mode == BehaviorMode.ITEM_COLLECTING:
+            return await self._eval_item_collecting(state, bot_state, bridge)
+        elif mode == BehaviorMode.TORCH_PLACING:
+            return await self._eval_torch_placing(state, bridge)
+        elif mode == BehaviorMode.ELBOW_ROOM:
+            return await self._eval_elbow_room(state, bot_state, bridge)
+        elif mode == BehaviorMode.IDLE_STARING:
+            return await self._eval_idle_staring(state, bot_state, bridge)
         elif mode in (BehaviorMode.IDLE, BehaviorMode.CONVERSING, BehaviorMode.CODING):
             return False
         return False
@@ -152,13 +212,23 @@ class ModeEvaluator:
             return True
         if "standing on: lava" in blocks or "standing on: fire" in blocks:
             logger.warning("Bot in lava/fire — self_preservation triggered")
+            try:
+                await bridge.move_away(8)
+            except Exception:
+                pass
             return True
         if bot_state.health < 5:
             logger.warning("Bot is dying — self_preservation triggered")
+            try:
+                await bridge.move_away(12)
+            except Exception:
+                pass
             return True
         return False
 
-    async def _eval_unstuck(self, state: ModeState) -> bool:
+    async def _eval_unstuck(self, state: ModeState, bot_state: Any, bridge: Any) -> bool:
+        if state.on_cooldown(8):
+            return False
         if state._stuck_since == 0.0:
             state._stuck_since = time.time()
             return False
@@ -167,5 +237,161 @@ class ModeEvaluator:
             if not state._logged_stuck:
                 state._logged_stuck = True
                 logger.warning("Bot stuck for %.0fs — unstuck triggered", stuck_duration)
+            try:
+                await bridge.set_control_state("jump", True)
+                await bridge.move_away(5)
+            except Exception:
+                pass
+            self.activate(BehaviorMode.UNSTUCK)
             return True
         return False
+
+    async def _eval_cowardice(self, state: ModeState, bot_state: Any, bridge: Any) -> bool:
+        if bot_state.health >= 10 or state.on_cooldown(5):
+            return False
+        hostile = _nearest_named(bot_state, HOSTILE_NAMES)
+        if hostile is None:
+            return False
+        try:
+            await bridge.move_away(16)
+        except Exception:
+            pass
+        self.activate(BehaviorMode.COWARDICE)
+        self.log_behavior(f"cowardice: fleeing from {hostile}")
+        return True
+
+    async def _eval_self_defense(self, state: ModeState, bot_state: Any, bridge: Any) -> bool:
+        if state.on_cooldown(3):
+            return False
+        hostile = _nearest_named(bot_state, HOSTILE_NAMES, max_distance=4)
+        if hostile is None:
+            return False
+        try:
+            await bridge.attack(hostile)
+        except Exception:
+            return False
+        self.activate(BehaviorMode.SELF_DEFENSE)
+        self.log_behavior(f"self_defense: attacking {hostile}")
+        return True
+
+    async def _eval_hunting(self, state: ModeState, bot_state: Any, bridge: Any) -> bool:
+        if bot_state.food > 12 or state.on_cooldown(8):
+            return False
+        target = _nearest_named(bot_state, PASSIVE_FOOD_NAMES, max_distance=16)
+        if target is None:
+            return False
+        try:
+            await bridge.attack(target)
+        except Exception:
+            return False
+        self.activate(BehaviorMode.HUNTING)
+        self.log_behavior(f"hunting: attacking {target} for food")
+        return True
+
+    async def _eval_item_collecting(self, state: ModeState, bot_state: Any, bridge: Any) -> bool:
+        if state.on_cooldown(10):
+            return False
+        if " item " not in f" {bot_state.entities_nearby.lower()} ":
+            return False
+        try:
+            await bridge.pickup_nearby_items(8)
+        except Exception:
+            return False
+        self.activate(BehaviorMode.ITEM_COLLECTING)
+        self.log_behavior("item_collecting: picking up nearby dropped items")
+        return True
+
+    async def _eval_torch_placing(self, state: ModeState, bridge: Any) -> bool:
+        if state.on_cooldown(20):
+            return False
+        try:
+            decision = await bridge.should_place_torch()
+            if not isinstance(decision, dict) or not decision.get("should_place"):
+                return False
+            await bridge.place_torch()
+        except Exception:
+            return False
+        self.activate(BehaviorMode.TORCH_PLACING)
+        self.log_behavior("torch_placing: placed a torch nearby")
+        return True
+
+    async def _eval_elbow_room(self, state: ModeState, bot_state: Any, bridge: Any) -> bool:
+        if state.on_cooldown(8):
+            return False
+        if not _player_too_close(bot_state.players_nearby):
+            return False
+        try:
+            await bridge.move_away(3)
+        except Exception:
+            return False
+        self.activate(BehaviorMode.ELBOW_ROOM)
+        self.log_behavior("elbow_room: moving away from a nearby player")
+        return True
+
+    async def _eval_idle_staring(self, state: ModeState, bot_state: Any, bridge: Any) -> bool:
+        if bot_state.current_goal and "No current" not in bot_state.current_goal:
+            return False
+        if state.on_cooldown(15):
+            return False
+        if random.random() > 0.02:
+            return False
+        pos = bot_state.position
+        try:
+            await bridge.look_at_position(
+                pos.x + random.uniform(-8, 8),
+                pos.y + random.uniform(0, 3),
+                pos.z + random.uniform(-8, 8),
+            )
+        except Exception:
+            return False
+        self.activate(BehaviorMode.IDLE_STARING)
+        self.release(BehaviorMode.IDLE_STARING)
+        return True
+
+
+HOSTILE_NAMES: set[str] = {
+    "blaze", "bogged", "breeze", "cave_spider", "creeper", "drowned",
+    "elder_guardian", "enderman", "endermite", "evoker", "ghast", "guardian",
+    "hoglin", "husk", "magma_cube", "phantom", "piglin", "piglin_brute",
+    "pillager", "ravager", "shulker", "silverfish", "skeleton", "slime",
+    "spider", "stray", "vex", "vindicator", "warden", "witch",
+    "wither_skeleton", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
+}
+
+PASSIVE_FOOD_NAMES: set[str] = {
+    "chicken", "cow", "pig", "rabbit", "sheep", "cod", "salmon",
+}
+
+
+def _nearest_named(
+    bot_state: Any, names: set[str], max_distance: float | None = None,
+) -> str | None:
+    """Pick the nearest matching entity from structured or text observations."""
+    structured = getattr(bot_state, "entities", []) or []
+    matches: list[tuple[float, str]] = []
+    for entity in structured:
+        name = getattr(entity, "name", "") or getattr(entity, "entity_type", "")
+        norm = name.lower()
+        dist = float(getattr(entity, "distance", 999) or 999)
+        if norm in names and (max_distance is None or dist <= max_distance):
+            matches.append((dist, norm))
+    if matches:
+        matches.sort(key=lambda item: item[0])
+        return matches[0][1]
+
+    text = getattr(bot_state, "entities_nearby", "") or ""
+    for line in text.splitlines():
+        m = re.search(r"^\s*([a-zA-Z0-9_]+)\s+\((\d+(?:\.\d+)?)m\)", line)
+        if not m:
+            continue
+        name = m.group(1).lower()
+        dist = float(m.group(2))
+        if name in names and (max_distance is None or dist <= max_distance):
+            return name
+    return None
+
+
+def _player_too_close(players_nearby: str) -> bool:
+    # observe() only gives player coordinates, not distance. Treat a player line
+    # as close enough to make room; the cooldown keeps this from thrashing.
+    return "player:" in (players_nearby or "").lower()

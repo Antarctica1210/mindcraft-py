@@ -335,6 +335,22 @@ class SocketBridge:
             "target_item": target_item, "quantity": quantity,
         })
 
+    # ── Dynamic code / action output ────────────────────────────────
+    async def execute_code(self, code: str, timeout_ms: int = 60000) -> Any:
+        """Execute a generated JavaScript action in the Mineflayer process."""
+        return await self._request("execute_code", {
+            "code": code,
+            "timeout_ms": timeout_ms,
+        })
+
+    async def wait_for_action(self, timeout_ms: int = 60000) -> Any:
+        """Wait for the current pathfinder/collector action to finish."""
+        return await self._request("wait_for_action", {"timeout_ms": timeout_ms})
+
+    async def get_action_output(self) -> Any:
+        """Return and clear detailed action log output from the socket server."""
+        return await self._request("get_action_output")
+
     # ── Stop ────────────────────────────────────────────────────────
     async def stop(self) -> Any:
         """Stop all current actions (movement, mining, combat, following)."""

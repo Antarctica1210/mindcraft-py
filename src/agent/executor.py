@@ -113,6 +113,10 @@ class ActionExecutor:
         return "Bot unmuted."  # handled in agent
 
     @staticmethod
+    async def _new_action(_bridge: Any, code_prompt: str) -> str:
+        return f"Dynamic action requested: {code_prompt}"  # handled in agent
+
+    @staticmethod
     async def _restart(_bridge: Any, *_args: Any) -> str:
         return "Restart not supported via socket bridge."
 
@@ -438,6 +442,7 @@ class ActionExecutor:
             # Stop / Control
             "stop": self._stop,
             "stfu": self._stfu,
+            "unshut": self._unshut,
             "restart": self._restart,
             "clearChat": self._clear_chat,
             # Observation
@@ -492,6 +497,7 @@ class ActionExecutor:
             "setMode": self._set_mode,
             "setGoal": self._set_self_goal,
             "endGoal": self._end_goal,
+            "newAction": self._new_action,
             # Conversation
             "startConversation": self._start_conversation,
             "endConversation": self._end_conversation,
