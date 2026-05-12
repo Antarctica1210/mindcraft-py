@@ -61,3 +61,23 @@ async def test_bed_target_prefers_existing_wool_color() -> None:
 
     assert kg.resolve_craft_target("bed", {"red_wool": 3}) == "red_bed"
     assert kg.resolve_craft_target("bed", {"white_wool": 3}) == "white_bed"
+
+
+async def test_bed_plan_prefers_direct_wool_recipe_over_recoloring() -> None:
+    kg = await _loaded_graph()
+    inventory = {
+        "light_gray_wool": 1,
+        "mutton": 1,
+        "oak_log": 5,
+        "oak_sapling": 2,
+    }
+
+    plan = kg.get_missing_materials("bed", inventory=inventory)
+
+    assert plan["target"] == "light_gray_bed"
+    assert plan["ingredient_counts"] == {
+        "light_gray_wool": 3,
+        "oak_planks": 3,
+    }
+    assert "light_gray_dye" not in plan["missing_counts"]
+    assert "black_bed" not in plan["missing_counts"]

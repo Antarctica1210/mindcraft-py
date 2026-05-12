@@ -113,6 +113,24 @@ async def test_craft_recipe_target_is_normalized_by_knowledge_graph() -> None:
     assert ("craft_recipe", "white_bed", 1) in bridge.calls
 
 
+async def test_bed_crafting_rejects_wool_to_dye_misconception() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "light_gray_wool", "count": 1}]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._last_message = "craft a bed"
+
+    result = await agent._execute_agent_command(
+        "craftRecipe",
+        [],
+        {"recipe_name": "white_dye", "num": 1},
+    )
+
+    assert result is not None
+    assert "Wool cannot be crafted into dye" in result
+    assert "collect 2 more light_gray_wool" in result
+
+
 async def test_action_loop_retries_empty_required_tool_response() -> None:
     bridge = FakeBridge()
     agent = Agent(AgentConfig(name="bot", max_commands=1))
@@ -136,7 +154,7 @@ async def test_action_loop_retries_empty_required_tool_response() -> None:
     ]
 
     async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
-        assert tool_choice == "required"
+        assert tool_choice == "auto"
         return responses.pop(0)
 
     agent.plan = fake_plan  # type: ignore[method-assign]
@@ -223,7 +241,7 @@ async def test_action_loop_blocks_repeated_query_tool_call() -> None:
     ]
 
     async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
-        assert tool_choice == "required"
+        assert tool_choice == "auto"
         return responses.pop(0)
 
     agent.plan = fake_plan  # type: ignore[method-assign]

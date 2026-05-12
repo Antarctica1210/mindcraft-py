@@ -300,7 +300,23 @@ class KnowledgeGraph:
         category = self._item_category(name)
         if category is None:
             return exact
-        return max(exact, sum(inventory.get(member, 0) for member in self._category_members(category)))
+        category_total = sum(
+            inventory.get(member, 0)
+            for member in self._category_members(category)
+        )
+        return max(exact, category_total)
+
+    def _derived_available_count(self, inventory: dict[str, int], item_name: str) -> int:
+        """Count directly available/craftable equivalents for recipe preference."""
+        name = self._resolve_item_name(item_name)
+        count = inventory.get(name, 0)
+        if name.endswith("_planks"):
+            wood = name.removesuffix("_planks")
+            count += inventory.get(f"{wood}_log", 0) * 4
+            count += inventory.get(f"stripped_{wood}_log", 0) * 4
+            count += inventory.get(f"{wood}_stem", 0) * 4
+            count += inventory.get(f"stripped_{wood}_stem", 0) * 4
+        return count
 
     def _preferred_bed_name(self, inventory: dict[str, int]) -> str:
         for color in WOOL_COLORS:
@@ -418,27 +434,54 @@ class KnowledgeGraph:
         inventory: dict[str, int],
     ) -> list[dict[str, Any]]:
         """Prefer recipes that match available inventory materials."""
-        if not inventory:
-            return recipes
-
-        def score(recipe: dict[str, Any]) -> tuple[int, int, int, int]:
+        def score(recipe: dict[str, Any]) -> tuple[int, int, int, int, int, int]:
             counts = recipe.get("ingredient_counts", {}) or {}
             missing_total = 0
             matched_kinds = 0
             exact_hits = 0
             exact_available = 0
+            derived_available = 0
             for item, needed in counts.items():
                 available = self._available_count(inventory, item)
                 exact_available += min(inventory.get(item, 0), needed)
+                derived_available += min(
+                    self._derived_available_count(inventory, item),
+                    needed,
+                )
                 if available >= needed:
                     matched_kinds += 1
                 else:
                     missing_total += needed - available
                 if inventory.get(item, 0) >= needed:
                     exact_hits += 1
-            return (missing_total, -matched_kinds, -exact_hits, -exact_available)
+            return (
+                self._recipe_preference_penalty(recipe),
+                missing_total,
+                -matched_kinds,
+                -exact_hits,
+                -exact_available,
+                -derived_available,
+            )
 
         return sorted(recipes, key=score)
+
+    def _recipe_preference_penalty(self, recipe: dict[str, Any]) -> int:
+        """Prefer semantically direct recipes over conversion/recolor recipes."""
+        result = recipe.get("result", {}) or {}
+        result_name = self._resolve_item_name(str(result.get("name", "")))
+        counts = recipe.get("ingredient_counts", {}) or {}
+        ingredients = {self._resolve_item_name(name) for name in counts}
+
+        if result_name.endswith("_bed"):
+            has_wool = any(name.endswith("_wool") for name in ingredients)
+            has_planks = any(self._item_category(name) == "planks" for name in ingredients)
+            if has_wool and has_planks:
+                return 0
+            # Recolor recipes such as black_bed + light_gray_dye are valid, but
+            # they are a poor plan when the user simply asked to craft a bed.
+            return 10
+
+        return 0
 
     def get_recipes_for_ingredient(self, ingredient: str) -> list[dict[str, Any]]:
         """Find all recipes that consume *ingredient*."""

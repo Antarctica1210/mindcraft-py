@@ -1001,7 +1001,7 @@ class Agent:
                             "I'm stuck — I've tried several things but they're not working. "
                             "What should I try next?"
                         )
-                        break
+                        return used_command
                 else:
                     consecutive_failures = 0
                     last_failed = None
@@ -1051,6 +1051,9 @@ class Agent:
             if kg_plan is not None:
                 return kg_plan
         if name == "craftRecipe":
+            dye_hint = await self._bed_dye_misconception_hint(args, kwargs)
+            if dye_hint:
+                return dye_hint
             args, kwargs = await self._normalise_craft_recipe_args(args, kwargs)
         if name == "stfu":
             self.shut_up()
@@ -1536,6 +1539,39 @@ class Agent:
             return new_args, kwargs
         kw["recipe_name"] = resolved
         return args, kw
+
+    async def _bed_dye_misconception_hint(
+        self,
+        args: list[Any],
+        kwargs: dict[str, Any] | None,
+    ) -> str | None:
+        """Catch the common wool→dye misconception during bed crafting."""
+        if "bed" not in self._last_message.lower():
+            return None
+
+        kw = dict(kwargs or {})
+        values = args if args else list(kw.values())
+        recipe_name = str(kw.get("recipe_name", values[0] if values else "")).lower()
+        if recipe_name not in {"white_dye", "light_gray_dye", "gray_dye"}:
+            return None
+
+        bot_state = await self.observe()
+        wool = [item for item in bot_state.inventory if item.name.endswith("_wool")]
+        if not wool:
+            return None
+
+        best = max(wool, key=lambda item: item.count)
+        color = best.name.removesuffix("_wool")
+        needed = max(3 - best.count, 0)
+        if needed:
+            next_step = f"collect {needed} more {best.name}"
+        else:
+            next_step = f"craft {color}_bed"
+        return (
+            "FAILED: Wool cannot be crafted into dye. For a bed, use 3 matching "
+            f"wool blocks directly with 3 planks. You have {best.name} x{best.count}; "
+            f"next step: {next_step}, not craft {recipe_name}."
+        )
 
     def _format_inventory(self, state: BotState) -> str:
         """Format inventory from a populated ``BotState`` for the prompt.
