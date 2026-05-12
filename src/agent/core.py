@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from llm import InputIntent, InputRouter, Prompter
+from llm import ExampleStore, InputIntent, InputRouter, Prompter
 from llm.message_builder import CommandDef, ConversationTurn, MessageBuilder
 from llm.prompter import LLMInput, LLMOutput
 from llm.tool_parser import parse_response
@@ -142,12 +142,19 @@ def _describe_action(name: str, args: list[Any]) -> str:
 
 
 def _tool_call_required_reminder() -> str:
-    """Prompt nudge for models that ignore required tool calling."""
+    """Prompt nudge when the model produces reasoning-only output.
+
+    Worded to cover both modes: tool-calling endpoints read this as
+    "emit a function call", plain-text endpoints read it as "use the
+    !commandName(args) syntax".
+    """
     return (
-        "You must respond with a tool call (function call) for this request. "
-        "Do NOT output plain text or reasoning-only content — pick the most "
-        "appropriate command and call it. If you are unsure which command to "
-        "use, call !help or !stats first."
+        "You must use a command to respond to this request — either emit "
+        "a tool/function call OR use the !commandName(args) syntax in your "
+        "text reply (e.g. !craftRecipe(\"oak_planks\", 1) or "
+        "!searchForEntity(\"sheep\", 64)). Do NOT respond with plain text "
+        "alone. If you are unsure which command fits, call !help or !stats "
+        "first."
     )
 
 
@@ -222,6 +229,14 @@ class Agent:
     # Default config path for InputRouter keyword tables.
     DEFAULT_INTENT_CONFIG = "config/intent_keywords.yaml"
 
+    # Default config path for few-shot conversation examples (mirrors JS
+    # profile.conversation_examples — fills the $EXAMPLES placeholder).
+    DEFAULT_EXAMPLES_CONFIG = "config/conversation_examples.json"
+
+    # How many examples to include per turn (matches JS settings.max_messages
+    # → settings.num_examples default of 2).
+    _EXAMPLES_PER_TURN = 2
+
     # Cap on action_call payloads we feed back to InputRouter / feedback handler.
     _RECENT_ACTIONS_WINDOW = 5
 
@@ -233,6 +248,7 @@ class Agent:
         self._prompter: Prompter | None = None
         self._msg_builder: MessageBuilder | None = None
         self._router: InputRouter | None = None
+        self._examples: ExampleStore | None = None
 
         # Phase 2 components
         self._executor = ActionExecutor()
@@ -291,6 +307,13 @@ class Agent:
 
         # Phase 1: input intent classifier — pure regex/keyword, no LLM dep
         self._router = InputRouter.from_config(self.DEFAULT_INTENT_CONFIG)
+
+        # Phase 1: few-shot conversation examples for the $EXAMPLES slot.
+        # Keyword-overlap retrieval until Phase 4b FAISS lands — same
+        # mechanism JS uses (utils/examples.js falls back to word overlap
+        # when no embedding model is configured).
+        self._examples = ExampleStore.from_config(self.DEFAULT_EXAMPLES_CONFIG)
+        self._examples.load()
 
         # Phase 5a: skill registry
         skill_reg = SkillRegistry("src/skills/skills")
@@ -484,7 +507,16 @@ class Agent:
         # Phase 3/4a: recall relevant long-term memory
         memory = await self._recall_memory(message=self._last_message)
 
-        examples = ""  # TODO: wire up example retrieval (Phase 5)
+        # Few-shot examples: keyword-overlap retrieval against the last
+        # player message. Mirrors JS prompter.js which selects top-N
+        # examples per turn from profile.conversation_examples.
+        if self._examples is not None and self._examples.count > 0:
+            selected = self._examples.select(
+                self._last_message, limit=self._EXAMPLES_PER_TURN,
+            )
+            examples = MessageBuilder.format_examples(selected)
+        else:
+            examples = ""
 
         system_prompt = self._msg_builder.build_system_prompt(
             stats=stats,

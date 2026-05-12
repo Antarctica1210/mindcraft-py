@@ -496,7 +496,22 @@ class Prompter:
     # ── tools ───────────────────────────────────────────────────────
 
     def register_tools(self, tools: list[dict[str, Any]]) -> None:
-        """Register OpenAI-format tool definitions for tool-calling mode."""
+        """Register OpenAI-format tool definitions for tool-calling mode.
+
+        When ``LLMSettings.use_tool_calling`` is False (default — JS
+        mindcraft mode), this no-ops: the tools are documented in the
+        system prompt's ``$COMMAND_DOCS`` placeholder instead, and the
+        LLM emits ``!cmd("arg", 5)`` plain-text syntax that
+        :py:func:`tool_parser.parse_legacy` extracts via regex.
+        """
+        if not self._config.use_tool_calling:
+            logger.info(
+                "Prompter: plain-text mode active (use_tool_calling=False) — "
+                "ignoring %d tool definitions; commands come via $COMMAND_DOCS",
+                len(tools),
+            )
+            self._tools = None
+            return
         self._tools = tools
 
     # ── chat completion ─────────────────────────────────────────────
@@ -626,7 +641,18 @@ class Prompter:
         Per-call chain construction is cheap (Runnables are lightweight objects)
         and lets us vary tool binding per invocation — some calls need tools,
         others are pure-text (question / chitchat intents).
+
+        When ``LLMSettings.use_tool_calling`` is False (JS mindcraft mode),
+        tools are NEVER bound regardless of ``tool_choice``; commands are
+        documented in the system prompt and parsed from response text by
+        :py:func:`tool_parser.parse_legacy` regex.
         """
+        if not self._config.use_tool_calling:
+            # Plain-text mode — no tools bound, no tool_choice sent.
+            # The model behaves like the JS original: emits free text
+            # with `!cmd("arg", 5)` syntax for actions.
+            return self._prompt | self._model
+
         if self._tools and tool_choice != "none":
             bound_model = self._model.bind(
                 tools=self._tools,

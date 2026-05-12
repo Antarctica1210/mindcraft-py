@@ -1,0 +1,86 @@
+[
+  {
+    "name": "craft_a_plank",
+    "keywords": ["craft", "plank", "wood", "make", "build"],
+    "turns": [
+      {"role": "user", "content": "bobby: Craft a plank"},
+      {"role": "assistant", "content": "Sure, let me check what I can make. !craftable"},
+      {"role": "system", "content": "CRAFTABLE_ITEMS\n- oak_planks\n- spruce_planks\n- crafting_table\n- stick"},
+      {"role": "assistant", "content": "I have logs, so I'll craft oak planks. !craftRecipe(\"oak_planks\", 1)"},
+      {"role": "system", "content": "Action output:\nSuccessfully crafted oak_planks, you now have 4 oak_planks."},
+      {"role": "assistant", "content": "I've crafted 4 oak planks!"}
+    ]
+  },
+  {
+    "name": "craft_a_bed",
+    "keywords": ["bed", "wool", "sheep", "sleep", "craft"],
+    "turns": [
+      {"role": "user", "content": "alice: craft a bed"},
+      {"role": "assistant", "content": "A bed needs wool. Let me see if I have any. !inventory"},
+      {"role": "system", "content": "INVENTORY\n- oak_log: 3"},
+      {"role": "assistant", "content": "No wool. I'll find sheep and get wool from them. !searchForEntity(\"sheep\", 64)"},
+      {"role": "system", "content": "Action output:\nFound sheep 12 blocks away. You have arrived."},
+      {"role": "assistant", "content": "Sheep right here. !attack(\"sheep\")"},
+      {"role": "system", "content": "Action output:\nKilled sheep and picked up nearby drops."},
+      {"role": "assistant", "content": "!inventory"},
+      {"role": "system", "content": "INVENTORY\n- oak_log: 3\n- mutton: 1\n- white_wool: 1"},
+      {"role": "assistant", "content": "Got 1 wool, need 2 more. !searchForEntity(\"sheep\", 64)"},
+      {"role": "system", "content": "Action output:\nFound sheep 8 blocks away. You have arrived."},
+      {"role": "assistant", "content": "!attack(\"sheep\")"},
+      {"role": "system", "content": "Action output:\nKilled sheep and picked up nearby drops."},
+      {"role": "assistant", "content": "!attack(\"sheep\")"},
+      {"role": "system", "content": "Action output:\nKilled sheep and picked up nearby drops."},
+      {"role": "assistant", "content": "!inventory"},
+      {"role": "system", "content": "INVENTORY\n- oak_log: 3\n- mutton: 3\n- white_wool: 3"},
+      {"role": "assistant", "content": "Wool is done. Now planks. !craftRecipe(\"oak_planks\", 1)"},
+      {"role": "system", "content": "Action output:\nSuccessfully crafted oak_planks, you now have 4 oak_planks."},
+      {"role": "assistant", "content": "!craftRecipe(\"white_bed\", 1)"},
+      {"role": "system", "content": "Action output:\nSuccessfully crafted white_bed, you now have 1 white_bed."},
+      {"role": "assistant", "content": "Bed ready! !givePlayer(\"alice\", \"white_bed\", 1)"},
+      {"role": "system", "content": "Action output:\nalice received white_bed."},
+      {"role": "assistant", "content": "Delivered."}
+    ]
+  },
+  {
+    "name": "craft_a_torch",
+    "keywords": ["torch", "light", "dark", "coal", "stick"],
+    "turns": [
+      {"role": "user", "content": "wilson: make a torch"},
+      {"role": "assistant", "content": "Torches need a stick and coal. !inventory"},
+      {"role": "system", "content": "INVENTORY\n- oak_log: 2"},
+      {"role": "assistant", "content": "I need planks first to get sticks. !craftRecipe(\"oak_planks\", 1)"},
+      {"role": "system", "content": "Action output:\nSuccessfully crafted oak_planks, you now have 4 oak_planks."},
+      {"role": "assistant", "content": "!craftRecipe(\"stick\", 1)"},
+      {"role": "system", "content": "Action output:\nSuccessfully crafted stick, you now have 4 stick."},
+      {"role": "assistant", "content": "Got sticks, now coal. !searchForBlock(\"coal_ore\", 64)"},
+      {"role": "system", "content": "Action output:\nFound coal_ore 18 blocks away. You have arrived."},
+      {"role": "assistant", "content": "!collectBlocks(\"coal_ore\", 1)"},
+      {"role": "system", "content": "Action output:\nCollected 1 coal."},
+      {"role": "assistant", "content": "!craftRecipe(\"torch\", 4)"},
+      {"role": "system", "content": "Action output:\nSuccessfully crafted torch, you now have 4 torch."},
+      {"role": "assistant", "content": "Torches done!"}
+    ]
+  },
+  {
+    "name": "collect_resource",
+    "keywords": ["collect", "gather", "get", "log", "stone", "iron", "ore"],
+    "turns": [
+      {"role": "user", "content": "wilson: collect 5 oak_log"},
+      {"role": "assistant", "content": "On it. !searchForBlock(\"oak_log\", 64)"},
+      {"role": "system", "content": "Action output:\nFound oak_log 22 blocks away. You have arrived."},
+      {"role": "assistant", "content": "!collectBlocks(\"oak_log\", 5)"},
+      {"role": "system", "content": "Action output:\nCollected 5 oak_log."},
+      {"role": "assistant", "content": "Got 5 oak logs."}
+    ]
+  },
+  {
+    "name": "come_to_player",
+    "keywords": ["come", "here", "follow", "go", "to me"],
+    "turns": [
+      {"role": "user", "content": "wilson: come to me"},
+      {"role": "assistant", "content": "On my way. !goToPlayer(\"wilson\", 3)"},
+      {"role": "system", "content": "Action output:\nFound path. You have reached wilson."},
+      {"role": "assistant", "content": "Here I am."}
+    ]
+  }
+]

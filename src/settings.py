@@ -88,6 +88,16 @@ class LLMSettings:
     # Retry count for transient failures
     num_retries: int = field(default_factory=lambda: _get_int("LLM_NUM_RETRIES", 2))
 
+    # Tool-calling format. Default: False = JS mindcraft pattern (LLM emits
+    # plain text with `!cmd("arg", 5)` syntax, parsed by regex). The JS
+    # original never sent a `tools[]` field to providers, and small models
+    # like Gemma-4 26B / Qwen3-32B handle the plain-text pattern better
+    # than structured tool calling. Set LLM_USE_TOOL_CALLING=true to enable
+    # OpenAI tool_calls (recommended only for GPT-4 / Claude / DeepSeek-V3).
+    use_tool_calling: bool = field(
+        default_factory=lambda: _get_bool("LLM_USE_TOOL_CALLING", False)
+    )
+
 
 @dataclass
 class EmbeddingSettings:
