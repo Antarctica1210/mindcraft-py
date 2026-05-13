@@ -702,6 +702,12 @@ class Agent:
         logger.info(">>> %s: %s", source, message)
         self._last_message = message
 
+        # Auto-unmute: !stfu suppresses chatty narration mid-task, not
+        # permanently. Any new player message means they want interaction.
+        if self._shut_up:
+            self._shut_up = False
+            logger.info("Auto-unmuted: new message from %s", source)
+
         # F2: reset recent-action ring at the start of each user turn so
         # task-specific context (e.g. five failed searchWiki calls from a
         # previous "craft a bed" attempt) does not bleed into the next
