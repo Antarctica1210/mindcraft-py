@@ -103,6 +103,10 @@ class FakeBridge:
         self.calls.append(("follow_player", player_name, follow_dist))
         return f"following {player_name}"
 
+    async def search_for_block(self, block_type: str, search_range: float = 64) -> str:
+        self.calls.append(("search_for_block", block_type, search_range))
+        return f"found {block_type}"
+
     async def move_away(self, distance: float = 16) -> str:
         self.calls.append(("move_away", distance))
         return f"moved away {distance}"
@@ -125,6 +129,12 @@ class FakeBridge:
     async def get_crafting_plan(self, target_item: str, quantity: int = 1) -> str:
         self.calls.append(("get_crafting_plan", target_item, quantity))
         return f"plan for {quantity} {target_item}"
+
+    async def give_to_player(
+        self, player_name: str, item_name: str, num: int = 8,
+    ) -> str:
+        self.calls.append(("give_to_player", player_name, item_name, num))
+        return f"gave {num} {item_name} to {player_name}"
 
     async def should_place_torch(self) -> dict[str, Any]:
         self.calls.append(("should_place_torch",))

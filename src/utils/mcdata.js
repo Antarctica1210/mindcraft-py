@@ -253,6 +253,7 @@ function _levenshtein(a, b) {
 }
 
 export function getItemName(itemId) {
+    if (!itemId || itemId <= 0) return null;  // 0 / negative / falsy = empty crafting slot
     let item = mcdata.items[itemId]
     if (item) {
         return item.name;
@@ -355,6 +356,7 @@ export function getItemCraftingRecipes(itemName) {
             ingredients = r.inShape.flat();
         }
         for (let ingredient of ingredients) {
+            if (!ingredient || ingredient <= 0) continue;  // empty crafting slot
             let ingredientName = getItemName(ingredient);
             if (ingredientName === null) continue;
             if (!recipe[ingredientName])

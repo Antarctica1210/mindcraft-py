@@ -45,6 +45,9 @@ function loadPlugins(b) {
   b.loadPlugin(pvp.plugin);
   b.loadPlugin(armorManager);
   b.loadPlugin(autoEat);
+  if (b.autoEat?.options) {
+    b.autoEat.options.offhand = false;
+  }
 }
 
 // ── Bot state ────────────────────────────────────────────────────────
@@ -109,25 +112,113 @@ function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function placeBlockAndVerify(ref, face, targetPos, blockName) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await bot.placeBlock(ref, face);
-    } catch (e) {
-      lastError = e;
-      const message = String(e?.message || e);
-      if (!message.includes("blockUpdate") && !message.includes("timeout")) {
-        throw e;
-      }
-    }
+function fuelSmeltsPerItem(name) {
+  if (name === "lava_bucket") return 100;
+  if (name === "coal" || name === "charcoal") return 8;
+  if (name === "blaze_rod") return 12;
+  if (name.endsWith("_log") || name.endsWith("_stem") || name.endsWith("_hyphae")) return 1.5;
+  if (name.endsWith("_planks")) return 1.5;
+  if (name.endsWith("_slab")) return 0.75;
+  if (name === "stick" || name.endsWith("_sapling")) return 0.5;
+  if (name.startsWith("wooden_")) return 1;
+  return 0;
+}
 
-    for (let i = 0; i < 5; i++) {
-      const placed = bot.blockAt(targetPos);
-      if (placed?.name === blockName) return placed;
-      await sleepMs(200);
+function fuelPreference(name) {
+  if (name === "coal" || name === "charcoal") return 1;
+  if (name === "stick" || name.endsWith("_sapling")) return 2;
+  if (name.endsWith("_planks") || name.endsWith("_slab")) return 3;
+  if (name.endsWith("_log") || name.endsWith("_stem") || name.endsWith("_hyphae")) return 4;
+  if (name === "lava_bucket" || name === "blaze_rod") return 5;
+  if (name.startsWith("wooden_")) return 50;
+  return 10;
+}
+
+function smeltInputNameAliases(name) {
+  return {
+    raw_porkchop: "porkchop",
+    raw_beef: "beef",
+    raw_chicken: "chicken",
+    raw_mutton: "mutton",
+    raw_rabbit: "rabbit",
+    raw_cod: "cod",
+    raw_salmon: "salmon",
+  }[name] || name;
+}
+
+function bestSmeltingFuel(b, neededItems) {
+  try {
+    const candidates = b.inventory.items()
+      .map((item) => ({ item, smelts: fuelSmeltsPerItem(item.name) }))
+      .filter(({ item, smelts }) => smelts > 0 && item.type != null)
+      .map(({ item, smelts }) => ({
+        item,
+        smelts,
+        countNeeded: Math.ceil(neededItems / smelts),
+      }))
+      .filter(({ item, countNeeded }) => item.count >= countNeeded)
+      .sort((a, b) =>
+        fuelPreference(a.item.name) - fuelPreference(b.item.name) ||
+        a.countNeeded - b.countNeeded ||
+        b.smelts - a.smelts
+      );
+    return candidates[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Place a block with a configurable timeout for the blockUpdate confirmation.
+ * mineflayer's built-in placeBlock hardcodes 500ms which is too short for
+ * laggy servers.  This wraps _genericPlace and waits for blockUpdate with
+ * a caller-controlled timeout (default 5000ms).
+ */
+async function placeBlockWithTimeout(ref, face, timeoutMs = 5000) {
+  const dest = ref.position.plus(face);
+  await bot._genericPlace(ref, face, {});
+
+  return new Promise((resolve, reject) => {
+    const eventName = `blockUpdate:${dest}`;
+    const timer = setTimeout(() => {
+      bot.removeListener(eventName, handler);
+      reject(new Error(`Event ${eventName} did not fire within timeout of ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    const handler = (oldBlock, newBlock) => {
+      if (!oldBlock || !newBlock || oldBlock.type !== newBlock.type) {
+        clearTimeout(timer);
+        bot.removeListener(eventName, handler);
+        resolve([oldBlock, newBlock]);
+      }
+    };
+    bot.on(eventName, handler);
+  });
+}
+
+async function placeBlockAndVerify(ref, face, targetPos, blockName) {
+  // Single attempt — if the server rejects this position, let the
+  // caller (placeInventoryBlockNearBot) try a different one instead
+  // of retrying the same coordinates.
+  let lastError = null;
+  try {
+    await placeBlockWithTimeout(ref, face, 5000);
+  } catch (e) {
+    lastError = e;
+    const message = String(e?.message || e);
+    if (!message.includes("blockUpdate") && !message.includes("timeout")) {
+      throw e;
     }
   }
+
+  // Poll after the (possibly-timed-out) placement — on laggy servers
+  // the block may appear a moment after our timeout fires.
+  for (let i = 0; i < 8; i++) {
+    const placed = bot.blockAt(targetPos);
+    if (placed?.name === blockName) return placed;
+    await sleepMs(250);
+  }
+
   throw lastError || new Error(`Could not verify placed ${blockName}.`);
 }
 
@@ -138,6 +229,40 @@ async function placeInventoryBlockNearBot(blockName) {
   await bot.equip(item, "hand");
 
   const base = bot.entity.position.floored();
+  const errors = [];
+  let feetTarget = null;
+
+  // Prefer the block directly underfoot (needed for pillaring / elevating).
+  // If the bot is standing on the target spot the server will reject direct
+  // placement — jump to clear the position and retry immediately so the
+  // search loop below doesn't steal the block for a non-pillaring spot.
+  const underfoot = bot.blockAt(base.offset(0, -1, 0));
+  if (underfoot && !isAirLike(underfoot) && !underfoot.name.includes("water") && !underfoot.name.includes("lava")) {
+    feetTarget = underfoot.position.offset(0, 1, 0);
+    if (isAirLike(bot.blockAt(feetTarget))) {
+      try {
+        return await placeBlockAndVerify(underfoot, new vec3(0, 1, 0), feetTarget, blockName);
+      } catch (e) {
+        errors.push(`underfoot ${feetTarget}: ${e.message}`);
+        try {
+          bot.setControlState('jump', true);
+          await sleepMs(150);
+          bot.setControlState('jump', false);
+          await sleepMs(100);
+          await bot.equip(item, "hand");
+          return await placeBlockAndVerify(underfoot, new vec3(0, 1, 0), feetTarget, blockName);
+        } catch (e2) {
+          errors.push(`underfoot-jump ${feetTarget}: ${e2.message}`);
+        }
+      }
+    }
+  }
+
+  // Search a 5×3×5 area, trying every valid position until one succeeds.
+  // Track tried target positions so we don't waste attempts on duplicates.
+  const tried = new Set();
+  tried.add(feetTarget?.toString());  // underfoot target already attempted
+
   const faces = [
     new vec3(0, 1, 0),
     new vec3(1, 0, 0),
@@ -154,14 +279,39 @@ async function placeInventoryBlockNearBot(blockName) {
         for (const face of faces) {
           const targetPos = ref.position.offset(face.x, face.y, face.z);
           if (bot.entity.position.distanceTo(targetPos) > 4.5) continue;
+          // Can't place a block where the bot is standing.
+          if (targetPos.equals(base)) continue;
+          const key = targetPos.toString();
+          if (tried.has(key)) continue;
           const target = bot.blockAt(targetPos);
           if (!isAirLike(target)) continue;
-          return await placeBlockAndVerify(ref, face, targetPos, blockName);
+          tried.add(key);
+          try {
+            await bot.equip(item, "hand");
+            return await placeBlockAndVerify(ref, face, targetPos, blockName);
+          } catch (e) {
+            errors.push(`${targetPos}: ${e.message}`);
+          }
         }
       }
     }
   }
-  throw new Error(`Could not find a free space to place ${blockName}.`);
+  // Last resort: jump to clear the feet position, then place there.
+  const groundBlock = bot.blockAt(base.offset(0, -1, 0));
+  if (groundBlock && !isAirLike(groundBlock) && !groundBlock.name.includes("water") && !groundBlock.name.includes("lava")) {
+    try {
+      bot.setControlState('jump', true);
+      await sleepMs(150);
+      bot.setControlState('jump', false);
+      await sleepMs(100);
+      await bot.equip(item, "hand");
+      return await placeBlockAndVerify(groundBlock, new vec3(0, 1, 0), base, blockName);
+    } catch (e) {
+      errors.push(`jump-place ${base}: ${e.message}`);
+    }
+  }
+
+  throw new Error(`Could not place ${blockName}. Tried: ${errors.join("; ") || "no valid positions"}`);
 }
 
 function recipeRequirementText(recipe, mcData) {
@@ -379,6 +529,20 @@ function nearbyBlockTypes(b, distance = 16) {
   try {
     const types = new Set();
     const pos = b.entity.position;
+    const mcData = b.registry;
+    for (const name of [
+      "crafting_table",
+      "furnace",
+      "campfire",
+      "blast_furnace",
+      "smoker",
+      "chest",
+    ]) {
+      const id = mcData?.blocksByName?.[name]?.id;
+      if (id == null) continue;
+      const found = b.findBlock({ matching: id, maxDistance: distance });
+      if (found) types.add(name);
+    }
     for (let dx = -distance; dx <= distance; dx += 4) {
       for (let dy = -4; dy <= 4; dy += 2) {
         for (let dz = -distance; dz <= distance; dz += 4) {
@@ -407,6 +571,11 @@ function findPlayer(b, username) {
     if (name.toLowerCase() === wanted && p?.entity) return p.entity;
   }
   return null;
+}
+
+function playerNotTrackedMessage(username) {
+  return `Player "${username}" is not currently tracked by the server. ` +
+    "They may be in another dimension, offline, or not loaded by the bot yet.";
 }
 
 // ── Request handler ──────────────────────────────────────────────────
@@ -526,7 +695,7 @@ async function handleRequest(method, params) {
       if (!bot) throw new Error("No bot connected");
       if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
       const target = findPlayer(bot, params.player_name);
-      if (!target) throw new Error(`Player "${params.player_name}" not found nearby.`);
+      if (!target) throw new Error(playerNotTrackedMessage(params.player_name));
       const closeness = params.closeness || 3;
       return await gotoAndSummarize(
         `go_to_player ${params.player_name}`,
@@ -543,7 +712,7 @@ async function handleRequest(method, params) {
       if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
       const playerName = params.player_name;
       const entity = findPlayer(bot, playerName);
-      if (!entity) throw new Error(`Player "${playerName}" not found nearby.`);
+      if (!entity) throw new Error(playerNotTrackedMessage(playerName));
       ensureMovements(bot);
       const dist = params.follow_dist || 4;
       followingTarget = playerName;
@@ -797,12 +966,7 @@ async function handleRequest(method, params) {
     case "place_block": {
       if (!bot) throw new Error("No bot connected");
       const blockType = params.block_type;
-      const item = bot.inventory.items().find((i) => i.name === blockType);
-      if (!item) throw new Error(`No ${blockType} in inventory.`);
-      await bot.equip(item, "hand");
-      const refBlock = bot.blockAt(bot.entity.position.offset(0, -1, 0));
-      if (!refBlock) throw new Error("No reference block to place against.");
-      await bot.placeBlock(refBlock, new vec3(0, 1, 0));
+      await placeInventoryBlockNearBot(blockType);
       return `Placed ${blockType}.`;
     }
 
@@ -862,14 +1026,26 @@ async function handleRequest(method, params) {
       const mcData = (await import("minecraft-data")).default(bot.version);
       const bd = mcData.blocksByName[blockType];
       if (!bd) throw new Error(`Unknown block type: ${blockType}`);
-      const wanted = count || 1;
-      const positions = bot.findBlocks({ matching: bd.id, maxDistance: 32, count: wanted });
-      if (!positions.length) throw new Error(`No ${blockType} nearby (32 block radius).`);
+      const wanted = count || 8;
+      const positions = bot.findBlocks({ matching: bd.id, maxDistance: 64, count: wanted });
+      if (!positions.length) throw new Error(`No ${blockType} nearby (64 block radius).`);
       const targets = positions
         .map((pos) => bot.blockAt(pos))
         .filter((block) => block && block.name === blockType)
         .slice(0, wanted);
       if (!targets.length) throw new Error(`No reachable ${blockType} targets found.`);
+      // Check if bot has the required tool before attempting to collect
+      const requiredTool = mcUtils.getBlockTool(blockType);
+      if (requiredTool) {
+        const hasTool = bot.inventory.items().some((i) => i.name === requiredTool);
+        if (!hasTool) {
+          throw new Error(
+            `Need a ${requiredTool} to mine ${blockType}. ` +
+            `You have: ${bot.inventory.items().map((i) => `${i.name} x${i.count}`).join(", ") || "nothing"}. ` +
+            `Craft a ${requiredTool} first, then retry.`
+          );
+        }
+      }
       const beforePos = positionSummary(bot);
       const beforeInv = inventoryCounts(bot);
       logAction(`collect_blocks ${wanted}x ${blockType}: found ${targets.length} targets`);
@@ -1033,6 +1209,7 @@ async function handleRequest(method, params) {
           `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
         ].join("\n");
       } catch (e) {
+        console.error(`[socket] craft_recipe ${resolvedName} failed`, e?.stack || e);
         throw new Error(
           `Craft failed for ${resolvedName}: ${e.message}. ` +
           `Inventory: ${inventorySummary(inventoryCounts(bot))}.`,
@@ -1042,42 +1219,96 @@ async function handleRequest(method, params) {
 
     case "smelt_item": {
       if (!bot) throw new Error("No bot connected");
-      const itemName = params.item_name;
+      const requestedItemName = String(params.item_name || "");
+      const itemName = smeltInputNameAliases(requestedItemName);
       const num = params.num || 1;
       const mcData = (await import("minecraft-data")).default(bot.version);
+      const registry = bot.registry || mcData;
+      const itemsByName = registry.itemsByName || mcData.itemsByName;
+      const blocksByName = registry.blocksByName || mcData.blocksByName;
+      const beforePos = positionSummary(bot);
+      const beforeInv = inventoryCounts(bot);
+      let inputItem = itemsByName[itemName];
+      if (!inputItem) {
+        const fuzzy = _fuzzyLookup(itemName, itemsByName);
+        if (fuzzy) {
+          console.warn(`[socket] Fuzzy matched "${requestedItemName}" → "${fuzzy}"`);
+          inputItem = itemsByName[fuzzy];
+        }
+      }
+      if (!inputItem) throw new Error(`Unknown item: ${requestedItemName}`);
+      const inputStacks = bot.inventory.items()
+        .filter((item) => item.name === inputItem.name || item.type === inputItem.id);
+      const availableInput = inputStacks.reduce((total, item) => total + item.count, 0);
+      if (availableInput < num) {
+        throw new Error(`Not enough ${requestedItemName}: have ${availableInput}, need ${num}.`);
+      }
+      // Mineflayer transfer() validates against bot.registry. Use the live
+      // inventory stack type when available; minecraft-data ids can diverge
+      // across protocol/version mappings and trigger "Invalid itemType".
+      const inputType = inputStacks[0].type;
       // Find furnace
       let furnace = bot.findBlock({
-        matching: mcData.blocksByName.furnace?.id,
+        matching: blocksByName.furnace?.id,
         maxDistance: 8,
       });
       if (!furnace) throw new Error("No furnace nearby. Place one first.");
-      const container = await bot.openContainer(furnace);
-      // Add fuel if needed
-      if (!container.fuelItem()) {
-        const fuelItems = ["coal", "charcoal", "oak_log", "oak_planks"];
-        for (const fuelName of fuelItems) {
-          const fuelItem = mcData.itemsByName[fuelName];
-          if (fuelItem) {
-            try {
-              await container.putFuel(fuelItem.id, null, 1);
-              break;
-            } catch {}
+      if (bot.entity.position.distanceTo(furnace.position) > 4) {
+        await bot.pathfinder.goto(new pathfinder.goals.GoalNear(
+          furnace.position.x,
+          furnace.position.y,
+          furnace.position.z,
+          4,
+        ));
+        furnace = bot.blockAt(furnace.position);
+        if (!furnace || furnace.name !== "furnace") {
+          throw new Error("Furnace moved or disappeared before smelting.");
+        }
+      }
+      const furnaceWindow = await bot.openFurnace(furnace);
+      let total = 0;
+      try {
+        const currentInput = furnaceWindow.inputItem();
+        if (currentInput && currentInput.type !== inputType && currentInput.name !== inputItem.name) {
+          throw new Error(`Furnace already has ${currentInput.name || currentInput.displayName} as input.`);
+        }
+        if (!furnaceWindow.fuelItem()) {
+          const fuel = bestSmeltingFuel(bot, num);
+          if (!fuel) {
+            throw new Error(
+              `No fuel for smelting ${requestedItemName}. Need coal, charcoal, logs, planks, sticks, or another fuel.`,
+            );
+          }
+          await furnaceWindow.putFuel(fuel.item.type, null, fuel.countNeeded);
+        }
+        await furnaceWindow.putInput(inputType, null, num);
+        const idleDeadlineMs = 12000;
+        let lastOutputAt = Date.now();
+        while (total < num && Date.now() - lastOutputAt < idleDeadlineMs) {
+          await sleepMs(1000);
+          const output = furnaceWindow.outputItem();
+          if (!output) continue;
+          const taken = await furnaceWindow.takeOutput();
+          if (taken) {
+            total += taken.count;
+            lastOutputAt = Date.now();
           }
         }
+        try { if (furnaceWindow.inputItem()) await furnaceWindow.takeInput(); } catch {}
+        try { if (furnaceWindow.fuelItem()) await furnaceWindow.takeFuel(); } catch {}
+      } finally {
+        try { await bot.closeWindow(furnaceWindow); } catch {}
       }
-      // Add input
-      let inputItem = mcData.itemsByName[itemName];
-      if (!inputItem) {
-        const fuzzy = _fuzzyLookup(itemName, mcData.itemsByName);
-        if (fuzzy) {
-          console.warn(`[socket] Fuzzy matched "${itemName}" → "${fuzzy}"`);
-          inputItem = mcData.itemsByName[fuzzy];
-        }
+      const afterPos = positionSummary(bot);
+      const afterInv = inventoryCounts(bot);
+      if (total <= 0) {
+        throw new Error(`Failed to smelt ${requestedItemName}; no output was produced.`);
       }
-      if (!inputItem) throw new Error(`Unknown item: ${itemName}`);
-      await container.putInput(inputItem.id, null, num);
-      container.close();
-      return `Started smelting ${num}x ${itemName}. Check furnace later.`;
+      return [
+        `Smelted ${total}x ${requestedItemName}.`,
+        `Position: ${beforePos} -> ${afterPos}.`,
+        `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
+      ].join("\n");
     }
 
     case "clear_furnace": {
@@ -1088,11 +1319,11 @@ async function handleRequest(method, params) {
         maxDistance: 8,
       });
       if (!furnace) throw new Error("No furnace nearby.");
-      const container = await bot.openContainer(furnace);
+      const container = await bot.openFurnace(furnace);
       try { if (container.outputItem()) await container.takeOutput(); } catch {}
       try { if (container.inputItem()) await container.takeInput(); } catch {}
       try { if (container.fuelItem()) await container.takeFuel(); } catch {}
-      container.close();
+      try { await bot.closeWindow(container); } catch {}
       return "Furnace cleared.";
     }
 
@@ -1149,9 +1380,9 @@ async function handleRequest(method, params) {
       if (!bot) throw new Error("No bot connected");
       const playerName = params.player_name;
       const itemName = params.item_name;
-      const num = params.num || 1;
+      const num = params.num || 8;
       const playerEntity = findPlayer(bot, playerName);
-      if (!playerEntity) throw new Error(`Player "${playerName}" not found.`);
+      if (!playerEntity) throw new Error(playerNotTrackedMessage(playerName));
       // Navigate to player
       if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
       ensureMovements(bot);

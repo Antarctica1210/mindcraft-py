@@ -65,6 +65,7 @@ question:
 
 action_verb:
   en:
+    - "^\\s*(?:i\\s+)?(?:want|need|would\\s+like)\\s+(?:to\\s+)?(?:go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b"
     - "^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b"
   zh:
     - "^(去|走到|过来|跟我来|采集|拾取|开采|破坏|合成|制作|建造|攻击|装备|跟随|跟着|护送|寻找|搜索|放置|停下|不动|休息)"

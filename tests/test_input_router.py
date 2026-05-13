@@ -56,6 +56,8 @@ CASES: list[tuple[str, InputIntent]] = [
     ("collect 10 oak_log", InputIntent.ACTION_COMMAND),
     ("attack the zombie", InputIntent.ACTION_COMMAND),
     ("follow me", InputIntent.ACTION_COMMAND),
+    ("I want to eat some pork", InputIntent.ACTION_COMMAND),
+    ("I need to get wood", InputIntent.ACTION_COMMAND),
     ("mine", InputIntent.ACTION_COMMAND),  # single action verb
     ("挖10个橡木", InputIntent.ACTION_COMMAND),
     ("采5朵花", InputIntent.ACTION_COMMAND),

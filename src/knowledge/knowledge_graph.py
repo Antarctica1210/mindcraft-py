@@ -147,6 +147,11 @@ class KnowledgeGraph:
             ingredient_names = recipe.get("ingredient_names", [])
             if not isinstance(ingredient_names, list):
                 ingredient_names = []
+            ingredient_names = [
+                self._resolve_item_name(str(name))
+                for name in ingredient_names
+                if not self._is_empty_recipe_item(name)
+            ]
             in_shape = recipe.get("inShape")
             requires_table = bool(recipe.get("requires_table", False))
             requires_table = requires_table or self._shape_requires_table(in_shape)
@@ -197,7 +202,14 @@ class KnowledgeGraph:
         return name.lower().replace(" ", "_")
 
     @staticmethod
-    def _shape_requires_table(in_shape: Any) -> bool:
+    def _is_empty_recipe_item(value: Any) -> bool:
+        if value is None:
+            return True
+        text = str(value).strip().lower()
+        return text in {"", "air", "none", "null", "unknown_null"}
+
+    @classmethod
+    def _shape_requires_table(cls, in_shape: Any) -> bool:
         """Infer crafting-table need from recipe shape.
 
         The exported data can miss ``requires_table`` for shaped recipes.
@@ -205,11 +217,20 @@ class KnowledgeGraph:
         """
         if not isinstance(in_shape, list) or not in_shape:
             return False
-        height = len(in_shape)
-        width = 0
-        for row in in_shape:
-            if isinstance(row, list):
-                width = max(width, len([cell for cell in row if cell]))
+        occupied: list[tuple[int, int]] = []
+        for y, row in enumerate(in_shape):
+            if not isinstance(row, list):
+                continue
+            for x, cell in enumerate(row):
+                if cls._is_empty_recipe_item(cell):
+                    continue
+                occupied.append((x, y))
+        if not occupied:
+            return False
+        xs = [x for x, _ in occupied]
+        ys = [y for _, y in occupied]
+        width = max(xs) - min(xs) + 1
+        height = max(ys) - min(ys) + 1
         return width > 2 or height > 2
 
     def _ingredient_counts(self, recipe: dict[str, Any]) -> dict[str, int]:
@@ -221,13 +242,15 @@ class KnowledgeGraph:
                 if not isinstance(row, list):
                     continue
                 for cell in row:
-                    if not cell:
+                    if self._is_empty_recipe_item(cell):
                         continue
                     name = self._resolve_item_name(str(cell))
                     counts[name] = counts.get(name, 0) + 1
 
         if not counts:
             for name in recipe.get("ingredient_names", []) or []:
+                if self._is_empty_recipe_item(name):
+                    continue
                 norm = self._resolve_item_name(str(name))
                 counts[norm] = counts.get(norm, 0) + 1
 
@@ -297,6 +320,8 @@ class KnowledgeGraph:
         """Count exact item plus compatible category items."""
         name = self._resolve_item_name(item_name)
         exact = inventory.get(name, 0)
+        if name.endswith("_wool"):
+            return exact
         category = self._item_category(name)
         if category is None:
             return exact
@@ -420,6 +445,10 @@ class KnowledgeGraph:
         recipes = self._recipe_index.get(name)
         if recipes:
             return self._sort_recipes_for_inventory(recipes, inv_counts)
+        if name in self._items_by_name:
+            # The item exists but is not craftable. Do not fuzzy-match exact
+            # known items like cooked_porkchop to unrelated recipes.
+            return []
         # Fuzzy fallback
         fuzzy = self._fuzzy_match(name, list(self._recipe_index.keys()))
         if fuzzy:

@@ -318,7 +318,7 @@ class ActionExecutor:
 
     @staticmethod
     async def _give_player(
-        bridge: Any, player_name: str, item_name: str, num: int = 1,
+        bridge: Any, player_name: str, item_name: str, num: int = 8,
     ) -> Any:
         return await bridge.give_to_player(player_name, item_name, num)
 
@@ -333,7 +333,7 @@ class ActionExecutor:
         return await bridge.activate_block(block_type)
 
     @staticmethod
-    async def _collect_blocks(bridge: Any, block_type: str, count: int = 1) -> Any:
+    async def _collect_blocks(bridge: Any, block_type: str, count: int = 8) -> Any:
         return await bridge.collect_blocks(block_type, count)
 
     @staticmethod

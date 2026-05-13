@@ -282,6 +282,7 @@ async def _async_main(args: argparse.Namespace) -> None:
         while True:
             await asyncio.sleep(0.5)
     except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("=" * 180)
         logger.info("Interrupted — shutting down…")
     except Exception:
         logger.exception("Fatal error")
@@ -309,6 +310,7 @@ def main() -> None:
         pass
     finally:
         _stop_socket_server()
+    logger.info("=" * 180)
     logger.info("Goodbye.")
 
 

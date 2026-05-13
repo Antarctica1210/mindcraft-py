@@ -30,6 +30,22 @@ async def test_bed_plan_uses_inventory_matching_planks_and_wool() -> None:
     assert missing["missing_counts"] == {}
 
 
+async def test_bed_plan_requires_matching_wool_color() -> None:
+    kg = await _loaded_graph()
+    inventory = {
+        "oak_planks": 3,
+        "white_wool": 2,
+        "light_gray_wool": 2,
+        "crafting_table": 1,
+    }
+
+    missing = kg.get_missing_materials("bed", inventory=inventory)
+
+    assert missing["target"] == "white_bed"
+    assert missing["have_all"] is False
+    assert missing["missing_counts"] == {"white_wool": 1}
+
+
 async def test_bed_plan_reports_crafting_table_when_shape_exceeds_2x2() -> None:
     kg = await _loaded_graph()
     inventory = {"oak_planks": 3, "white_wool": 3}
@@ -54,6 +70,36 @@ async def test_crafting_table_plan_counts_four_planks() -> None:
     assert missing["target"] == "crafting_table"
     assert missing["ingredient_counts"] == {"oak_planks": 4}
     assert missing["missing_counts"] == {"oak_planks": 1}
+
+
+async def test_recipe_empty_placeholders_are_not_materials() -> None:
+    kg = await _loaded_graph()
+
+    pickaxe = kg.get_missing_materials(
+        "wooden_pickaxe",
+        inventory={"oak_planks": 3, "stick": 2, "crafting_table": 1},
+    )
+    furnace = kg.get_missing_materials(
+        "furnace",
+        inventory={"cobblestone": 8, "crafting_table": 1},
+    )
+
+    assert pickaxe["ingredient_counts"] == {"oak_planks": 3, "stick": 2}
+    assert pickaxe["missing_counts"] == {}
+    assert pickaxe["recipe"]["requires_table"] is True
+    assert furnace["ingredient_counts"] == {"cobblestone": 8}
+    assert furnace["missing_counts"] == {}
+    assert "unknown_null" not in kg.get_crafting_plan("wooden_pickaxe", inventory={})
+    assert "unknown_null" not in kg.get_crafting_plan("furnace", inventory={})
+
+
+async def test_known_non_craftable_item_is_not_fuzzy_matched_to_recipe() -> None:
+    kg = await _loaded_graph()
+
+    plan = kg.get_crafting_plan("cooked_porkchop", quantity=3, inventory={})
+
+    assert plan == "No recipe found for cooked_porkchop."
+    assert "decorated_pot" not in plan
 
 
 async def test_bed_target_prefers_existing_wool_color() -> None:

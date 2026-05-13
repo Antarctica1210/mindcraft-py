@@ -11,9 +11,10 @@ LLM, so the AgentLoop can dispatch to the right downstream path:
   - chitchat       → main LLM with tool_choice="none"
   - ambiguous      → AgentLoop asks player to clarify
 
-Pure regex/keyword classifier — no LLM call, sub-millisecond. Keyword tables
-live in ``config/intent_keywords.yaml`` and are hot-loadable. If the YAML
-file or pyyaml is missing, the built-in defaults below are used.
+Primary: pure regex/keyword classifier — no LLM call, sub-millisecond.
+Fallback: ``classify_async`` calls a lightweight LLM when regex confidence
+is low, catching cases regex misses (e.g. Chinese imperatives that don't
+start with a known action verb).
 
 See ``roadmap/05-python-refactor-plan.md`` Phase 1 for the design rationale.
 """
@@ -25,6 +26,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from llm.prompter import Prompter
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +103,11 @@ _BUILTIN_KEYWORDS: dict[str, dict[str, list[str]]] = {
     },
     "action_verb": {
         "en": [
+            r"^\s*(?:i\s+)?(?:want|need|would\s+like)\s+(?:to\s+)?"
+            r"(?:go|move|come|collect|gather|get|bring|fetch|mine|dig|break|"
+            r"craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|"
+            r"consume|place|put|drop|follow|escort|find|search|give|hand|"
+            r"take|grab|stop|stay|wait|sleep|rest)\b",
             r"^\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|"
             r"craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|"
             r"consume|place|put|drop|follow|escort|find|search|give|hand|"
@@ -154,8 +164,24 @@ class InputRouter:
         # → RouterDecision(intent=ACTION_COMMAND, matched_pattern="^(去|采集|...)")
     """
 
-    def __init__(self, keywords: dict[str, dict[str, list[str]]] | None = None):
+    # Minimal system prompt for LLM fallback classification — kept tiny so
+    # the call is fast and cheap (~50 input tokens + 1 output token).
+    _INTENT_CLASSIFY_SYSTEM = (
+        "Classify this Minecraft player message. "
+        "Reply with exactly one word: "
+        "'action' if it is a command or request for the bot to do something "
+        "(move, mine, craft, build, attack, collect, follow, give, place, "
+        "search, smelt, cook, etc.), or "
+        "'chat' if it is casual conversation, a greeting, a question, or small talk."
+    )
+
+    def __init__(
+        self,
+        keywords: dict[str, dict[str, list[str]]] | None = None,
+        prompter: Prompter | None = None,
+    ):
         kw = keywords or _BUILTIN_KEYWORDS
+        self._prompter = prompter
         self._tables = _CompiledTables(
             meta_command=self._compile_section(kw.get("meta_command", {})),
             feedback=self._compile_section(kw.get("feedback", {})),
@@ -169,7 +195,9 @@ class InputRouter:
     # ── Factory ────────────────────────────────────────────────────
 
     @classmethod
-    def from_config(cls, path: str | Path) -> InputRouter:
+    def from_config(
+        cls, path: str | Path, prompter: Prompter | None = None,
+    ) -> InputRouter:
         """Load keyword tables from YAML; fall back to built-ins on any error.
 
         Does NOT require pyyaml to be installed — missing dependency or
@@ -179,22 +207,22 @@ class InputRouter:
             import yaml  # type: ignore[import-not-found]
         except ImportError:
             logger.info("InputRouter: pyyaml not installed, using built-in keywords")
-            return cls()
+            return cls(prompter=prompter)
 
         try:
             with open(path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-            return cls(keywords=data)
+            return cls(keywords=data, prompter=prompter)
         except FileNotFoundError:
             logger.info(
                 "InputRouter: config %s not found, using built-in keywords", path,
             )
-            return cls()
+            return cls(prompter=prompter)
         except Exception:
             logger.exception(
                 "InputRouter: failed to load %s, falling back to built-ins", path,
             )
-            return cls()
+            return cls(prompter=prompter)
 
     # ── Classification ─────────────────────────────────────────────
 
@@ -244,6 +272,61 @@ class InputRouter:
             return RouterDecision(intent=InputIntent.AMBIGUOUS, confidence=0.6)
 
         return RouterDecision(intent=InputIntent.CHITCHAT, confidence=0.4)
+
+    # ── Async LLM fallback ──────────────────────────────────────────
+
+    async def classify_async(self, message: str) -> RouterDecision:
+        """Classify intent, falling back to LLM when regex confidence is low.
+
+        Runs the fast regex ``classify()`` first.  Only calls the LLM when
+        the result is a low-confidence guess (chitchat with conf ≤ 0.5, or
+        ambiguous) — this covers Chinese imperatives that don't start with
+        a known action verb, e.g. "用炉子烧4个煤".
+
+        If no prompter is configured, behaves identically to ``classify()``.
+        """
+        decision = self.classify(message)
+
+        # Only invoke LLM for low-confidence fallback cases.
+        needs_llm = (
+            self._prompter is not None
+            and (
+                (decision.intent == InputIntent.CHITCHAT and decision.confidence < 0.5)
+                or decision.intent == InputIntent.AMBIGUOUS
+            )
+        )
+        if not needs_llm or self._prompter is None:
+            return decision
+
+        try:
+            from llm.prompter import LLMInput
+
+            response = await self._prompter.send_request(LLMInput(
+                system_message=self._INTENT_CLASSIFY_SYSTEM,
+                history=[{"role": "user", "content": message}],
+                tool_choice="none",
+            ))
+            label = response.content.strip().lower()
+        except Exception:
+            logger.debug("InputRouter: LLM fallback failed, keeping regex result")
+            return decision
+
+        if "action" in label and "chat" not in label:
+            logger.info(
+                "InputRouter: LLM fallback overrode regex — %r → action_command",
+                decision.intent.value,
+            )
+            return RouterDecision(
+                intent=InputIntent.ACTION_COMMAND,
+                matched_pattern="llm-fallback",
+                confidence=0.85,
+            )
+
+        logger.debug(
+            "InputRouter: LLM fallback confirmed regex — %r (label=%r)",
+            decision.intent.value, label,
+        )
+        return decision
 
     # ── Internal ───────────────────────────────────────────────────
 

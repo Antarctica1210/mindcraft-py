@@ -270,21 +270,19 @@ class FileMemoryStore(MemoryStore):
                 score += 10.0
                 matched_on.append("name")
 
-            # Keyword match on name
+            # Keyword match on name — score proportional to coverage
             name_lower = record.name.lower()
-            for kw in keywords_lower:
-                if kw in name_lower:
-                    score += 5.0
-                    matched_on.append("name")
-                    break
+            name_matches = sum(1 for kw in keywords_lower if kw in name_lower)
+            if name_matches > 0:
+                score += 5.0 * (name_matches / len(keywords_lower))
+                matched_on.append("name")
 
-            # Keyword match on description + body
+            # Keyword match on description + body — score proportional to coverage
             text = (record.description + " " + record.body).lower()
-            for kw in keywords_lower:
-                if kw in text:
-                    score += 3.0
-                    matched_on.append("keyword")
-                    break
+            body_matches = sum(1 for kw in keywords_lower if kw in text)
+            if body_matches > 0:
+                score += 3.0 * (body_matches / len(keywords_lower))
+                matched_on.append("keyword")
 
             # Tag match
             if tags_set:

@@ -245,7 +245,7 @@ class SocketBridge:
             "tool_name": tool_name, "target": target,
         })
 
-    async def collect_blocks(self, block_type: str, count: int = 1) -> Any:
+    async def collect_blocks(self, block_type: str, count: int = 8) -> Any:
         """Mine and collect blocks."""
         return await self._request("collect_blocks", {
             "block_type": block_type, "count": count,
@@ -300,7 +300,7 @@ class SocketBridge:
         return await self._request("look_at_position", {"x": x, "y": y, "z": z})
 
     # ── Give ────────────────────────────────────────────────────────
-    async def give_to_player(self, player_name: str, item_name: str, num: int = 1) -> Any:
+    async def give_to_player(self, player_name: str, item_name: str, num: int = 8) -> Any:
         """Navigate to a player and give them items."""
         return await self._request("give_to_player", {
             "player_name": player_name, "item_name": item_name, "num": num,
@@ -416,8 +416,13 @@ class SocketBridge:
             method,
             _preview(params or {}),
         )
-        self._writer.write(payload.encode())
-        await self._writer.drain()
+        try:
+            self._writer.write(payload.encode())
+            await self._writer.drain()
+        except Exception as exc:
+            self._pending.pop(req_id, None)
+            self._mark_disconnected(SocketBridgeError(f"Socket write failed: {exc}"))
+            raise SocketBridgeError(f"Socket write failed: {exc}") from exc
 
         try:
             result = await asyncio.wait_for(fut, timeout=120)
@@ -445,16 +450,19 @@ class SocketBridge:
         """Read JSON-line messages from the server."""
         assert self._reader is not None
 
+        disconnect_error: SocketBridgeError | None = None
         while self._running:
             try:
                 line = await self._reader.readline()
-            except Exception:
+            except Exception as exc:
                 if self._running:
                     logger.exception("Read error in socket bridge")
+                disconnect_error = SocketBridgeError(f"Socket server read failed: {exc}")
                 break
 
             if not line:
                 logger.info("Socket server closed connection")
+                disconnect_error = SocketBridgeError("Socket server closed connection")
                 break
 
             try:
@@ -495,6 +503,25 @@ class SocketBridge:
 
                         task = asyncio.create_task(result)
                         task.add_done_callback(_done_callback)
+
+        if disconnect_error is None:
+            disconnect_error = SocketBridgeError("Socket bridge disconnected")
+        self._mark_disconnected(disconnect_error)
+
+    def _mark_disconnected(self, error: SocketBridgeError) -> None:
+        """Mark the bridge down and fail all pending requests immediately."""
+        if not self._running and not self._pending:
+            return
+        self._running = False
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_exception(error)
+        self._pending.clear()
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                pass
 
 
 def _preview(value: Any, *, limit: int = 500) -> str:
