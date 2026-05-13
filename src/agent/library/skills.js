@@ -3,12 +3,19 @@ import * as world from "./world.js";
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
+import { traceBotEvent } from "../trace_logger.js";
 
 const blockPlaceDelay = settings.block_place_delay == null ? 0 : settings.block_place_delay;
 const useDelay = blockPlaceDelay > 0;
 
 export function log(bot, message) {
+    const caller = new Error().stack?.split('\n')?.[2]?.trim();
+    traceBotEvent('skill.log', bot, { message, caller });
     bot.output += message + '\n';
+}
+
+function traceSkillCall(bot, skill, args = {}) {
+    traceBotEvent('skill.call', bot, { skill, args });
 }
 
 async function autoLight(bot) {
@@ -42,6 +49,7 @@ export async function craftRecipe(bot, itemName, num=1) {
      * @example
      * await skills.craftRecipe(bot, "stick");
      **/
+    traceSkillCall(bot, 'craftRecipe', { itemName, num });
     let placedTable = false;
 
     if (mc.getItemCraftingRecipes(itemName).length == 0) {
@@ -123,6 +131,7 @@ export async function wait(bot, milliseconds) {
      * @example
      * await skills.wait(bot, 1000);
      **/
+    traceSkillCall(bot, 'wait', { milliseconds });
     // setTimeout is disabled to prevent unawaited code, so this is a safe alternative that enables interrupts
     let timeLeft = milliseconds;
     let startTime = Date.now();
@@ -150,6 +159,7 @@ export async function smeltItem(bot, itemName, num=1) {
      * await skills.smeltItem(bot, "raw_iron");
      * await skills.smeltItem(bot, "beef");
      **/
+    traceSkillCall(bot, 'smeltItem', { itemName, num });
 
     if (!mc.isSmeltable(itemName)) {
         log(bot, `Cannot smelt ${itemName}. Hint: make sure you are smelting the 'raw' item.`);
@@ -160,6 +170,12 @@ export async function smeltItem(bot, itemName, num=1) {
     let furnaceBlock = undefined;
     const furnaceRange = 16;
     furnaceBlock = world.getNearestBlock(bot, 'furnace', furnaceRange);
+    traceBotEvent('skill.smeltItem.furnace_search', bot, {
+        itemName,
+        num,
+        furnaceRange,
+        furnaceBlock: furnaceBlock ? { name: furnaceBlock.name, position: furnaceBlock.position } : null
+    });
     if (!furnaceBlock){
         // Try to place furnace
         let hasFurnace = world.getInventoryCounts(bot)['furnace'] > 0;
@@ -182,6 +198,9 @@ export async function smeltItem(bot, itemName, num=1) {
 
     console.log('smelting...');
     const furnace = await bot.openFurnace(furnaceBlock);
+    traceBotEvent('skill.smeltItem.furnace_opened', bot, {
+        furnace: { name: furnaceBlock.name, position: furnaceBlock.position }
+    });
     // check if the furnace is already smelting something
     let input_item = furnace.inputItem();
     if (input_item && input_item.type !== mc.getItemId(itemName) && input_item.count > 0) {
@@ -204,6 +223,11 @@ export async function smeltItem(bot, itemName, num=1) {
     // fuel the furnace
     if (!furnace.fuelItem()) {
         let fuel = mc.getSmeltingFuel(bot);
+        traceBotEvent('skill.smeltItem.fuel_selected', bot, {
+            fuel,
+            itemName,
+            num
+        });
         if (!fuel) {
             log(bot, `You have no fuel to smelt ${itemName}, you need coal, charcoal, or wood.`);
             if (placedFurnace)
@@ -280,6 +304,7 @@ export async function clearNearestFurnace(bot) {
      * @example
      * await skills.clearNearestFurnace(bot);
      **/
+    traceSkillCall(bot, 'clearNearestFurnace');
     let furnaceBlock = world.getNearestBlock(bot, 'furnace', 32);
     if (!furnaceBlock) {
         log(bot, `No furnace nearby to clear.`);
@@ -320,6 +345,7 @@ export async function attackNearest(bot, mobType, kill=true) {
      * @example
      * await skills.attackNearest(bot, "zombie", true);
      **/
+    traceSkillCall(bot, 'attackNearest', { mobType, kill });
     bot.modes.pause('cowardice');
     if (mobType === 'drowned' || mobType === 'cod' || mobType === 'salmon' || mobType === 'tropical_fish' || mobType === 'squid')
         bot.modes.pause('self_preservation'); // so it can go underwater. TODO: have an drowning mode so we don't turn off all self_preservation
@@ -340,6 +366,7 @@ export async function attackEntity(bot, entity, kill=true) {
      * @example
      * await skills.attackEntity(bot, entity);
      **/
+    traceSkillCall(bot, 'attackEntity', { entity, kill });
 
     let pos = entity.position;
     await equipHighestAttack(bot)
@@ -376,6 +403,7 @@ export async function defendSelf(bot, range=9) {
      * @example
      * await skills.defendSelf(bot);
      * **/
+    traceSkillCall(bot, 'defendSelf', { range });
     bot.modes.pause('self_defense');
     bot.modes.pause('cowardice');
     let attacked = false;
@@ -425,6 +453,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
      * @example
      * await skills.collectBlock(bot, "oak_log");
      **/
+    traceSkillCall(bot, 'collectBlock', { blockType, num, exclude });
     if (num < 1) {
         log(bot, `Invalid number of blocks to collect: ${num}.`);
         return false;
@@ -536,6 +565,7 @@ export async function pickupNearbyItems(bot) {
      * @example
      * await skills.pickupNearbyItems(bot);
      **/
+    traceSkillCall(bot, 'pickupNearbyItems');
     const distance = 8;
     const getNearestItem = bot => bot.nearestEntity(entity => entity.name === 'item' && bot.entity.position.distanceTo(entity.position) < distance);
     let nearestItem = getNearestItem(bot);
@@ -570,6 +600,7 @@ export async function breakBlockAt(bot, x, y, z) {
      * let position = world.getPosition(bot);
      * await skills.breakBlockAt(bot, position.x, position.y - 1, position.x);
      **/
+    traceSkillCall(bot, 'breakBlockAt', { x, y, z });
     if (x == null || y == null || z == null) throw new Error('Invalid position to break block at.');
     let block = bot.blockAt(Vec3(x, y, z));
     if (block.name !== 'air' && block.name !== 'water' && block.name !== 'lava') {
@@ -624,6 +655,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
      * await skills.placeBlock(bot, "oak_log", p.x + 2, p.y, p.x);
      * await skills.placeBlock(bot, "torch", p.x + 1, p.y, p.x, 'side');
      **/
+    traceSkillCall(bot, 'placeBlock', { blockType, x, y, z, placeOn, dontCheat });
     const target_dest = new Vec3(Math.floor(x), Math.floor(y), Math.floor(z));
 
     if (blockType === 'air') {
@@ -797,6 +829,7 @@ export async function equip(bot, itemName) {
      * @example
      * await skills.equip(bot, "iron_pickaxe");
      **/
+    traceSkillCall(bot, 'equip', { itemName });
     if (itemName === 'hand') {
         await bot.unequip('hand');
         log(bot, `Unequipped hand.`);
@@ -845,6 +878,7 @@ export async function discard(bot, itemName, num=-1) {
      * @example
      * await skills.discard(bot, "oak_log");
      **/
+    traceSkillCall(bot, 'discard', { itemName, num });
     let discarded = 0;
     while (true) {
         let item = bot.inventory.findInventoryItem(itemName);
@@ -876,6 +910,7 @@ export async function putInChest(bot, itemName, num=-1) {
      * @example
      * await skills.putInChest(bot, "oak_log");
      **/
+    traceSkillCall(bot, 'putInChest', { itemName, num });
     let chest = world.getNearestBlock(bot, 'chest', 32);
     if (!chest) {
         log(bot, `Could not find a chest nearby.`);
@@ -905,6 +940,7 @@ export async function takeFromChest(bot, itemName, num=-1) {
      * @example
      * await skills.takeFromChest(bot, "oak_log");
      * **/
+    traceSkillCall(bot, 'takeFromChest', { itemName, num });
     let chest = world.getNearestBlock(bot, 'chest', 32);
     if (!chest) {
         log(bot, `Could not find a chest nearby.`);
@@ -949,6 +985,7 @@ export async function viewChest(bot) {
      * @example
      * await skills.viewChest(bot);
      * **/
+    traceSkillCall(bot, 'viewChest');
     let chest = world.getNearestBlock(bot, 'chest', 32);
     if (!chest) {
         log(bot, `Could not find a chest nearby.`);
@@ -979,6 +1016,7 @@ export async function consume(bot, itemName="") {
      * @example
      * await skills.eat(bot, "apple");
      **/
+    traceSkillCall(bot, 'consume', { itemName });
     let item, name;
     if (itemName) {
         item = bot.inventory.findInventoryItem(itemName);
@@ -1006,6 +1044,7 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
      * @example
      * await skills.giveToPlayer(bot, "oak_log", "player1");
      **/
+    traceSkillCall(bot, 'giveToPlayer', { itemType, username, num });
     if (bot.username === username) {
         log(bot, `You cannot give items to yourself.`);
         return false;
@@ -1073,6 +1112,7 @@ export async function goToGoal(bot, goal) {
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @param {pf.goals.Goal} goal, the goal to navigate to.
      **/
+    traceSkillCall(bot, 'goToGoal', { goal });
 
     const nonDestructiveMovements = new pf.Movements(bot);
     const dontBreakBlocks = ['glass', 'glass_pane'];
@@ -1191,6 +1231,7 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
      * let position = world.world.getNearestBlock(bot, "oak_log", 64).position;
      * await skills.goToPosition(bot, position.x, position.y, position.x + 20);
      **/
+    traceSkillCall(bot, 'goToPosition', { x, y, z, min_distance });
     if (x == null || y == null || z == null) {
         log(bot, `Missing coordinates, given x:${x} y:${y} z:${z}`);
         return false;
@@ -1245,6 +1286,7 @@ export async function goToNearestBlock(bot, blockType,  min_distance=2, range=64
      * @example
      * await skills.goToNearestBlock(bot, "oak_log", 64, 2);
      * **/
+    traceSkillCall(bot, 'goToNearestBlock', { blockType, min_distance, range });
     const MAX_RANGE = 512;
     if (range > MAX_RANGE) {
         log(bot, `Maximum search range capped at ${MAX_RANGE}. `);
@@ -1280,6 +1322,7 @@ export async function goToNearestEntity(bot, entityType, min_distance=2, range=6
      * @param {number} range, the range to look for the entity. Defaults to 64.
      * @returns {Promise<boolean>} true if the entity was reached, false otherwise.
      **/
+    traceSkillCall(bot, 'goToNearestEntity', { entityType, min_distance, range });
     let entity = world.getNearestEntityWhere(bot, entity => entity.name === entityType, range);
     if (!entity) {
         log(bot, `Could not find any ${entityType} in ${range} blocks.`);
@@ -1301,6 +1344,7 @@ export async function goToPlayer(bot, username, distance=3) {
      * @example
      * await skills.goToPlayer(bot, "player");
      **/
+    traceSkillCall(bot, 'goToPlayer', { username, distance });
     if (bot.username === username) {
         log(bot, `You are already at ${username}.`);
         return true;

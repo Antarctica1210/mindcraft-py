@@ -17,45 +17,16 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
-import { promises as fs } from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { trace, traceBotEvent, getTraceFile } from './trace_logger.js';
 
 // ── Trace logging (detailed operation tracing to file) ─────────────
 
 const _TRACE_ENABLED = true;  // set to false to disable trace logging
-let _traceDir = null;
 let _traceSeq = 0;
-let _traceFilename = null;
-
-function _getTraceDir(agent) {
-    if (!_traceDir) {
-        _traceDir = path.join(__dirname, `../../log-js`);
-        fs.mkdir(_traceDir, { recursive: true }).catch(() => {});
-    }
-    return _traceDir;
-}
 
 async function _traceAppend(agent, text) {
     if (!_TRACE_ENABLED) return;
-    try {
-        const dir = _getTraceDir(agent);
-        if (!_traceFilename) {
-            const date = new Date().toISOString().split('T')[0];
-            _traceFilename = path.join(dir, `trace_${date}.log`);
-            await fs.writeFile(_traceFilename,
-                `=== MINDRAFT TRACE LOG ===\n` +
-                `Started: ${new Date().toISOString()}\n` +
-                `Agent: ${agent.name}\n` +
-                `========================================\n\n`
-            );
-        }
-        const ts = new Date().toISOString();
-        await fs.appendFile(_traceFilename, `[${ts}] ${text}\n`);
-    } catch (_) { /* quiet */ }
+    trace('agent.trace_text', { agent: agent?.name, text });
 }
 
 function _fmtHistory(history) {
@@ -99,6 +70,13 @@ export class Agent {
         this.self_prompter = new SelfPrompter(this);
         convoManager.initAgent(this);
         await this.prompter.initExamples();
+        trace('agent.start', {
+            agent: this.name,
+            load_mem,
+            init_message,
+            count_id,
+            trace_file: getTraceFile()
+        });
 
         // load mem first before doing task
         let save_data = null;
@@ -117,6 +95,7 @@ export class Agent {
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
+        traceBotEvent('agent.bot_initialized', this.bot, { agent: this.name });
         
         // Connection Handler
         const onDisconnect = (event, reason) => {
@@ -145,6 +124,7 @@ export class Agent {
 
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
+            traceBotEvent('agent.login', this.bot, { agent: this.name });
             serverProxy.login();
             
             // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
@@ -170,6 +150,7 @@ export class Agent {
                 await new Promise((resolve) => setTimeout(resolve, 1000));
                 
                 console.log(`${this.name} spawned.`);
+                traceBotEvent('agent.spawn', this.bot, { agent: this.name });
                 this.clearBotLogs();
               
                 this._setupEventHandlers(save_data, init_message);
@@ -192,6 +173,7 @@ export class Agent {
 
             } catch (error) {
                 console.error('Error in spawn event:', error);
+                trace('agent.spawn.error', { agent: this.name, error });
                 process.exit(0);
             }
         });
@@ -217,6 +199,7 @@ export class Agent {
                 this.shut_up = false;
 
                 console.log(this.name, 'received message from', username, ':', message);
+                traceBotEvent('agent.chat.received', this.bot, { username, message });
 
                 if (convoManager.isOtherAgent(username)) {
                     console.warn('received whisper from other bot??')
@@ -227,6 +210,7 @@ export class Agent {
                 }
             } catch (error) {
                 console.error('Error handling message:', error);
+                trace('agent.chat.error', { username, message, error });
             }
         }
 
@@ -308,6 +292,7 @@ export class Agent {
         await this.checkTaskDone();
         if (!source || !message) {
             console.warn('Received empty message from', source);
+            trace('agent.handle_message.empty', { source, message });
             return false;
         }
 
@@ -325,6 +310,12 @@ export class Agent {
         await _traceAppend(this, `MSG #${_traceId} from=${source} max_responses=${max_responses === Infinity ? 'Infinity' : max_responses}`);
         await _traceAppend(this, `MESSAGE: ${message}`);
         await _traceAppend(this, `${'='.repeat(60)}`);
+        traceBotEvent('agent.handle_message.start', this.bot, {
+            trace_id: _traceId,
+            source,
+            message,
+            max_responses: max_responses === Infinity ? 'Infinity' : max_responses
+        });
 
         const self_prompt = source === 'system' || source === this.name;
         const from_other_bot = convoManager.isOtherAgent(source);
@@ -385,6 +376,11 @@ export class Agent {
             await _traceAppend(this, `HISTORY before LLM (${history.length} turns):${_fmtHistory(history)}`);
             let res = await this.prompter.promptConvo(history);
             await _traceAppend(this, `LLM RESPONSE: ""${res}""`);
+            trace('agent.llm_response', {
+                trace_id: _traceId,
+                iteration: i,
+                response: res
+            });
 
             console.log(`${this.name} full response to ${source}: ""${res}""`);
 
@@ -397,6 +393,12 @@ export class Agent {
             let command_name = containsCommand(res);
             if (command_name) { // contains query or command
                 await _traceAppend(this, `ITER #${i}: COMMAND detected → ${command_name} | args from: ${res}`);
+                traceBotEvent('agent.command.detected', this.bot, {
+                    trace_id: _traceId,
+                    iteration: i,
+                    command_name,
+                    command_text: res
+                });
                 res = truncCommandMessage(res); // everything after the command is ignored
                 this.history.add(this.name, res);
 
@@ -431,7 +433,21 @@ export class Agent {
                         this.routeResponse(source, pre_message);
                 }
 
+                traceBotEvent('agent.command.execute.start', this.bot, {
+                    trace_id: _traceId,
+                    iteration: i,
+                    command_name,
+                    command_text: res
+                });
+                const commandStarted = Date.now();
                 let execute_res = await executeCommand(this, res);
+                traceBotEvent('agent.command.execute.done', this.bot, {
+                    trace_id: _traceId,
+                    iteration: i,
+                    command_name,
+                    elapsed_ms: Date.now() - commandStarted,
+                    result: execute_res
+                });
 
                 console.log('Agent executed:', command_name, 'and got:', execute_res);
                 await _traceAppend(this, `ITER #${i}: EXECUTED ${command_name} → RESULT: ${execute_res || '(empty)'}`);
@@ -458,6 +474,11 @@ export class Agent {
         }
 
         await _traceAppend(this, `\nMSG #${_traceId} DONE — used_command=${used_command}\n`);
+        traceBotEvent('agent.handle_message.done', this.bot, {
+            trace_id: _traceId,
+            source,
+            used_command
+        });
         return used_command;
     }
 
@@ -493,6 +514,7 @@ export class Agent {
         message = (await handleTranslation(to_translate)).trim() + " " + remaining;
         // newlines are interpreted as separate chats, which triggers spam filters. replace them with spaces
         message = message.replaceAll('\n', ' ');
+        trace('agent.chat.send', { to_player, message });
 
         if (settings.only_chat_with.length > 0) {
             for (let username of settings.only_chat_with) {

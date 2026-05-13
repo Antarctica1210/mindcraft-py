@@ -1,6 +1,7 @@
 import { getBlockId, getItemId } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';
+import { trace, traceBotEvent } from '../trace_logger.js';
 
 let suppressNoDomainWarning = true;
 
@@ -95,8 +96,13 @@ function checkInInterval(number, lowerBound, upperBound, endpointType) {
  * @returns {string | Object}
  */
 export function parseCommandMessage(message) {
+    trace('command.parse.start', { message });
     const commandMatch = message.match(commandRegex);
-    if (!commandMatch) return `Command is incorrectly formatted`;
+    if (!commandMatch) {
+        const error = `Command is incorrectly formatted`;
+        trace('command.parse.error', { message, error });
+        return error;
+    }
 
     const commandName = "!"+commandMatch[1];
 
@@ -105,13 +111,20 @@ export function parseCommandMessage(message) {
     else args = [];
 
     const command = getCommand(commandName);
-    if(!command) return `${commandName} is not a command.`
+    if(!command) {
+        const error = `${commandName} is not a command.`;
+        trace('command.parse.error', { message, commandName, error });
+        return error;
+    }
 
     const params = commandParams(command);
     const paramNames = commandParamNames(command);
     
-    if (args.length !== params.length)
-        return `Command ${command.name} was given ${args.length} args, but requires ${params.length} args.`;
+    if (args.length !== params.length) {
+        const error = `Command ${command.name} was given ${args.length} args, but requires ${params.length} args.`;
+        trace('command.parse.error', { message, commandName, args, error });
+        return error;
+    }
 
     
     for (let i = 0; i < args.length; i++) {
@@ -140,8 +153,11 @@ export function parseCommandMessage(message) {
             default:
                 throw new Error(`Command '${commandName}' parameter '${paramNames[i]}' has an unknown type: ${param.type}`);
         }
-        if(arg === null || Number.isNaN(arg))
-            return `Error: Param '${paramNames[i]}' must be of type ${param.type}.`
+        if(arg === null || Number.isNaN(arg)) {
+            const error = `Error: Param '${paramNames[i]}' must be of type ${param.type}.`;
+            trace('command.parse.error', { message, commandName, args, param: paramNames[i], error });
+            return error;
+        }
 
         if(typeof arg === 'number') { //Check the domain of numbers
             const domain = param.domain;
@@ -153,7 +169,9 @@ export function parseCommandMessage(message) {
                 if (!domain[2]) domain[2] = '[)'; //By default, lower bound is included. Upper is not.
 
                 if(!checkInInterval(arg, ...domain)) {
-                    return `Error: Param '${paramNames[i]}' must be an element of ${domain[2][0]}${domain[0]}, ${domain[1]}${domain[2][1]}.`;
+                    const error = `Error: Param '${paramNames[i]}' must be an element of ${domain[2][0]}${domain[0]}, ${domain[1]}${domain[2][1]}.`;
+                    trace('command.parse.error', { message, commandName, args, param: paramNames[i], error });
+                    return error;
                     //Alternatively arg could be set to the nearest value in the domain.
                 }
             } else if (!suppressNoDomainWarning) {
@@ -161,16 +179,30 @@ export function parseCommandMessage(message) {
                 suppressNoDomainWarning = true; //Don't spam console. Only give the warning once.
             }
         } else if(param.type === 'BlockName') { //Check that there is a block with this name
-            if(getBlockId(arg) == null) return  `Invalid block type: ${arg}.`
+            if(getBlockId(arg) == null) {
+                const error = `Invalid block type: ${arg}.`;
+                trace('command.parse.error', { message, commandName, args, param: paramNames[i], error });
+                return error;
+            }
         } else if(param.type === 'ItemName') { //Check that there is an item with this name
-            if(getItemId(arg) == null) return `Invalid item type: ${arg}.`
+            if(getItemId(arg) == null) {
+                const error = `Invalid item type: ${arg}.`;
+                trace('command.parse.error', { message, commandName, args, param: paramNames[i], error });
+                return error;
+            }
         } else if(param.type === 'BlockOrItemName') {
-            if(getBlockId(arg) == null && getItemId(arg) == null) return  `Invalid block or item type: ${arg}.`
+            if(getBlockId(arg) == null && getItemId(arg) == null) {
+                const error = `Invalid block or item type: ${arg}.`;
+                trace('command.parse.error', { message, commandName, args, param: paramNames[i], error });
+                return error;
+            }
         }
         args[i] = arg;
     }
     
-    return { commandName, args };
+    const parsed = { commandName, args };
+    trace('command.parse.done', parsed);
+    return parsed;
 }
 
 export function truncCommandMessage(message) {
@@ -210,21 +242,54 @@ function numParams(command) {
 }
 
 export async function executeCommand(agent, message) {
+    const started = Date.now();
+    traceBotEvent('command.execute.start', agent.bot, { message });
     let parsed = parseCommandMessage(message);
-    if (typeof parsed === 'string')
+    if (typeof parsed === 'string') {
+        traceBotEvent('command.execute.parse_failed', agent.bot, {
+            message,
+            elapsed_ms: Date.now() - started,
+            result: parsed
+        });
         return parsed; //The command was incorrectly formatted or an invalid input was given.
+    }
     else {
         console.log('parsed command:', parsed);
+        traceBotEvent('command.execute.parsed', agent.bot, { message, parsed });
         const command = getCommand(parsed.commandName);
         let numArgs = 0;
         if (parsed.args) {
             numArgs = parsed.args.length;
         }
-        if (numArgs !== numParams(command))
-            return `Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`;
-        else {
-            const result = await command.perform(agent, ...parsed.args);
+        if (numArgs !== numParams(command)) {
+            const result = `Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`;
+            traceBotEvent('command.execute.bad_arg_count', agent.bot, {
+                message,
+                parsed,
+                elapsed_ms: Date.now() - started,
+                result
+            });
             return result;
+        }
+        else {
+            try {
+                const result = await command.perform(agent, ...parsed.args);
+                traceBotEvent('command.execute.done', agent.bot, {
+                    message,
+                    parsed,
+                    elapsed_ms: Date.now() - started,
+                    result
+                });
+                return result;
+            } catch (error) {
+                traceBotEvent('command.execute.error', agent.bot, {
+                    message,
+                    parsed,
+                    elapsed_ms: Date.now() - started,
+                    error
+                });
+                throw error;
+            }
         }
     }
 }

@@ -1,3 +1,5 @@
+import { traceBotEvent } from './trace_logger.js';
+
 export class ActionManager {
     constructor(agent) {
         this.agent = agent;
@@ -16,6 +18,7 @@ export class ActionManager {
     }
 
     async runAction(actionLabel, actionFn, { timeout, resume = false } = {}) {
+        traceBotEvent('action_manager.run_action', this.agent.bot, { actionLabel, timeout, resume });
         if (resume) {
             return this._executeResume(actionLabel, actionFn, timeout);
         } else {
@@ -25,6 +28,9 @@ export class ActionManager {
 
     async stop() {
         if (!this.executing) return;
+        traceBotEvent('action_manager.stop.start', this.agent.bot, {
+            currentActionLabel: this.currentActionLabel
+        });
         const timeout = setTimeout(() => {
             this.agent.cleanKill('Code execution refused stop after 10 seconds. Killing process.');
         }, 10000);
@@ -34,6 +40,9 @@ export class ActionManager {
             await new Promise(resolve => setTimeout(resolve, 300));
         }
         clearTimeout(timeout);
+        traceBotEvent('action_manager.stop.done', this.agent.bot, {
+            currentActionLabel: this.currentActionLabel
+        });
     } 
 
     cancelResume() {
@@ -60,6 +69,7 @@ export class ActionManager {
 
     async _executeAction(actionLabel, actionFn, timeout = 10) {
         let TIMEOUT;
+        const started = Date.now();
         try {
             if (this.last_action_time > 0) {
                 let time_diff = Date.now() - this.last_action_time;
@@ -81,6 +91,12 @@ export class ActionManager {
             }
             this.last_action_time = Date.now();
             console.log('executing code...\n');
+            traceBotEvent('action_manager.execute.start', this.agent.bot, {
+                actionLabel,
+                timeout,
+                currentActionLabel: this.currentActionLabel,
+                executing: this.executing
+            });
 
             // await current action to finish (executing=false), with 10 seconds timeout
             // also tell agent.bot to stop various actions
@@ -122,7 +138,13 @@ export class ActionManager {
             }
 
             // return action status report
-            return { success: true, message: output, interrupted, timedout };
+            const result = { success: true, message: output, interrupted, timedout };
+            traceBotEvent('action_manager.execute.done', this.agent.bot, {
+                actionLabel,
+                elapsed_ms: Date.now() - started,
+                result
+            });
+            return result;
         } catch (err) {
             this.executing = false;
             this.currentActionLabel = '';
@@ -132,6 +154,11 @@ export class ActionManager {
             console.error("Code execution triggered catch:", err);
             // Log the full stack trace
             console.error(err.stack);
+            traceBotEvent('action_manager.execute.error', this.agent.bot, {
+                actionLabel,
+                elapsed_ms: Date.now() - started,
+                error: err
+            });
             await this.stop();
             err = err.toString();
 
