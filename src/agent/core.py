@@ -19,7 +19,7 @@ import logging
 import re
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,6 +86,7 @@ _REUSABLE_WORKSTATIONS: frozenset[str] = frozenset({
     "blast_furnace",
     "smoker",
 })
+_DELIVERY_RESULT_RE = re.compile(r"\bGave\s+(?P<count>\d+)x\s+", re.IGNORECASE)
 
 # Loop guards for the plan loop (mitigations after the 2026-05-12 bed-craft
 # log where the model spammed searchWiki with paraphrased queries).
@@ -280,6 +281,24 @@ def _craft_target_from_message(message: str) -> str:
 def _log_preview(value: Any, *, limit: int = 500) -> str:
     text = "" if value is None else str(value)
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _action_succeeded(result: Any) -> bool:
+    if result is None:
+        return False
+    text = str(result).strip()
+    if not text:
+        return False
+    return not (text.startswith("FAILED:") or text.startswith("SKIPPED:"))
+
+
+def _delivery_succeeded(result: Any) -> bool:
+    if not _action_succeeded(result):
+        return False
+    match = _DELIVERY_RESULT_RE.search(str(result))
+    if match is None:
+        return True
+    return int(match.group("count")) > 0
 
 
 _NEARBY_MISS_RE = re.compile(
@@ -741,30 +760,38 @@ class Agent:
     # ── Observation ─────────────────────────────────────────────────
 
     async def observe(self) -> BotState:
-        """Gather full bot state via concurrent SocketBridge queries.
+        """Gather full bot state via sequential SocketBridge queries.
 
-        One ``asyncio.gather`` call covers observe / inventory / entities /
-        nearby blocks / current goal. Per-call failures fall back to defaults
-        without poisoning the others.
+        Keep the same five data sources as the full observation path, but send
+        them one by one to avoid overlapping socket-server handlers.
         """
         bridge = self._bridge
         if bridge is None:
             return BotState()
 
-        results = await asyncio.gather(
-            bridge.observe(),
-            bridge.get_inventory(),
-            bridge.get_entities(),
-            bridge.get_nearby_blocks(),
-            bridge.get_goal(),
-            return_exceptions=True,
-        )
-        base, inv_raw, ents_raw, blocks_raw, goal_raw = results
+        try:
+            base = await bridge.observe()
+        except Exception as exc:
+            logger.warning("observe() failed; stopping current agent loop: %r", exc)
+            self._running = False
+            return BotState()
 
         if isinstance(base, Exception) or not isinstance(base, dict):
             logger.warning("observe() failed; stopping current agent loop: %r", base)
             self._running = False
             return BotState()
+
+        async def optional_component(name: str, call: Callable[[], Awaitable[Any]]) -> Any:
+            try:
+                return await call()
+            except Exception as exc:
+                logger.warning("observe() component failed: %s error=%r", name, exc)
+                return exc
+
+        inv_raw = await optional_component("get_inventory", bridge.get_inventory)
+        ents_raw = await optional_component("get_entities", bridge.get_entities)
+        blocks_raw = await optional_component("get_nearby_blocks", bridge.get_nearby_blocks)
+        goal_raw = await optional_component("get_goal", bridge.get_goal)
 
         p = base.get("position", {}) or {}
 
@@ -1497,7 +1524,7 @@ class Agent:
                 self._active_task_add_event(
                     "action_result",
                     f"{cmd.name} args={cmd_args} kwargs={cmd_kwargs or {}} -> {result}",
-                    ok=not (result and "FAILED:" in result),
+                    ok=_action_succeeded(result),
                 )
                 await self._record_event("action_result", {
                     "command": cmd.name,
@@ -1696,7 +1723,10 @@ class Agent:
         ]:
             result = await self._execute_agent_command(command, [], kwargs)
             self._record_action(command, [], result)
-            ok = not (result is None or "FAILED:" in str(result))
+            ok = (
+                _delivery_succeeded(result)
+                if command == "givePlayer" else _action_succeeded(result)
+            )
             self._active_task_add_event(
                 "action_result",
                 f"{command} kwargs={kwargs} -> {result}",
@@ -1755,7 +1785,7 @@ class Agent:
             await self._send_chat(preface)
         result = await self._execute_agent_command(command, [], kwargs)
         self._record_action(command, [], result)
-        ok = not (result and "FAILED:" in result)
+        ok = _action_succeeded(result)
         self._active_task_add_event(
             "action_result",
             f"{command} kwargs={kwargs} -> {result}",
@@ -1842,7 +1872,7 @@ class Agent:
                 {"item_name": request.raw_item, "num": remaining_to_cook},
             )
             self._record_action("smeltItem", [], smelt_result)
-            smelt_ok = not (smelt_result is None or "FAILED:" in str(smelt_result))
+            smelt_ok = _action_succeeded(smelt_result)
             self._active_task_add_event(
                 "action_result",
                 (
@@ -1882,20 +1912,20 @@ class Agent:
         search_result = await self._execute_agent_command(
             "searchForBlock",
             [],
-            {"block_type": "furnace", "search_range": 16},
+            {"block_type": "furnace", "search_range": 64},
         )
         self._record_action("searchForBlock", [], search_result)
-        search_ok = not (search_result is None or "FAILED:" in str(search_result))
+        search_ok = _action_succeeded(search_result)
         self._active_task_add_event(
             "action_result",
-            "searchForBlock kwargs={'block_type': 'furnace', 'search_range': 16} "
+            "searchForBlock kwargs={'block_type': 'furnace', 'search_range': 64} "
             f"-> {search_result}",
             ok=search_ok,
         )
         await self._record_event("action_result", {
             "command": "searchForBlock",
             "args": [],
-            "kwargs": {"block_type": "furnace", "search_range": 16},
+            "kwargs": {"block_type": "furnace", "search_range": 64},
             "result": search_result,
             "direct": "cook_request",
         })
@@ -1911,7 +1941,7 @@ class Agent:
                 {"recipe_name": "furnace", "num": 1},
             )
             self._record_action("craftRecipe", [], craft_result)
-            craft_ok = not (craft_result is None or "FAILED:" in str(craft_result))
+            craft_ok = _action_succeeded(craft_result)
             self._active_task_add_event(
                 "action_result",
                 "craftRecipe kwargs={'recipe_name': 'furnace', 'num': 1} "
@@ -1935,7 +1965,7 @@ class Agent:
             {"block_type": "furnace"},
         )
         self._record_action("placeHere", [], place_result)
-        place_ok = not (place_result is None or "FAILED:" in str(place_result))
+        place_ok = _action_succeeded(place_result)
         self._active_task_add_event(
             "action_result",
             "placeHere kwargs={'block_type': 'furnace'} -> " f"{place_result}",
@@ -1993,7 +2023,7 @@ class Agent:
             ]:
                 result = await self._execute_agent_command(command, [], kwargs)
                 self._record_action(command, [], result)
-                ok = not (result is None or "FAILED:" in str(result))
+                ok = _action_succeeded(result)
                 self._active_task_add_event(
                     "action_result",
                     f"{command} kwargs={kwargs} -> {result}",
@@ -2025,7 +2055,10 @@ class Agent:
         ]:
             result = await self._execute_agent_command(command, [], kwargs)
             self._record_action(command, [], result)
-            ok = not (result is None or "FAILED:" in str(result))
+            ok = (
+                _delivery_succeeded(result)
+                if command == "givePlayer" else _action_succeeded(result)
+            )
             self._active_task_add_event(
                 "action_result",
                 f"{command} kwargs={kwargs} -> {result}",
@@ -2129,7 +2162,7 @@ class Agent:
                 recover_kwargs,
             )
             self._record_action(recover_command, recover_args, recover_result)
-            recover_ok = not (recover_result is None or "FAILED:" in str(recover_result))
+            recover_ok = _action_succeeded(recover_result)
             self._active_task_add_event(
                 "action_result",
                 f"{recover_command} kwargs={recover_kwargs} -> {recover_result}",
@@ -2216,7 +2249,7 @@ class Agent:
                 "fallback": "repeated_inventory",
             })
             await self._send_chat(f"Done: {result}")
-            if result is None or "FAILED:" in str(result):
+            if not _action_succeeded(result):
                 break
         return True
 
@@ -2320,7 +2353,7 @@ class Agent:
                 "result": result,
                 "skill": skill.name,
             })
-            if result is None or "FAILED:" in result:
+            if not _action_succeeded(result):
                 success = False
                 fallback = self._skill_failure_hint(match, result or "")
                 if fallback:
@@ -2849,7 +2882,7 @@ class Agent:
                     pt.command_name, pt.command_args, pt.command_kwargs,
                 )
 
-                if result is None or "failed" not in result:
+                if _action_succeeded(result):
                     # Stop following, then re-trigger the plan loop with
                     # the original goal to continue the multi-step task.
                     try:
@@ -3123,6 +3156,12 @@ class Agent:
                     f"{reason} Delivered requested item to player."
                     if reason else "Delivered requested item to player."
                 )
+            elif self._active_task_expects_delivery(task):
+                status = "failed"
+                reason = (
+                    f"{reason} No requested item was available to deliver."
+                    if reason else "No requested item was available to deliver."
+                )
         task.status = status
         if reason:
             task.events.append(ActiveTaskEvent(kind="finish_reason", message=reason, ok=None))
@@ -3152,6 +3191,15 @@ class Agent:
             and ("givePlayer" in event.message or "give_to_player" in event.message)
             and event.ok is not False
             for event in (task.events or [])
+        )
+
+    @staticmethod
+    def _active_task_expects_delivery(task: ActiveTask) -> bool:
+        message = task.original_message or ""
+        return (
+            _parse_cook_request(message) is not None
+            or _parse_craft_request(message) is not None
+            or _parse_item_request(message) is not None
         )
 
     async def _maybe_deliver_active_task_result(self) -> bool | None:

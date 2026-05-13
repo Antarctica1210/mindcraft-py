@@ -146,6 +146,12 @@ function smeltInputNameAliases(name) {
   }[name] || name;
 }
 
+function clampSearchRange(value, fallback = 64) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.max(1, n), 64);
+}
+
 function bestSmeltingFuel(b, neededItems) {
   try {
     const candidates = b.inventory.items()
@@ -637,7 +643,7 @@ async function handleRequest(method, params) {
 
     case "get_nearby_blocks": {
       if (!bot) throw new Error("No bot connected");
-      return nearbyBlockTypes(bot, params.distance || 16);
+      return nearbyBlockTypes(bot, clampSearchRange(params.distance, 16));
     }
 
     case "get_craftable": {
@@ -752,7 +758,7 @@ async function handleRequest(method, params) {
       if (!bot) throw new Error("No bot connected");
       if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
       const blockType = params.block_type;
-      const range = params.search_range || 64;
+      const range = clampSearchRange(params.search_range);
       const mcData = (await import("minecraft-data")).default(bot.version);
       const bd = mcData.blocksByName[blockType];
       if (!bd) throw new Error(`Unknown block type: ${blockType}`);
@@ -770,7 +776,7 @@ async function handleRequest(method, params) {
       if (!bot) throw new Error("No bot connected");
       if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
       const entityType = params.entity_type;
-      const range = params.search_range || 64;
+      const range = clampSearchRange(params.search_range);
       const mcData = (await import("minecraft-data")).default(bot.version);
       const eid = mcData.entitiesByName?.[entityType]?.id;
       if (!eid && entityType !== "player") throw new Error(`Unknown entity type: ${entityType}`);
@@ -882,7 +888,7 @@ async function handleRequest(method, params) {
     case "attack": {
       if (!bot) throw new Error("No bot connected");
       const entityType = params.entity_type;
-      const range = params.range || 64;
+      const range = clampSearchRange(params.range);
       let target = null;
       for (const [, e] of Object.entries(bot.entities || {})) {
         if (!e.position) continue;
@@ -976,8 +982,16 @@ async function handleRequest(method, params) {
       const mcData = (await import("minecraft-data")).default(bot.version);
       const bd = mcData.blocksByName[blockType];
       if (!bd) throw new Error(`Unknown block type: ${blockType}`);
-      const target = bot.findBlock({ matching: bd.id, maxDistance: 8 });
-      if (!target) throw new Error(`No ${blockType} nearby (8 block radius).`);
+      const target = bot.findBlock({ matching: bd.id, maxDistance: 64 });
+      if (!target) throw new Error(`No ${blockType} nearby (64 block radius).`);
+      if (bot.entity.position.distanceTo(target.position) > 4) {
+        await bot.pathfinder.goto(new pathfinder.goals.GoalNear(
+          target.position.x,
+          target.position.y,
+          target.position.z,
+          4,
+        ));
+      }
       await bot.activateBlock(target);
       return `Activated ${blockType}.`;
     }
@@ -1011,8 +1025,16 @@ async function handleRequest(method, params) {
       const mcData = (await import("minecraft-data")).default(bot.version);
       const bd = mcData.blocksByName[targetName];
       if (bd) {
-        const blk = bot.findBlock({ matching: bd.id, maxDistance: 8 });
+        const blk = bot.findBlock({ matching: bd.id, maxDistance: 64 });
         if (blk) {
+          if (bot.entity.position.distanceTo(blk.position) > 4) {
+            await bot.pathfinder.goto(new pathfinder.goals.GoalNear(
+              blk.position.x,
+              blk.position.y,
+              blk.position.z,
+              4,
+            ));
+          }
           await bot.activateBlock(blk);
           return `Used ${toolName} on block ${targetName}.`;
         }
@@ -1068,9 +1090,17 @@ async function handleRequest(method, params) {
         matching: ["chest", "trapped_chest", "ender_chest", "barrel", "shulker_box"].map(
           (n) => { try { const mcData = requireCache("minecraft-data"); return mcData(bot.version).blocksByName[n]?.id; } catch { return 0; } }
         ).filter(Boolean),
-        maxDistance: 16,
+        maxDistance: 64,
       });
       if (!chest) throw new Error("No chest nearby.");
+      if (bot.entity.position.distanceTo(chest.position) > 4) {
+        await bot.pathfinder.goto(new pathfinder.goals.GoalNear(
+          chest.position.x,
+          chest.position.y,
+          chest.position.z,
+          4,
+        ));
+      }
       const container = await bot.openContainer(chest);
       const items = container.containerItems().map((i) => `${i.name} x${i.count}`);
       container.close();
@@ -1083,9 +1113,17 @@ async function handleRequest(method, params) {
       const num = params.num || -1;
       const chest = bot.findBlock({
         matching: (block) => ["chest", "trapped_chest", "barrel"].includes(block.name),
-        maxDistance: 8,
+        maxDistance: 64,
       });
-      if (!chest) throw new Error("No chest nearby (8 block radius).");
+      if (!chest) throw new Error("No chest nearby (64 block radius).");
+      if (bot.entity.position.distanceTo(chest.position) > 4) {
+        await bot.pathfinder.goto(new pathfinder.goals.GoalNear(
+          chest.position.x,
+          chest.position.y,
+          chest.position.z,
+          4,
+        ));
+      }
       const container = await bot.openContainer(chest);
       let moved = 0;
       for (const item of container.containerItems()) {
@@ -1106,9 +1144,17 @@ async function handleRequest(method, params) {
       const num = params.num || -1;
       const chest = bot.findBlock({
         matching: (block) => ["chest", "trapped_chest", "barrel"].includes(block.name),
-        maxDistance: 8,
+        maxDistance: 64,
       });
       if (!chest) throw new Error("No chest nearby.");
+      if (bot.entity.position.distanceTo(chest.position) > 4) {
+        await bot.pathfinder.goto(new pathfinder.goals.GoalNear(
+          chest.position.x,
+          chest.position.y,
+          chest.position.z,
+          4,
+        ));
+      }
       const container = await bot.openContainer(chest);
       let taken = 0;
       for (const item of container.containerItems()) {
@@ -1153,7 +1199,7 @@ async function handleRequest(method, params) {
       if (!recipes.length) {
         craftingTable = bot.findBlock({
           matching: mcData.blocksByName.crafting_table?.id,
-          maxDistance: 16,
+          maxDistance: 64,
         });
         if (!craftingTable) {
           const hasTable = bot.inventory.items().some((i) => i.name === "crafting_table");
@@ -1250,7 +1296,7 @@ async function handleRequest(method, params) {
       // Find furnace
       let furnace = bot.findBlock({
         matching: blocksByName.furnace?.id,
-        maxDistance: 8,
+        maxDistance: 64,
       });
       if (!furnace) throw new Error("No furnace nearby. Place one first.");
       if (bot.entity.position.distanceTo(furnace.position) > 4) {
@@ -1294,8 +1340,6 @@ async function handleRequest(method, params) {
             lastOutputAt = Date.now();
           }
         }
-        try { if (furnaceWindow.inputItem()) await furnaceWindow.takeInput(); } catch {}
-        try { if (furnaceWindow.fuelItem()) await furnaceWindow.takeFuel(); } catch {}
       } finally {
         try { await bot.closeWindow(furnaceWindow); } catch {}
       }
@@ -1316,9 +1360,17 @@ async function handleRequest(method, params) {
       const mcData = (await import("minecraft-data")).default(bot.version);
       const furnace = bot.findBlock({
         matching: mcData.blocksByName.furnace?.id,
-        maxDistance: 8,
+        maxDistance: 64,
       });
       if (!furnace) throw new Error("No furnace nearby.");
+      if (bot.entity.position.distanceTo(furnace.position) > 4) {
+        await bot.pathfinder.goto(new pathfinder.goals.GoalNear(
+          furnace.position.x,
+          furnace.position.y,
+          furnace.position.z,
+          4,
+        ));
+      }
       const container = await bot.openFurnace(furnace);
       try { if (container.outputItem()) await container.takeOutput(); } catch {}
       try { if (container.inputItem()) await container.takeInput(); } catch {}
@@ -1405,6 +1457,9 @@ async function handleRequest(method, params) {
           tossed += count;
           if (tossed >= num) break;
         }
+      }
+      if (tossed <= 0) {
+        throw new Error(`Could not give ${itemName}: tossed 0 items.`);
       }
       return `Gave ${tossed}x ${itemName} to ${playerName}.`;
     }
@@ -1515,7 +1570,7 @@ async function handleRequest(method, params) {
           const mcData = (await import("minecraft-data")).default(bot.version);
           const bd = mcData.blocksByName[dt];
           if (!bd) continue;
-          doorBlock = bot.findBlock({ matching: bd.id, maxDistance: 16 });
+          doorBlock = bot.findBlock({ matching: bd.id, maxDistance: 64 });
           if (doorBlock) break;
         }
       }
@@ -1680,9 +1735,45 @@ const server = net.createServer((socket) => {
     return;
   }
   clientSocket = socket;
+  lineBuffer = "";
+  const requestQueue = [];
+  let processingRequests = false;
   console.log(`[socket-server] Client connected from ${socket.remoteAddress}:${socket.remotePort}`);
 
-  socket.on("data", async (chunk) => {
+  function writeResponse(payload) {
+    if (socket.destroyed) return;
+    try {
+      socket.write(JSON.stringify(payload) + "\n");
+    } catch (err) {
+      console.error("[socket-server] Failed to write response:", err.message);
+    }
+  }
+
+  async function processRequestQueue() {
+    if (processingRequests) return;
+    processingRequests = true;
+    try {
+      while (requestQueue.length && !socket.destroyed) {
+        const { id, method, params } = requestQueue.shift();
+        try {
+          const result = await handleRequest(method, params || {});
+          writeResponse({ id, ok: true, result });
+        } catch (err) {
+          writeResponse({ id, ok: false, error: err.message });
+        }
+
+        if (method === "close") {
+          requestQueue.length = 0;
+          socket.end();
+          break;
+        }
+      }
+    } finally {
+      processingRequests = false;
+    }
+  }
+
+  socket.on("data", (chunk) => {
     lineBuffer += chunk.toString();
     const lines = lineBuffer.split("\n");
     lineBuffer = lines.pop();
@@ -1692,26 +1783,19 @@ const server = net.createServer((socket) => {
 
       let req;
       try { req = JSON.parse(line); } catch {
-        socket.write(JSON.stringify({ id: null, ok: false, error: "Invalid JSON" }) + "\n");
+        writeResponse({ id: null, ok: false, error: "Invalid JSON" });
         continue;
       }
 
-      const { id, method, params } = req;
-      try {
-        const result = await handleRequest(method, params || {});
-        socket.write(JSON.stringify({ id, ok: true, result }) + "\n");
-      } catch (err) {
-        socket.write(JSON.stringify({ id, ok: false, error: err.message }) + "\n");
-      }
-
-      if (method === "close") {
-        socket.end();
-      }
+      requestQueue.push(req);
     }
+    void processRequestQueue();
   });
 
   socket.on("close", () => {
     console.log("[socket-server] Client disconnected");
+    requestQueue.length = 0;
+    lineBuffer = "";
     clientSocket = null;
     setTimeout(() => {
       if (!clientSocket) {
@@ -1725,6 +1809,8 @@ const server = net.createServer((socket) => {
 
   socket.on("error", (err) => {
     console.error("[socket-server] Socket error:", err.message);
+    requestQueue.length = 0;
+    lineBuffer = "";
     clientSocket = null;
   });
 });
