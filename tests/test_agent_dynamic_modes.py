@@ -418,7 +418,7 @@ async def test_cook_some_pork_reuses_furnace_and_delivers_cooked_food() -> None:
     used_command = await agent.handle_message("Wilson", "cook some pork")
 
     assert used_command is True
-    assert ("search_for_block", "furnace", 16) in bridge.calls
+    assert ("search_for_block", "furnace", 64) in bridge.calls
     assert ("smelt_item", "porkchop", 3) in bridge.calls
     assert ("go_to_player", "Wilson", 3) in bridge.calls
     assert ("give_to_player", "Wilson", "cooked_porkchop", 3) in bridge.calls
