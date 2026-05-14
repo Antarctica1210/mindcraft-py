@@ -112,6 +112,28 @@ class EmbeddingSettings:
 
 
 @dataclass
+class DispatchGateSettings:
+    """Optional local classifier used before direct shortcuts vs full planner."""
+
+    base_url: str = field(default_factory=lambda: _get("DISPATCH_GATE_BASE_URL", ""))
+    model: str = field(default_factory=lambda: _get("DISPATCH_GATE_MODEL", ""))
+    api_key: str = field(default_factory=lambda: _get("DISPATCH_GATE_API_KEY", "lm-studio"))
+    max_tokens: int = field(default_factory=lambda: _get_int("DISPATCH_GATE_MAX_TOKENS", 192))
+    timeout: float = field(default_factory=lambda: _get_float("DISPATCH_GATE_TIMEOUT", 5.0))
+    direct_confidence: float = field(
+        default_factory=lambda: _get_float("DISPATCH_GATE_DIRECT_CONFIDENCE", 0.85)
+    )
+    enabled: bool = field(default_factory=lambda: _get_bool(
+        "DISPATCH_GATE_ENABLED",
+        bool(_get("DISPATCH_GATE_BASE_URL", "") and _get("DISPATCH_GATE_MODEL", "")),
+    ))
+
+    @property
+    def configured(self) -> bool:
+        return self.enabled and bool(self.base_url and self.model)
+
+
+@dataclass
 class BotSettings:
     """Bot identity and runtime behaviour."""
 
@@ -145,6 +167,7 @@ class Settings:
 
     llm: LLMSettings = field(default_factory=LLMSettings)
     embedding: EmbeddingSettings = field(default_factory=EmbeddingSettings)
+    dispatch_gate: DispatchGateSettings = field(default_factory=DispatchGateSettings)
     bot: BotSettings = field(default_factory=BotSettings)
 
     # Convenience: log level

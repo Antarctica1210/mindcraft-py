@@ -468,18 +468,47 @@ function timeOfDay(b) {
   } catch { return ""; }
 }
 
+function entityDistance(b, entity) {
+  const dx = b.entity.position.x - entity.position.x;
+  const dy = b.entity.position.y - entity.position.y;
+  const dz = b.entity.position.z - entity.position.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function entityDisplayName(entity) {
+  return entity.name || entity.username || "unknown";
+}
+
+function entityMatchesType(entity, entityType) {
+  const wanted = String(entityType || "").toLowerCase();
+  if (!wanted) return true;
+  return entityDisplayName(entity).toLowerCase() === wanted ||
+    String(entity.type || "").toLowerCase() === wanted ||
+    String(entity.mobType || "").toLowerCase() === wanted ||
+    String(entity.username || "").toLowerCase() === wanted;
+}
+
 function nearbyEntities(b) {
   try {
-    const parts = [];
+    const candidates = [];
+    const counts = {};
     for (const [eid, entity] of Object.entries(b.entities || {})) {
-      if (parts.length >= 10) break;
       if (entity.name && entity.name !== "player" && entity.position) {
-        const dx = b.entity.position.x - entity.position.x;
-        const dy = b.entity.position.y - entity.position.y;
-        const dz = b.entity.position.z - entity.position.z;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        parts.push(`  ${entity.name} (${dist.toFixed(0)}m) [id:${eid}]`);
+        const name = entityDisplayName(entity);
+        const dist = entityDistance(b, entity);
+        counts[name] = (counts[name] || 0) + 1;
+        candidates.push({ eid, entity, name, dist });
       }
+    }
+    candidates.sort((a, b2) => a.dist - b2.dist);
+    const parts = [];
+    const countParts = Object.entries(counts)
+      .sort((a, b2) => b2[1] - a[1] || a[0].localeCompare(b2[0]))
+      .slice(0, 12)
+      .map(([name, count]) => `${name} x${count}`);
+    if (countParts.length) parts.push(`counts: ${countParts.join(", ")}`);
+    for (const item of candidates.slice(0, 10)) {
+      parts.push(`  ${item.name} (${item.dist.toFixed(0)}m) [id:${item.eid}]`);
     }
     return parts.join("\n");
   } catch { return ""; }
@@ -527,8 +556,67 @@ function allEntities(b) {
         health: e.health ?? 0,
       });
     }
+    const botPos = b.entity?.position;
+    if (botPos) {
+      result.sort((a, b2) => {
+        const da = Math.sqrt(
+          ((botPos.x - a.position.x) ** 2) +
+          ((botPos.y - a.position.y) ** 2) +
+          ((botPos.z - a.position.z) ** 2),
+        );
+        const db = Math.sqrt(
+          ((botPos.x - b2.position.x) ** 2) +
+          ((botPos.y - b2.position.y) ** 2) +
+          ((botPos.z - b2.position.z) ** 2),
+        );
+        return da - db;
+      });
+    }
     return result;
   } catch { return []; }
+}
+
+function entityCounts(b, distance = 64) {
+  try {
+    const counts = {};
+    for (const [, e] of Object.entries(b.entities || {})) {
+      if (!e.position) continue;
+      const dist = entityDistance(b, e);
+      if (dist > distance) continue;
+      const name = entityDisplayName(e);
+      if (name === "player") continue;
+      counts[name] = (counts[name] || 0) + 1;
+    }
+    return counts;
+  } catch { return {}; }
+}
+
+function countEntities(b, entityType, distance = 64) {
+  try {
+    const matches = [];
+    for (const [, e] of Object.entries(b.entities || {})) {
+      if (!e.position || !entityMatchesType(e, entityType)) continue;
+      const dist = entityDistance(b, e);
+      if (dist > distance) continue;
+      matches.push({
+        id: e.id || 0,
+        name: entityDisplayName(e),
+        type: e.type || "mob",
+        distance: Number(dist.toFixed(2)),
+        position: { x: e.position.x, y: e.position.y, z: e.position.z },
+        health: e.health ?? 0,
+      });
+    }
+    matches.sort((a, b2) => a.distance - b2.distance);
+    return {
+      entity_type: entityType || "",
+      range: distance,
+      count: matches.length,
+      entities: matches.slice(0, 20),
+    };
+  } catch {
+    return { entity_type: entityType || "", range: distance, count: 0, entities: [] };
+  }
 }
 
 function nearbyBlockTypes(b, distance = 16) {
@@ -631,6 +719,7 @@ async function handleRequest(method, params) {
         time_of_day: timeOfDay(bot),
         biome: "",
         entities_nearby: nearbyEntities(bot),
+        entity_counts: entityCounts(bot, 64),
         blocks_nearby: standingBlock(bot),
         players_nearby: nearbyPlayers(bot),
       };
@@ -639,6 +728,11 @@ async function handleRequest(method, params) {
     case "get_entities": {
       if (!bot) throw new Error("No bot connected");
       return allEntities(bot);
+    }
+
+    case "count_entities": {
+      if (!bot) throw new Error("No bot connected");
+      return countEntities(bot, params.entity_type, clampSearchRange(params.range, 64));
     }
 
     case "get_nearby_blocks": {
@@ -1083,6 +1177,75 @@ async function handleRequest(method, params) {
       ].filter(Boolean).join("\n");
     }
 
+    case "break_nearby_blocks": {
+      if (!bot) throw new Error("No bot connected");
+      const { block_type: blockType } = params;
+      const wanted = Math.max(1, Number(params.count || 1));
+      const searchRange = Math.min(clampSearchRange(params.range, 6), 16);
+      const mcData = (await import("minecraft-data")).default(bot.version);
+      const bd = mcData.blocksByName[blockType];
+      if (!bd) throw new Error(`Unknown block type: ${blockType}`);
+
+      const beforePos = positionSummary(bot);
+      const beforeInv = inventoryCounts(bot);
+      const positions = bot.findBlocks({
+        matching: bd.id,
+        maxDistance: searchRange,
+        count: wanted * 4,
+      });
+      const targets = [];
+      for (const pos of positions) {
+        const block = bot.blockAt(pos);
+        if (!block || block.name !== blockType) continue;
+        const distance = bot.entity.position.distanceTo(block.position.offset(0.5, 0.5, 0.5));
+        if (distance > 4.75) {
+          logAction(
+            `break_nearby_blocks ${blockType}: skipped ${pos} at distance ${distance.toFixed(1)}`,
+          );
+          continue;
+        }
+        if (typeof bot.canDigBlock === "function" && !bot.canDigBlock(block)) {
+          logAction(`break_nearby_blocks ${blockType}: cannot dig ${pos}`);
+          continue;
+        }
+        targets.push(block);
+        if (targets.length >= wanted) break;
+      }
+      if (!targets.length) {
+        throw new Error(`No breakable ${blockType} within ${searchRange} blocks and reach.`);
+      }
+
+      let broken = 0;
+      logAction(`break_nearby_blocks ${wanted}x ${blockType}: found ${targets.length} reachable targets`);
+      for (const block of targets) {
+        const current = bot.blockAt(block.position);
+        if (!current || current.name !== blockType) continue;
+        await bot.lookAt(current.position.offset(0.5, 0.5, 0.5), true);
+        await bot.dig(current);
+        broken++;
+        await sleepMs(150);
+      }
+
+      let pickupResult = "";
+      try {
+        pickupResult = await handleRequest("pickup_nearby_items", {
+          distance: Math.max(4, searchRange + 2),
+        });
+      } catch (err) {
+        pickupResult = `Pickup skipped: ${err.message || String(err)}`;
+      }
+      const afterPos = positionSummary(bot);
+      const afterInv = inventoryCounts(bot);
+      const detail = flushActionOutput();
+      return [
+        `Broke ${broken}x ${blockType}.`,
+        pickupResult,
+        `Position: ${beforePos} -> ${afterPos}.`,
+        `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
+        detail ? `Output:\n${detail}` : "",
+      ].filter(Boolean).join("\n");
+    }
+
     // ── Chest operations ────────────────────────────────────────────
     case "view_chest": {
       if (!bot) throw new Error("No bot connected");
@@ -1313,10 +1476,16 @@ async function handleRequest(method, params) {
       }
       const furnaceWindow = await bot.openFurnace(furnace);
       let total = 0;
+      const clearedInputItems = [];
       try {
         const currentInput = furnaceWindow.inputItem();
         if (currentInput && currentInput.type !== inputType && currentInput.name !== inputItem.name) {
-          throw new Error(`Furnace already has ${currentInput.name || currentInput.displayName} as input.`);
+          const takenInput = await furnaceWindow.takeInput();
+          if (takenInput) {
+            clearedInputItems.push(`${takenInput.count}x ${takenInput.name || takenInput.displayName}`);
+          } else {
+            throw new Error(`Furnace already has ${currentInput.name || currentInput.displayName} as input.`);
+          }
         }
         if (!furnaceWindow.fuelItem()) {
           const fuel = bestSmeltingFuel(bot, num);
@@ -1349,6 +1518,9 @@ async function handleRequest(method, params) {
         throw new Error(`Failed to smelt ${requestedItemName}; no output was produced.`);
       }
       return [
+        clearedInputItems.length
+          ? `Cleared furnace input: ${clearedInputItems.join(", ")}.`
+          : "",
         `Smelted ${total}x ${requestedItemName}.`,
         `Position: ${beforePos} -> ${afterPos}.`,
         `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
@@ -1650,6 +1822,8 @@ async function handleRequest(method, params) {
         observe: async () => handleRequest("observe", {}),
         inventory: async () => handleRequest("get_inventory", {}),
         entities: async () => handleRequest("get_entities", {}),
+        countEntities: async (entity_type, range = 64) =>
+          handleRequest("count_entities", { entity_type, range }),
         moveTo: async (x, y, z) => handleRequest("move_to", { x, y, z }),
         goToPlayer: async (player_name, closeness = 3) =>
           handleRequest("go_to_player", { player_name, closeness }),
@@ -1659,6 +1833,10 @@ async function handleRequest(method, params) {
           handleRequest("search_for_entity", { entity_type, search_range }),
         collectBlocks: async (block_type, count = 1) =>
           handleRequest("collect_blocks", { block_type, count }),
+        breakNearbyBlocks: async (block_type, count = 1, range = 6) =>
+          handleRequest("break_nearby_blocks", { block_type, count, range }),
+        pickupNearbyItems: async (distance = 8) =>
+          handleRequest("pickup_nearby_items", { distance }),
         attack: async (entity_type, range = 16) =>
           handleRequest("attack", { entity_type, range }),
         equip: async (item_name, destination = "hand") =>

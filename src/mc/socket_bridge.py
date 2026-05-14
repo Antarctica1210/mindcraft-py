@@ -130,6 +130,13 @@ class SocketBridge:
         """Return all nearby entities with positions and types."""
         return await self._request("get_entities")
 
+    async def count_entities(self, entity_type: str = "", range_val: float = 64) -> Any:
+        """Count nearby entities of a given type within a search range."""
+        return await self._request("count_entities", {
+            "entity_type": entity_type,
+            "range": range_val,
+        })
+
     async def get_nearby_blocks(self, distance: int = 16) -> Any:
         """Return list of nearby block type names."""
         return await self._request("get_nearby_blocks", {"distance": distance})
@@ -249,6 +256,14 @@ class SocketBridge:
         """Mine and collect blocks."""
         return await self._request("collect_blocks", {
             "block_type": block_type, "count": count,
+        })
+
+    async def break_nearby_blocks(
+        self, block_type: str, count: int = 1, range_val: float = 6,
+    ) -> Any:
+        """Break nearby reachable blocks directly and pick up drops."""
+        return await self._request("break_nearby_blocks", {
+            "block_type": block_type, "count": count, "range": range_val,
         })
 
     # ── Chest operations ────────────────────────────────────────────

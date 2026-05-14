@@ -74,6 +74,34 @@ class FakeBridge:
         self.calls.append(("get_entities",))
         return list(self.entities)
 
+    async def count_entities(self, entity_type: str = "", range_val: float = 64) -> dict[str, Any]:
+        self.calls.append(("count_entities", entity_type, range_val))
+        wanted = entity_type.lower()
+        matches: list[dict[str, Any]] = []
+        bx = float(self.position.get("x", 0.0))
+        by = float(self.position.get("y", 0.0))
+        bz = float(self.position.get("z", 0.0))
+        for entity in self.entities:
+            name = str(entity.get("name", "")).lower()
+            typ = str(entity.get("type", "")).lower()
+            if wanted and wanted not in {name, typ}:
+                continue
+            pos = entity.get("position", {}) or {}
+            dx = bx - float(pos.get("x", 0.0))
+            dy = by - float(pos.get("y", 0.0))
+            dz = bz - float(pos.get("z", 0.0))
+            dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+            if dist <= range_val:
+                copied = dict(entity)
+                copied["distance"] = dist
+                matches.append(copied)
+        return {
+            "entity_type": entity_type,
+            "range": range_val,
+            "count": len(matches),
+            "entities": matches[:20],
+        }
+
     async def get_nearby_blocks(self, distance: int = 16) -> list[str]:
         self.calls.append(("get_nearby_blocks", distance))
         return list(self.nearby_blocks)
@@ -95,6 +123,12 @@ class FakeBridge:
     async def collect_blocks(self, block_type: str, count: int = 1) -> str:
         self.calls.append(("collect_blocks", block_type, count))
         return f"collected {count} {block_type}"
+
+    async def break_nearby_blocks(
+        self, block_type: str, count: int = 1, range_val: float = 6,
+    ) -> str:
+        self.calls.append(("break_nearby_blocks", block_type, count, range_val))
+        return f"broke {count} {block_type}"
 
     async def move_to(self, x: float, y: float, z: float) -> str:
         self.calls.append(("move_to", x, y, z))
@@ -317,6 +351,14 @@ class SmartBridge(FakeBridge):
                 )
         self._add_item(block_type, count)
         return f"Collected {count}x {block_type}."
+
+    async def break_nearby_blocks(
+        self, block_type: str, count: int = 1, range_val: float = 6,
+    ) -> str:
+        self.calls.append(("break_nearby_blocks", block_type, count, range_val))
+        if "break_nearby_blocks" in self._response_overrides:
+            return self._response_overrides["break_nearby_blocks"]
+        return f"Broke {count}x {block_type}."
 
     async def give_to_player(
         self, player_name: str, item_name: str, num: int = 8,
