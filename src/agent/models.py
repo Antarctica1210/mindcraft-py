@@ -79,6 +79,7 @@ class BotState:
     # ── Parallel-fetched structured details ─────────────────────────
     inventory: list[InventoryItem] = field(default_factory=list)
     entities: list[EntityInfo] = field(default_factory=list)
+    entity_counts: dict[str, int] = field(default_factory=dict)
     nearby_block_types: list[str] = field(default_factory=list)
     current_goal: str | None = None
 

@@ -6,6 +6,7 @@ import * as skills from './library/skills.js';
 import * as world from './library/world.js';
 import { Vec3 } from 'vec3';
 import {ESLint} from "eslint";
+import { trace, traceBotEvent } from './trace_logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +30,10 @@ export class Coder {
     }
 
     async generateCode(agent_history) {
+        const started = Date.now();
+        traceBotEvent('coder.generate.start', this.agent.bot, {
+            history_turns: agent_history.getHistory().length
+        });
         this.agent.bot.modes.pause('unstuck');
         lockdown();
         // this message history is transient and only maintained in this function
@@ -43,8 +48,10 @@ export class Coder {
         for (let i=0; i<MAX_ATTEMPTS; i++) {
             if (this.agent.bot.interrupt_code)
                 return null;
+            traceBotEvent('coder.generate.attempt.start', this.agent.bot, { attempt: i + 1, max_attempts: MAX_ATTEMPTS });
             const messages_copy = JSON.parse(JSON.stringify(messages));
             let res = await this.agent.prompter.promptCoding(messages_copy);
+            trace('coder.generate.llm_response', { attempt: i + 1, response: res });
             if (this.agent.bot.interrupt_code)
                 return null;
             let contains_code = res.indexOf('```') !== -1;
@@ -59,6 +66,10 @@ export class Coder {
                 
                 if (no_code_failures >= MAX_NO_CODE) {
                     console.warn("Action failed, agent would not write code.");
+                    traceBotEvent('coder.generate.no_code_failed', this.agent.bot, {
+                        attempt: i + 1,
+                        elapsed_ms: Date.now() - started
+                    });
                     return 'Action failed, agent would not write code.';
                 }
                 messages.push({
@@ -70,26 +81,35 @@ export class Coder {
                 continue;
             }
             code = res.substring(res.indexOf('```')+3, res.lastIndexOf('```'));
+            trace('coder.generate.code_extracted', { attempt: i + 1, code });
             const result = await this._stageCode(code);
             const executionModule = result.func;
             const lintResult = await this._lintCode(result.src_lint_copy);
             if (lintResult) {
                 const message = 'Error: Code lint error:'+'\n'+lintResult+'\nPlease try again.';
                 console.warn("Linting error:"+'\n'+lintResult+'\n');
+                trace('coder.generate.lint_error', { attempt: i + 1, lintResult });
                 messages.push({ role: 'system', content: message });
                 continue;
             }
             if (!executionModule) {
                 console.warn("Failed to stage code, something is wrong.");
+                traceBotEvent('coder.generate.stage_failed', this.agent.bot, { attempt: i + 1 });
                 return 'Failed to stage code, something is wrong.';
             }
 
             try {
                 console.log('Executing code...');
+                traceBotEvent('coder.execute_generated.start', this.agent.bot, { attempt: i + 1, code });
                 await executionModule.main(this.agent.bot);
 
                 const code_output = this.agent.actions.getBotOutputSummary();
                 const summary = "Agent wrote this code: \n```" + this._sanitizeCode(code) + "```\nCode Output:\n" + code_output;
+                traceBotEvent('coder.execute_generated.done', this.agent.bot, {
+                    attempt: i + 1,
+                    elapsed_ms: Date.now() - started,
+                    code_output
+                });
                 return summary;
             } catch (e) {
                 if (this.agent.bot.interrupt_code)
@@ -97,6 +117,10 @@ export class Coder {
                 
                 console.warn('Generated code threw error: ' + e.toString());
                 console.warn('trying again...');
+                traceBotEvent('coder.execute_generated.error', this.agent.bot, {
+                    attempt: i + 1,
+                    error: e
+                });
 
                 const code_output = this.agent.actions.getBotOutputSummary();
 
@@ -110,6 +134,10 @@ export class Coder {
                 });
             }
         }
+        traceBotEvent('coder.generate.failed', this.agent.bot, {
+            elapsed_ms: Date.now() - started,
+            max_attempts: MAX_ATTEMPTS
+        });
         return `Code generation failed after ${MAX_ATTEMPTS} attempts.`;
     }
     
@@ -157,12 +185,14 @@ export class Coder {
     // write custom code to file and import it
     // write custom code to file and prepare for evaluation
     async _stageCode(code) {
+        trace('coder.stage.start', { code });
         code = this._sanitizeCode(code);
         let src = '';
         code = code.replaceAll('console.log(', 'log(bot,');
         code = code.replaceAll('log("', 'log(bot,"');
 
         console.log(`Generated code: """${code}"""`);
+        trace('coder.stage.sanitized', { code });
 
         // this may cause problems in callback functions
         code = code.replaceAll(';\n', '; if(bot.interrupt_code) {log(bot, "Code interrupted.");return;}\n');
@@ -183,6 +213,7 @@ export class Coder {
         this.file_counter++;
         
         let write_result = await this._writeFilePromise('.' + this.fp + filename, src);
+        trace('coder.stage.write', { filename: '.' + this.fp + filename, write_result });
         // This is where we determine the environment the agent's code should be exposed to.
         // It will only have access to these things, (in addition to basic javascript objects like Array, Object, etc.)
         // Note that the code may be able to modify the exposed objects.

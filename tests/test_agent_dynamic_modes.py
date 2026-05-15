@@ -8,6 +8,7 @@ from conftest import FakeBridge
 from agent.core import Agent
 from agent.models import AgentConfig, BotState, EntityInfo, Position
 from agent.modes import BehaviorMode, ModeEvaluator
+from llm.dispatch_gate import DispatchDecision
 from llm.message_builder import MessageBuilder
 from llm.prompter import LLMInput, LLMOutput, ToolCallFunction, ToolCallOutput
 
@@ -116,6 +117,72 @@ async def test_player_command_preserves_sender_casing() -> None:
 
     assert result == "went to Wilson"
     assert ("go_to_player", "Wilson", 3) in bridge.calls
+
+
+async def test_observe_keeps_entity_counts_beyond_display_cap() -> None:
+    bridge = FakeBridge()
+    bridge.entities = [
+        {
+            "id": i,
+            "name": "villager",
+            "type": "mob",
+            "position": {"x": float(i + 1), "y": 64.0, "z": 0.0},
+            "health": 20,
+        }
+        for i in range(25)
+    ]
+    bridge.entities.append({
+        "id": 99,
+        "name": "chicken",
+        "type": "animal",
+        "position": {"x": 40.0, "y": 64.0, "z": 0.0},
+        "health": 4,
+    })
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+
+    state = await agent.observe()
+
+    assert state.entity_counts["villager"] == 25
+    assert state.entity_counts["chicken"] == 1
+    assert len(state.entities) == 20
+    assert "chicken x1" in state.entities_nearby
+
+
+async def test_count_entities_command_reports_matching_count() -> None:
+    bridge = FakeBridge()
+    bridge.entities = [
+        {
+            "id": 1,
+            "name": "chicken",
+            "type": "animal",
+            "position": {"x": 3.0, "y": 64.0, "z": 0.0},
+            "health": 4,
+        },
+        {
+            "id": 2,
+            "name": "chicken",
+            "type": "animal",
+            "position": {"x": 7.0, "y": 64.0, "z": 0.0},
+            "health": 4,
+        },
+        {
+            "id": 3,
+            "name": "cow",
+            "type": "animal",
+            "position": {"x": 2.0, "y": 64.0, "z": 0.0},
+            "health": 10,
+        },
+    ]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command("countEntities", ["chicken", 64])
+
+    assert "Found 2 chicken within 64" in result
+    assert ("count_entities", "chicken", 64) in bridge.calls
 
 
 async def test_come_to_me_uses_direct_action_without_llm() -> None:
@@ -418,12 +485,163 @@ async def test_cook_some_pork_reuses_furnace_and_delivers_cooked_food() -> None:
     used_command = await agent.handle_message("Wilson", "cook some pork")
 
     assert used_command is True
-    assert ("search_for_block", "furnace", 16) in bridge.calls
+    assert ("search_for_block", "furnace", 64) in bridge.calls
     assert ("smelt_item", "porkchop", 3) in bridge.calls
     assert ("go_to_player", "Wilson", 3) in bridge.calls
     assert ("give_to_player", "Wilson", "cooked_porkchop", 3) in bridge.calls
     assert not any(call[0] == "craft_recipe" for call in bridge.calls)
     assert not any(call[0] == "place_block" for call in bridge.calls)
+
+
+async def test_compound_cook_request_goes_to_llm_instead_of_direct_shortcuts() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = []
+    bridge.entities = [
+        {
+            "name": "cow",
+            "type": "animal",
+            "position": {"x": 5, "y": 64, "z": 0},
+            "health": 10,
+        },
+    ]
+    agent = Agent(AgentConfig(name="bot", max_commands=3))
+    agent._bridge = bridge
+    agent._running = True
+    agent._prompter = object()  # type: ignore[assignment]
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    plan_calls = 0
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        nonlocal plan_calls
+        plan_calls += 1
+        assert tool_choice == "auto"
+        return LLMOutput(content='!searchForEntity("cow", 64)', model="fake")
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message(
+        "Wilson",
+        "pick up your nearby beef and cook them",
+        max_responses=1,
+    )
+
+    assert used_command is True
+    assert plan_calls == 1
+    assert ("search_for_entity", "cow", 64) in bridge.calls
+    assert not any(call[0] == "give_to_player" and call[2] == "beef" for call in bridge.calls)
+    assert not any("I only have enough raw beef" in chat for chat in bridge.chats)
+
+
+async def test_failed_direct_cook_falls_back_to_one_llm_attempt() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = []
+    agent = Agent(AgentConfig(name="bot", max_commands=3))
+    agent._bridge = bridge
+    agent._running = True
+    agent._prompter = object()  # type: ignore[assignment]
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    plan_calls = 0
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        nonlocal plan_calls
+        plan_calls += 1
+        assert tool_choice == "auto"
+        return LLMOutput(content='!searchForEntity("cow", 64)', model="fake")
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "cook some beef")
+
+    assert used_command is True
+    assert plan_calls == 1
+    assert ("search_for_entity", "cow", 64) in bridge.calls
+    assert any("I'll try one fallback plan" in chat for chat in bridge.chats)
+
+
+async def test_cook_task_retries_smelt_after_successful_furnace_clear() -> None:
+    class PlannerGate:
+        direct_confidence = 0.85
+
+        async def classify(self, _message: str, _state: BotState) -> DispatchDecision:
+            return DispatchDecision(
+                route="llm_planner",
+                task_shape="compound",
+                confidence=0.91,
+                reason="Exercise planner clear-furnace recovery.",
+            )
+
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "mutton", "count": 6}, {"name": "stick", "count": 8}]
+    bridge.nearby_blocks = ["furnace", "stone"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._prompter = object()  # type: ignore[assignment]
+    agent._dispatch_gate = PlannerGate()  # type: ignore[assignment]
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        assert tool_choice == "auto"
+        return LLMOutput(content="!clearFurnace()", model="fake")
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "cook 6 mutton", max_responses=1)
+
+    assert used_command is True
+    assert ("clear_furnace",) in bridge.calls
+    assert ("search_for_block", "furnace", 64) in bridge.calls
+    assert ("smelt_item", "mutton", 6) in bridge.calls
+    assert ("go_to_player", "Wilson", 3) in bridge.calls
+    assert ("give_to_player", "Wilson", "cooked_mutton", 6) in bridge.calls
+    assert agent._active_task is None
+
+
+async def test_dispatch_gate_can_force_full_planner_over_direct_cook() -> None:
+    class PlannerGate:
+        direct_confidence = 0.85
+
+        async def classify(self, _message: str, _state: BotState) -> DispatchDecision:
+            return DispatchDecision(
+                route="llm_planner",
+                task_shape="compound",
+                confidence=0.93,
+                reason="Needs multiple steps.",
+                requested_outputs=["cooked_porkchop"],
+                required_steps=["collect_porkchop", "smelt", "deliver"],
+            )
+
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "porkchop", "count": 3}]
+    agent = Agent(AgentConfig(name="bot", max_commands=3))
+    agent._bridge = bridge
+    agent._running = True
+    agent._prompter = object()  # type: ignore[assignment]
+    agent._dispatch_gate = PlannerGate()  # type: ignore[assignment]
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    plan_calls = 0
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        nonlocal plan_calls
+        plan_calls += 1
+        assert tool_choice == "auto"
+        return LLMOutput(content='!searchForEntity("pig", 64)', model="fake")
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "cook some pork", max_responses=1)
+
+    assert used_command is True
+    assert plan_calls == 1
+    assert ("search_for_entity", "pig", 64) in bridge.calls
+    assert not any(call[0] == "smelt_item" for call in bridge.calls)
 
 
 async def test_preflight_skips_crafting_furnace_when_one_is_nearby() -> None:
@@ -495,6 +713,24 @@ async def test_get_some_wood_defaults_to_8_and_delivers_to_player() -> None:
     assert ("collect_blocks", "oak_log", 8) in bridge.calls
     assert ("go_to_player", "Wilson", 3) in bridge.calls
     assert ("give_to_player", "Wilson", "oak_log", 8) in bridge.calls
+
+
+async def test_break_nearby_blocks_command_dispatches() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command(
+        "breakNearbyBlocks",
+        ["tall_grass", 3],
+        {"range": 5},
+    )
+
+    assert result == "broke 3 tall_grass"
+    assert ("break_nearby_blocks", "tall_grass", 3, 5) in bridge.calls
 
 
 async def test_give_item_uses_inventory_and_defaults_to_8() -> None:

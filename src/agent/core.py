@@ -19,11 +19,12 @@ import logging
 import re
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from llm import ExampleStore, InputIntent, InputRouter, Prompter
+from llm.dispatch_gate import DispatchDecision, DispatchGate
 from llm.message_builder import CommandDef, ConversationTurn, MessageBuilder
 from llm.prompter import LLMInput, LLMOutput
 from llm.tool_parser import parse_response
@@ -54,6 +55,7 @@ _QUERY_COMMANDS: frozenset[str] = frozenset({
     "inventory",
     "goal",
     "entities",
+    "countEntities",
     "nearbyBlocks",
     "craftable",
     "help",
@@ -64,6 +66,7 @@ _QUERY_COMMANDS: frozenset[str] = frozenset({
 })
 _PRE_ACTION_OBSERVE_COMMANDS: frozenset[str] = frozenset({
     "attack",
+    "breakNearbyBlocks",
     "collectBlocks",
     "consume",
     "craftRecipe",
@@ -86,6 +89,7 @@ _REUSABLE_WORKSTATIONS: frozenset[str] = frozenset({
     "blast_furnace",
     "smoker",
 })
+_DELIVERY_RESULT_RE = re.compile(r"\bGave\s+(?P<count>\d+)x\s+", re.IGNORECASE)
 
 # Loop guards for the plan loop (mitigations after the 2026-05-12 bed-craft
 # log where the model spammed searchWiki with paraphrased queries).
@@ -280,6 +284,24 @@ def _craft_target_from_message(message: str) -> str:
 def _log_preview(value: Any, *, limit: int = 500) -> str:
     text = "" if value is None else str(value)
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _action_succeeded(result: Any) -> bool:
+    if result is None:
+        return False
+    text = str(result).strip()
+    if not text:
+        return False
+    return not (text.startswith("FAILED:") or text.startswith("SKIPPED:"))
+
+
+def _delivery_succeeded(result: Any) -> bool:
+    if not _action_succeeded(result):
+        return False
+    match = _DELIVERY_RESULT_RE.search(str(result))
+    if match is None:
+        return True
+    return int(match.group("count")) > 0
 
 
 _NEARBY_MISS_RE = re.compile(
@@ -519,6 +541,31 @@ def _parse_cook_request(message: str) -> CookRequest | None:
     return None
 
 
+def _cook_request_is_compound(message: str) -> bool:
+    """Return true when cooking is only one step of a larger gather/kill flow."""
+    if _parse_cook_request(message) is None:
+        return False
+    text = message.strip().lower()
+    return bool(
+        re.search(
+            r"\b("
+            r"pick\s*up|pickup|grab|take|get|collect|gather|fetch|find|search|"
+            r"hunt|kill|attack"
+            r")\b|捡|拾取|拿|找|寻找|收集|杀|打|猎|附近|旁边|nearby",
+            text,
+        )
+    )
+
+
+def _memory_record_is_failed_task(record: Any) -> bool:
+    tags = {str(tag).lower() for tag in getattr(record, "tags", []) or []}
+    if "task_failed" in tags:
+        return True
+    body = str(getattr(record, "body", "") or "").lower()
+    description = str(getattr(record, "description", "") or "").lower()
+    return "**status:** failed" in body or "status: failed" in body or "failed" in description
+
+
 def _optional_quantity_from_request(text: str) -> int | None:
     digit = re.search(r"\b(\d{1,2})\b", text)
     if digit:
@@ -603,6 +650,7 @@ class Agent:
         self._prompter: Prompter | None = None
         self._msg_builder: MessageBuilder | None = None
         self._router: InputRouter | None = None
+        self._dispatch_gate: DispatchGate | None = None
         self._examples: ExampleStore | None = None
 
         # Phase 2 components
@@ -625,6 +673,7 @@ class Agent:
         # Error recovery — guided task resumption
         self._pending_task: PendingTask | None = None
         self._active_task: ActiveTask | None = None
+        self._direct_shortcut_retry_reason: str | None = None
         self._guided_loop_task: asyncio.Task[None] | None = None
         self._self_prompt_goal: str | None = None
         self._self_prompt_task: asyncio.Task[None] | None = None
@@ -668,6 +717,15 @@ class Agent:
         self._router = InputRouter.from_config(
             self.DEFAULT_INTENT_CONFIG, prompter=self._prompter,
         )
+        self._dispatch_gate = DispatchGate(global_settings.dispatch_gate)
+        if self._dispatch_gate.configured:
+            logger.info(
+                "DispatchGate enabled: model=%s base_url=%s",
+                global_settings.dispatch_gate.model,
+                global_settings.dispatch_gate.base_url,
+            )
+        else:
+            logger.info("DispatchGate disabled; using keyword/direct routing fallback")
 
         # Phase 1: few-shot conversation examples for the $EXAMPLES slot.
         # Keyword-overlap retrieval until Phase 4b FAISS lands — same
@@ -741,30 +799,38 @@ class Agent:
     # ── Observation ─────────────────────────────────────────────────
 
     async def observe(self) -> BotState:
-        """Gather full bot state via concurrent SocketBridge queries.
+        """Gather full bot state via sequential SocketBridge queries.
 
-        One ``asyncio.gather`` call covers observe / inventory / entities /
-        nearby blocks / current goal. Per-call failures fall back to defaults
-        without poisoning the others.
+        Keep the same five data sources as the full observation path, but send
+        them one by one to avoid overlapping socket-server handlers.
         """
         bridge = self._bridge
         if bridge is None:
             return BotState()
 
-        results = await asyncio.gather(
-            bridge.observe(),
-            bridge.get_inventory(),
-            bridge.get_entities(),
-            bridge.get_nearby_blocks(),
-            bridge.get_goal(),
-            return_exceptions=True,
-        )
-        base, inv_raw, ents_raw, blocks_raw, goal_raw = results
+        try:
+            base = await bridge.observe()
+        except Exception as exc:
+            logger.warning("observe() failed; stopping current agent loop: %r", exc)
+            self._running = False
+            return BotState()
 
         if isinstance(base, Exception) or not isinstance(base, dict):
             logger.warning("observe() failed; stopping current agent loop: %r", base)
             self._running = False
             return BotState()
+
+        async def optional_component(name: str, call: Callable[[], Awaitable[Any]]) -> Any:
+            try:
+                return await call()
+            except Exception as exc:
+                logger.warning("observe() component failed: %s error=%r", name, exc)
+                return exc
+
+        inv_raw = await optional_component("get_inventory", bridge.get_inventory)
+        ents_raw = await optional_component("get_entities", bridge.get_entities)
+        blocks_raw = await optional_component("get_nearby_blocks", bridge.get_nearby_blocks)
+        goal_raw = await optional_component("get_goal", bridge.get_goal)
 
         p = base.get("position", {}) or {}
 
@@ -778,26 +844,41 @@ class Agent:
                     ))
 
         entities: list[EntityInfo] = []
+        entity_counts: dict[str, int] = {}
+        base_counts = base.get("entity_counts", {})
+        if isinstance(base_counts, dict):
+            for name, count in base_counts.items():
+                try:
+                    entity_counts[str(name)] = int(count)
+                except (TypeError, ValueError):
+                    continue
+        should_derive_entity_counts = not entity_counts
         if isinstance(ents_raw, list):
             self_pos = Position(
                 x=p.get("x", 0), y=p.get("y", 0), z=p.get("z", 0),
             )
-            for e in ents_raw[:20]:
+            parsed_entities: list[EntityInfo] = []
+            for e in ents_raw:
                 if not isinstance(e, dict):
                     continue
+                entity_name = str(e.get("name", "") or "")
+                if should_derive_entity_counts and entity_name and entity_name != "player":
+                    entity_counts[entity_name] = entity_counts.get(entity_name, 0) + 1
                 epos_raw = e.get("position", {}) or {}
                 epos = Position(
                     x=epos_raw.get("x", 0),
                     y=epos_raw.get("y", 0),
                     z=epos_raw.get("z", 0),
                 )
-                entities.append(EntityInfo(
-                    name=e.get("name", ""),
-                    entity_type=e.get("type", ""),
+                parsed_entities.append(EntityInfo(
+                    name=entity_name,
+                    entity_type=str(e.get("type", "") or ""),
                     position=epos,
                     distance=self_pos.distance_to(epos),
                     health=float(e.get("health", 0) or 0),
                 ))
+            parsed_entities.sort(key=lambda entity: entity.distance)
+            entities = parsed_entities[:20]
 
         nearby_block_types: list[str] = []
         if isinstance(blocks_raw, list):
@@ -809,6 +890,20 @@ class Agent:
         elif goal_raw is not None and not isinstance(goal_raw, Exception):
             current_goal = str(goal_raw)
 
+        entities_nearby = base.get("entities_nearby", "")
+        if entity_counts and "counts:" not in str(entities_nearby):
+            count_text = ", ".join(
+                f"{name} x{count}"
+                for name, count in sorted(
+                    entity_counts.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )[:12]
+            )
+            entities_nearby = (
+                f"counts: {count_text}\n{entities_nearby}"
+                if entities_nearby else f"counts: {count_text}"
+            )
+
         return BotState(
             health=base.get("health", 20),
             food=base.get("food", 20),
@@ -816,11 +911,12 @@ class Agent:
             gamemode=base.get("gamemode", "survival"),
             time_of_day=base.get("time_of_day", ""),
             biome=base.get("biome", ""),
-            entities_nearby=base.get("entities_nearby", ""),
+            entities_nearby=entities_nearby,
             blocks_nearby=base.get("blocks_nearby", ""),
             players_nearby=base.get("players_nearby", ""),
             inventory=inventory,
             entities=entities,
+            entity_counts=entity_counts,
             nearby_block_types=nearby_block_types,
             current_goal=current_goal,
         )
@@ -1030,6 +1126,7 @@ class Agent:
         # turn's feedback handler or plan loop. The L1 NDJSON event log
         # remains intact as the durable record.
         self._recent_actions.clear()
+        self._direct_shortcut_retry_reason = None
 
         # ── 0. Check for yes/no when we have a pending guided task ───
         if self._pending_task is not None:
@@ -1095,6 +1192,39 @@ class Agent:
             max_responses=max_responses, use_tools=use_tools, turn_id=turn_id,
         )
 
+    def _dispatch_allows_shortcut(
+        self,
+        decision: DispatchDecision | None,
+        route: str,
+    ) -> bool:
+        """Return whether a direct shortcut may run for this route.
+
+        No DispatchGate decision means the feature is disabled/unavailable, so
+        the existing keyword/shortcut flow is preserved.  When the gate is
+        configured, shortcuts are allowed only for confident atomic decisions;
+        everything else naturally falls through to the full planner.
+        """
+        if decision is None:
+            return True
+        threshold = (
+            self._dispatch_gate.direct_confidence
+            if self._dispatch_gate is not None else 0.85
+        )
+        allowed = (
+            decision.route == route
+            and decision.task_shape == "atomic"
+            and decision.confidence >= threshold
+        )
+        if not allowed:
+            logger.info(
+                "DispatchGate skipped shortcut route=%s decision=%s/%s confidence=%.2f",
+                route,
+                decision.route,
+                decision.task_shape,
+                decision.confidence,
+            )
+        return allowed
+
     # ── Plan loop (action / question / chitchat) ────────────────────
 
     async def _run_plan_loop(
@@ -1125,21 +1255,37 @@ class Agent:
                 self._turn_id,
             )
             return False
+        dispatch_decision: DispatchDecision | None = None
+        if use_tools and self._dispatch_gate is not None:
+            dispatch_decision = await self._dispatch_gate.classify(self._last_message, bot_state)
         if use_tools:
             if await self._maybe_complete_satisfied_craft(bot_state):
                 return True
-            direct_result = await self._try_direct_action_command()
-            if direct_result is not None:
-                return direct_result
-            cook_result = await self._try_direct_cook_request(bot_state)
-            if cook_result is not None:
-                return cook_result
-            item_result = await self._try_direct_item_request(bot_state)
-            if item_result is not None:
-                return item_result
-            skill_used = await self._try_phase5a_skill(self._last_message, bot_state)
-            if skill_used:
-                return True
+            if self._dispatch_allows_shortcut(dispatch_decision, "direct_action"):
+                direct_result = await self._try_direct_action_command()
+                if direct_result is not None:
+                    return direct_result
+            if self._dispatch_allows_shortcut(dispatch_decision, "direct_cook"):
+                cook_result = await self._try_direct_cook_request(bot_state)
+                if cook_result is not None:
+                    return cook_result
+            if self._direct_shortcut_retry_reason is None:
+                if self._dispatch_allows_shortcut(dispatch_decision, "direct_item"):
+                    item_result = await self._try_direct_item_request(bot_state)
+                    if item_result is not None:
+                        return item_result
+            if self._direct_shortcut_retry_reason is None:
+                if self._dispatch_allows_shortcut(dispatch_decision, "skill"):
+                    skill_used = await self._try_phase5a_skill(self._last_message, bot_state)
+                    if skill_used:
+                        return True
+            if self._direct_shortcut_retry_reason is not None:
+                logger.info(
+                    "Limiting LLM recovery after direct shortcut failure to one response: %s",
+                    self._direct_shortcut_retry_reason,
+                )
+                max_responses = min(max_responses, 1)
+                self._direct_shortcut_retry_reason = None
         tool_choice = "auto" if use_tools else "none"
         consecutive_failures = 0
         last_failed: tuple[str, str] | None = None  # (command, args_str)
@@ -1497,7 +1643,7 @@ class Agent:
                 self._active_task_add_event(
                     "action_result",
                     f"{cmd.name} args={cmd_args} kwargs={cmd_kwargs or {}} -> {result}",
-                    ok=not (result and "FAILED:" in result),
+                    ok=_action_succeeded(result),
                 )
                 await self._record_event("action_result", {
                     "command": cmd.name,
@@ -1623,6 +1769,9 @@ class Agent:
 
         self._history = self._convo_mgr.compress_history(self._history)
         if use_tools and self._active_task is not None:
+            recovered_after_clear = await self._maybe_retry_cook_after_furnace_clear()
+            if recovered_after_clear:
+                return True
             await self._finish_active_task(
                 "succeeded" if used_command else "failed",
                 reason="Plan loop ended.",
@@ -1696,7 +1845,10 @@ class Agent:
         ]:
             result = await self._execute_agent_command(command, [], kwargs)
             self._record_action(command, [], result)
-            ok = not (result is None or "FAILED:" in str(result))
+            ok = (
+                _delivery_succeeded(result)
+                if command == "givePlayer" else _action_succeeded(result)
+            )
             self._active_task_add_event(
                 "action_result",
                 f"{command} kwargs={kwargs} -> {result}",
@@ -1755,7 +1907,7 @@ class Agent:
             await self._send_chat(preface)
         result = await self._execute_agent_command(command, [], kwargs)
         self._record_action(command, [], result)
-        ok = not (result and "FAILED:" in result)
+        ok = _action_succeeded(result)
         self._active_task_add_event(
             "action_result",
             f"{command} kwargs={kwargs} -> {result}",
@@ -1779,12 +1931,41 @@ class Agent:
         )
         return True
 
+    def _queue_direct_shortcut_llm_retry(self, reason: str) -> None:
+        """Let the normal planner recover once after a direct shortcut fails."""
+        if self._direct_shortcut_retry_reason:
+            return
+        self._direct_shortcut_retry_reason = reason
+        logger.info("Direct shortcut fallback queued: %s", reason)
+        self._active_task_add_event("direct_fallback", reason, ok=False)
+        self._history.append(ConversationTurn(
+            role="system",
+            content=(
+                "A direct shortcut could not complete the current request: "
+                f"{reason} You may make exactly one command attempt to recover. "
+                "Stay inside the current player request only; do not resume old "
+                "memory tasks or unrelated goals. If recovery is impossible, say "
+                "what is missing instead of trying unrelated work."
+            ),
+        ))
+
     async def _try_direct_cook_request(self, bot_state: BotState) -> bool | None:
         """Cook food with a furnace, then deliver the cooked result to requester."""
         if not self._last_sender:
             return None
         request = _parse_cook_request(self._last_message)
         if request is None:
+            return None
+        if _cook_request_is_compound(self._last_message):
+            logger.info(
+                "Direct cook skipped for compound request: message=%r",
+                self._last_message,
+            )
+            self._active_task_add_event(
+                "direct_skip",
+                "Skipped direct cook because the request includes gathering/combat before cooking.",
+                ok=None,
+            )
             return None
 
         raw_have = _inventory_count_from_state(bot_state, request.raw_item)
@@ -1814,13 +1995,13 @@ class Agent:
         if remaining_to_cook > raw_have:
             await self._send_chat(
                 f"I only have enough raw {request.raw_item} for "
-                f"{raw_have + cooked_have} {request.cooked_item}."
+                f"{raw_have + cooked_have} {request.cooked_item}. I'll try one fallback plan."
             )
-            await self._finish_active_task(
-                "failed",
-                reason=f"Not enough {request.raw_item} to cook {requested_qty}.",
+            self._queue_direct_shortcut_llm_retry(
+                f"Direct cook had only {raw_have} {request.raw_item} and "
+                f"{cooked_have} {request.cooked_item}, but needs {requested_qty} cooked."
             )
-            return True
+            return None
 
         await self._send_chat(
             f"I'll cook {remaining_to_cook} {request.raw_item} and bring you "
@@ -1830,11 +2011,10 @@ class Agent:
         if remaining_to_cook > 0:
             furnace_ready = await self._ensure_furnace_for_cooking(bot_state)
             if not furnace_ready:
-                await self._finish_active_task(
-                    "failed",
-                    reason="Could not find, place, or craft a furnace for cooking.",
+                self._queue_direct_shortcut_llm_retry(
+                    "Direct cook could not find, place, or craft a furnace."
                 )
-                return True
+                return None
 
             smelt_result = await self._execute_agent_command(
                 "smeltItem",
@@ -1842,7 +2022,7 @@ class Agent:
                 {"item_name": request.raw_item, "num": remaining_to_cook},
             )
             self._record_action("smeltItem", [], smelt_result)
-            smelt_ok = not (smelt_result is None or "FAILED:" in str(smelt_result))
+            smelt_ok = _action_succeeded(smelt_result)
             self._active_task_add_event(
                 "action_result",
                 (
@@ -1860,8 +2040,10 @@ class Agent:
             })
             await self._send_chat(f"Done: {smelt_result}")
             if not smelt_ok:
-                await self._finish_active_task("failed", reason=str(smelt_result or ""))
-                return True
+                self._queue_direct_shortcut_llm_retry(
+                    f"Direct cook smeltItem failed: {smelt_result or 'no response'}"
+                )
+                return None
 
         delivered = await self._deliver_item_to_player(
             request.cooked_item,
@@ -1877,25 +2059,69 @@ class Agent:
         )
         return True
 
+    async def _maybe_retry_cook_after_furnace_clear(self) -> bool:
+        """After a successful clearFurnace in a cook task, retry the original smelt once."""
+        task = self._active_task
+        if task is None or task.status != "running":
+            return False
+        if _parse_cook_request(task.original_message) is None:
+            return False
+
+        events = task.events or []
+        last_clear_index: int | None = None
+        for index, event in enumerate(events):
+            if (
+                event.kind == "action_result"
+                and event.ok is not False
+                and ("clearFurnace" in event.message or "clear_furnace" in event.message)
+            ):
+                last_clear_index = index
+        if last_clear_index is None:
+            return False
+
+        later_events = events[last_clear_index + 1:]
+        if any(
+            event.kind == "action_result"
+            and "smeltItem" in event.message
+            and event.ok is not False
+            for event in later_events
+        ):
+            return False
+
+        logger.info(
+            "Retrying cook task after successful furnace clear: task=%s",
+            task.id,
+        )
+        self._active_task_add_event(
+            "recovery",
+            "Furnace was cleared; retrying the original cook request before finishing.",
+            ok=None,
+        )
+        state = await self.observe()
+        if not self._running:
+            return False
+        result = await self._try_direct_cook_request(state)
+        return bool(result)
+
     async def _ensure_furnace_for_cooking(self, bot_state: BotState) -> bool:
         """Prefer an existing nearby furnace; only create one if none is found."""
         search_result = await self._execute_agent_command(
             "searchForBlock",
             [],
-            {"block_type": "furnace", "search_range": 16},
+            {"block_type": "furnace", "search_range": 64},
         )
         self._record_action("searchForBlock", [], search_result)
-        search_ok = not (search_result is None or "FAILED:" in str(search_result))
+        search_ok = _action_succeeded(search_result)
         self._active_task_add_event(
             "action_result",
-            "searchForBlock kwargs={'block_type': 'furnace', 'search_range': 16} "
+            "searchForBlock kwargs={'block_type': 'furnace', 'search_range': 64} "
             f"-> {search_result}",
             ok=search_ok,
         )
         await self._record_event("action_result", {
             "command": "searchForBlock",
             "args": [],
-            "kwargs": {"block_type": "furnace", "search_range": 16},
+            "kwargs": {"block_type": "furnace", "search_range": 64},
             "result": search_result,
             "direct": "cook_request",
         })
@@ -1911,7 +2137,7 @@ class Agent:
                 {"recipe_name": "furnace", "num": 1},
             )
             self._record_action("craftRecipe", [], craft_result)
-            craft_ok = not (craft_result is None or "FAILED:" in str(craft_result))
+            craft_ok = _action_succeeded(craft_result)
             self._active_task_add_event(
                 "action_result",
                 "craftRecipe kwargs={'recipe_name': 'furnace', 'num': 1} "
@@ -1935,7 +2161,7 @@ class Agent:
             {"block_type": "furnace"},
         )
         self._record_action("placeHere", [], place_result)
-        place_ok = not (place_result is None or "FAILED:" in str(place_result))
+        place_ok = _action_succeeded(place_result)
         self._active_task_add_event(
             "action_result",
             "placeHere kwargs={'block_type': 'furnace'} -> " f"{place_result}",
@@ -1954,6 +2180,17 @@ class Agent:
     async def _try_direct_item_request(self, bot_state: BotState) -> bool | None:
         """Bounded get/find/give item workflow with default quantity 8."""
         if not self._last_sender:
+            return None
+        if _cook_request_is_compound(self._last_message):
+            logger.info(
+                "Direct item skipped for compound cook request: message=%r",
+                self._last_message,
+            )
+            self._active_task_add_event(
+                "direct_skip",
+                "Skipped direct item delivery because cooking is part of this request.",
+                ok=None,
+            )
             return None
         request = _parse_item_request(self._last_message)
         if request is None:
@@ -1993,7 +2230,7 @@ class Agent:
             ]:
                 result = await self._execute_agent_command(command, [], kwargs)
                 self._record_action(command, [], result)
-                ok = not (result is None or "FAILED:" in str(result))
+                ok = _action_succeeded(result)
                 self._active_task_add_event(
                     "action_result",
                     f"{command} kwargs={kwargs} -> {result}",
@@ -2025,7 +2262,10 @@ class Agent:
         ]:
             result = await self._execute_agent_command(command, [], kwargs)
             self._record_action(command, [], result)
-            ok = not (result is None or "FAILED:" in str(result))
+            ok = (
+                _delivery_succeeded(result)
+                if command == "givePlayer" else _action_succeeded(result)
+            )
             self._active_task_add_event(
                 "action_result",
                 f"{command} kwargs={kwargs} -> {result}",
@@ -2129,7 +2369,7 @@ class Agent:
                 recover_kwargs,
             )
             self._record_action(recover_command, recover_args, recover_result)
-            recover_ok = not (recover_result is None or "FAILED:" in str(recover_result))
+            recover_ok = _action_succeeded(recover_result)
             self._active_task_add_event(
                 "action_result",
                 f"{recover_command} kwargs={recover_kwargs} -> {recover_result}",
@@ -2216,7 +2456,7 @@ class Agent:
                 "fallback": "repeated_inventory",
             })
             await self._send_chat(f"Done: {result}")
-            if result is None or "FAILED:" in str(result):
+            if not _action_succeeded(result):
                 break
         return True
 
@@ -2320,7 +2560,7 @@ class Agent:
                 "result": result,
                 "skill": skill.name,
             })
-            if result is None or "FAILED:" in result:
+            if not _action_succeeded(result):
                 success = False
                 fallback = self._skill_failure_hint(match, result or "")
                 if fallback:
@@ -2849,7 +3089,7 @@ class Agent:
                     pt.command_name, pt.command_args, pt.command_kwargs,
                 )
 
-                if result is None or "failed" not in result:
+                if _action_succeeded(result):
                     # Stop following, then re-trigger the plan loop with
                     # the original goal to continue the multi-step task.
                     try:
@@ -3017,19 +3257,30 @@ class Agent:
         injection = await self._memory.plan_injection(token_budget=1200)
         if injection.full or injection.summary or injection.index:
             parts.append("Memory index:")
-            for record in injection.full[:3]:
+            full_records = sorted(injection.full, key=_memory_record_is_failed_task)
+            summary_records = sorted(injection.summary, key=_memory_record_is_failed_task)
+            failed_summary = [r for r in summary_records if _memory_record_is_failed_task(r)]
+            for record in full_records[:3]:
                 parts.append(
                     f"- {record.description} ({record.type.value}/{record.name})\n"
                     f"  {record.body[:300]}"
                 )
-            for record in injection.summary[:8]:
+            for record in [r for r in summary_records if not _memory_record_is_failed_task(r)][:8]:
                 parts.append(f"- {record.description} ({record.type.value}/{record.name})")
+            for record in failed_summary[:2]:
+                parts.append(
+                    f"- Failed memory, lesson only: {record.description} "
+                    f"({record.type.value}/{record.name})"
+                )
             for name in injection.index[:20]:
                 parts.append(f"- {name}")
         logger.info(
             "Agent memory injection selected: full=%s summary=%s index=%s",
-            [r.name for r in injection.full[:3]],
-            [r.name for r in injection.summary[:8]],
+            [r.name for r in sorted(injection.full, key=_memory_record_is_failed_task)[:3]],
+            [
+                r.name
+                for r in sorted(injection.summary, key=_memory_record_is_failed_task)[:8]
+            ],
             injection.index[:20],
         )
 
@@ -3039,9 +3290,20 @@ class Agent:
         ))
         if results:
             parts.append("Matched memory details:")
-            for r in results:
+            normal_results = [
+                r for r in results if not _memory_record_is_failed_task(r.record)
+            ]
+            failed_results = [
+                r for r in results if _memory_record_is_failed_task(r.record)
+            ]
+            for r in normal_results:
                 parts.append(
                     f"- {r.record.description} ({r.record.type.value}/{r.record.name})"
+                )
+            for r in failed_results[:1]:
+                parts.append(
+                    f"- Failed memory, lesson only: {r.record.description} "
+                    f"({r.record.type.value}/{r.record.name})"
                 )
         logger.info(
             "Agent memory recall for prompt: message=%r keywords=%s hits=%s",
@@ -3123,6 +3385,12 @@ class Agent:
                     f"{reason} Delivered requested item to player."
                     if reason else "Delivered requested item to player."
                 )
+            elif self._active_task_expects_delivery(task):
+                status = "failed"
+                reason = (
+                    f"{reason} No requested item was available to deliver."
+                    if reason else "No requested item was available to deliver."
+                )
         task.status = status
         if reason:
             task.events.append(ActiveTaskEvent(kind="finish_reason", message=reason, ok=None))
@@ -3152,6 +3420,15 @@ class Agent:
             and ("givePlayer" in event.message or "give_to_player" in event.message)
             and event.ok is not False
             for event in (task.events or [])
+        )
+
+    @staticmethod
+    def _active_task_expects_delivery(task: ActiveTask) -> bool:
+        message = task.original_message or ""
+        return (
+            _parse_cook_request(message) is not None
+            or _parse_craft_request(message) is not None
+            or _parse_item_request(message) is not None
         )
 
     async def _maybe_deliver_active_task_result(self) -> bool | None:
@@ -3273,7 +3550,11 @@ class Agent:
             f"failures: {task.failures}\n"
             "recent task events:\n"
             f"{self._active_task_event_lines(task, limit=6)}\n"
-            "Use this task state to avoid repeating completed or failed steps."
+            "Task boundary: complete only this request from the requester. "
+            "Do not resume older memory tasks or adjacent goals unless they are "
+            "strictly required by this request. Failed memories are lessons, not "
+            "pending objectives. Use recent task events to avoid repeating "
+            "completed or failed steps."
         )
 
     async def _remember_active_task(self, task: ActiveTask) -> None:
@@ -3520,6 +3801,14 @@ def _command_defs() -> dict[str, CommandDef]:
             name="entities",
             description="List nearby players and entities with positions and types.",
         ),
+        "countEntities": CommandDef(
+            name="countEntities",
+            description="Count nearby entities of a given type within a range.",
+            params={
+                "entity_type": {"type": "string", "description": "Entity type, e.g. chicken"},
+                "range": {"type": "int", "description": "Search range in blocks, max 64"},
+            },
+        ),
         "nearbyBlocks": CommandDef(
             name="nearbyBlocks",
             description="List block types near the bot.",
@@ -3703,6 +3992,22 @@ def _command_defs() -> dict[str, CommandDef]:
             params={
                 "block_type": {"type": "string", "description": "Block type, e.g. oak_log"},
                 "count": {"type": "int", "description": "Number to collect (default 8)"},
+            },
+        ),
+        "breakNearbyBlocks": CommandDef(
+            name="breakNearbyBlocks",
+            description=(
+                "Directly break nearby reachable fragile blocks without long pathfinding, "
+                "then pick up drops. Prefer this over collectBlocks for tall_grass, "
+                "short_grass, flowers, and other thin nearby blocks."
+            ),
+            params={
+                "block_type": {"type": "string", "description": "Block type, e.g. tall_grass"},
+                "count": {"type": "int", "description": "Number to break (default 1)"},
+                "range": {
+                    "type": "float",
+                    "description": "Local search radius, max 16 (default 6)",
+                },
             },
         ),
         "useOn": CommandDef(

@@ -9,6 +9,7 @@ OpenAI-compatible endpoint through the chain pattern:
 
 Pydantic-typed I/O: LLMInput → Prompter.send_request() → LLMOutput.
 """
+from .dispatch_gate import DispatchDecision, DispatchGate
 from .example_store import Example, ExampleStore
 from .input_router import InputIntent, InputRouter, RouterDecision
 from .prompter import LLMInput, LLMOutput, Prompter
@@ -20,6 +21,8 @@ __all__ = [
     "InputRouter",
     "InputIntent",
     "RouterDecision",
+    "DispatchDecision",
+    "DispatchGate",
     "Example",
     "ExampleStore",
 ]

@@ -75,6 +75,13 @@ class KnowledgeGraph:
         self._entities_by_name: dict[str, int] = {}
         self._foods: dict[int, dict[str, Any]] = {}
         self._foods_by_name: dict[str, int] = {}
+        self._block_loot_by_name: dict[str, dict[str, Any]] = {}
+        self._entity_loot_by_name: dict[str, dict[str, Any]] = {}
+        self._materials: dict[str, dict[str, Any]] = {}
+        self._biomes: dict[int, dict[str, Any]] = {}
+        self._biomes_by_name: dict[str, int] = {}
+        self._features: dict[str, dict[str, Any]] = {}
+        self._version: dict[str, Any] = {}
         self._loaded = False
 
     # ═══════════════════════════════════════════════════════════════
@@ -91,11 +98,21 @@ class KnowledgeGraph:
         await self._load_recipes()
         await self._load_entities()
         await self._load_foods()
+        await self._load_block_loot()
+        await self._load_entity_loot()
+        await self._load_materials()
+        await self._load_biomes()
+        await self._load_features()
+        await self._load_version()
         self._loaded = True
         logger.info(
-            "KnowledgeGraph loaded: %d items, %d blocks, %d recipes, %d entities, %d foods",
+            (
+                "KnowledgeGraph loaded: %d items, %d blocks, %d recipes, "
+                "%d entities, %d foods, %d block loot, %d entity loot"
+            ),
             len(self._items), len(self._blocks), len(self._recipes),
             len(self._entities), len(self._foods),
+            len(self._block_loot_by_name), len(self._entity_loot_by_name),
         )
 
     async def _load_items(self) -> None:
@@ -192,6 +209,72 @@ class KnowledgeGraph:
             name = food.get("name", "")
             if name:
                 self._foods_by_name[name.lower()] = food_id
+
+    async def _load_block_loot(self) -> None:
+        path = self._data_dir / "blockLoot.json"
+        if not path.exists():
+            logger.info("blockLoot.json not found at %s", path)
+            return
+        data = json.loads(path.read_text())
+        for entry in data:
+            block_name = entry.get("block", "")
+            if block_name:
+                self._block_loot_by_name[self._resolve_item_name(block_name)] = entry
+
+    async def _load_entity_loot(self) -> None:
+        path = self._data_dir / "entityLoot.json"
+        if not path.exists():
+            logger.info("entityLoot.json not found at %s", path)
+            return
+        data = json.loads(path.read_text())
+        for entry in data:
+            entity_name = entry.get("entity", "")
+            if entity_name:
+                self._entity_loot_by_name[self._resolve_item_name(entity_name)] = entry
+
+    async def _load_materials(self) -> None:
+        path = self._data_dir / "materials.json"
+        if not path.exists():
+            logger.info("materials.json not found at %s", path)
+            return
+        data = json.loads(path.read_text())
+        if isinstance(data, dict):
+            self._materials = data
+
+    async def _load_biomes(self) -> None:
+        path = self._data_dir / "biomes.json"
+        if not path.exists():
+            logger.info("biomes.json not found at %s", path)
+            return
+        data = json.loads(path.read_text())
+        for biome in data:
+            biome_id = biome.get("id")
+            if biome_id is None:
+                continue
+            self._biomes[biome_id] = biome
+            name = biome.get("name", "")
+            if name:
+                self._biomes_by_name[name.lower()] = biome_id
+
+    async def _load_features(self) -> None:
+        path = self._data_dir / "features.json"
+        if not path.exists():
+            logger.info("features.json not found at %s", path)
+            return
+        data = json.loads(path.read_text())
+        for feature in data:
+            name = feature.get("name", "")
+            if name:
+                self._features[name] = feature
+
+    async def _load_version(self) -> None:
+        path = self._data_dir / "version.json"
+        if not path.exists():
+            logger.info("version.json not found at %s", path)
+            return
+        data = json.loads(path.read_text())
+        if isinstance(data, dict):
+            self._version = data
 
     # ═══════════════════════════════════════════════════════════════
     #  Name resolution
@@ -805,6 +888,56 @@ class KnowledgeGraph:
         }
 
     # ═══════════════════════════════════════════════════════════════
+    #  Query: Loot
+    # ═══════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _normalise_drops(entry: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not entry:
+            return []
+        drops = entry.get("drops", [])
+        if not isinstance(drops, list):
+            return []
+        normalised: list[dict[str, Any]] = []
+        for drop in drops:
+            if not isinstance(drop, dict):
+                continue
+            item = drop.get("item")
+            if not item:
+                continue
+            normalised.append({
+                "item": item,
+                "drop_chance": drop.get("dropChance", 1),
+                "stack_size_range": drop.get("stackSizeRange", [1, 1]),
+                "player_kill": bool(drop.get("playerKill", False)),
+            })
+        return normalised
+
+    def get_block_drops(self, block_name: str) -> list[dict[str, Any]]:
+        """Return known drops for a block."""
+        name = self._resolve_item_name(block_name)
+        entry = self._block_loot_by_name.get(name)
+        if entry is None and name == "short_grass":
+            # Older minecraft-data loot tables use the pre-1.20.3 name.
+            entry = self._block_loot_by_name.get("grass")
+        return self._normalise_drops(entry)
+
+    def get_entity_drops(self, entity_name: str) -> list[dict[str, Any]]:
+        """Return known drops for an entity."""
+        name = self._resolve_item_name(entity_name)
+        return self._normalise_drops(self._entity_loot_by_name.get(name))
+
+    def drops_item(self, source_name: str, item_name: str, *, source: str = "block") -> bool:
+        """Return whether a block/entity has a known drop for an item."""
+        target = self._resolve_item_name(item_name)
+        drops = (
+            self.get_entity_drops(source_name)
+            if source == "entity"
+            else self.get_block_drops(source_name)
+        )
+        return any(self._resolve_item_name(str(drop.get("item", ""))) == target for drop in drops)
+
+    # ═══════════════════════════════════════════════════════════════
     #  Query: Entity info
     # ═══════════════════════════════════════════════════════════════
 
@@ -823,6 +956,40 @@ class KnowledgeGraph:
             "width": entity.get("width"),
             "hostile": entity.get("type") == "mob" and entity.get("category") == "hostile",
         }
+
+    # ═══════════════════════════════════════════════════════════════
+    #  Query: Version, features, biomes, materials
+    # ═══════════════════════════════════════════════════════════════
+
+    def get_biome_info(self, biome_name: str) -> dict[str, Any] | None:
+        """Return biome metadata."""
+        name = self._resolve_item_name(biome_name)
+        biome_id = self._biomes_by_name.get(name)
+        if biome_id is None:
+            return None
+        return dict(self._biomes.get(biome_id, {}))
+
+    def get_material_tool_speeds(self, material_name: str) -> dict[str, float]:
+        """Return tool speed multipliers for a minecraft-data material key."""
+        material = self._materials.get(material_name, {})
+        result: dict[str, float] = {}
+        for item_id, speed in material.items():
+            try:
+                item_name = self.get_item_name(int(item_id))
+                if item_name:
+                    result[item_name] = float(speed)
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    def get_feature(self, feature_name: str) -> dict[str, Any] | None:
+        """Return version feature metadata by name."""
+        feature = self._features.get(feature_name)
+        return dict(feature) if feature else None
+
+    @property
+    def version(self) -> dict[str, Any]:
+        return dict(self._version)
 
     # ═══════════════════════════════════════════════════════════════
     #  Bulk data access (for ActionExecutor integration)

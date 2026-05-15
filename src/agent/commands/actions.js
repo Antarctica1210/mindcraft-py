@@ -1,6 +1,7 @@
 import * as skills from '../library/skills.js';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
+import { traceBotEvent } from '../trace_logger.js';
 
 
 function runAsAction (actionFn, resume = false, timeout = -1) {
@@ -14,9 +15,19 @@ function runAsAction (actionFn, resume = false, timeout = -1) {
         }
 
         const actionFnWithAgent = async () => {
-            await actionFn(agent, ...args);
+            traceBotEvent('action.command.body.start', agent.bot, { actionLabel, args });
+            try {
+                const result = await actionFn(agent, ...args);
+                traceBotEvent('action.command.body.done', agent.bot, { actionLabel, args, result });
+                return result;
+            } catch (error) {
+                traceBotEvent('action.command.body.error', agent.bot, { actionLabel, args, error });
+                throw error;
+            }
         };
+        traceBotEvent('action.command.start', agent.bot, { actionLabel, args, resume, timeout });
         const code_return = await agent.actions.runAction(`action:${actionLabel}`, actionFnWithAgent, { timeout, resume });
+        traceBotEvent('action.command.done', agent.bot, { actionLabel, args, resume, timeout, code_return });
         if (code_return.interrupted && !code_return.timedout)
             return;
         return code_return.message;

@@ -218,6 +218,29 @@ class ActionExecutor:
         )
 
     @staticmethod
+    async def _count_entities(
+        bridge: Any, entity_type: str = "", range_val: float = 64, **kwargs: Any,
+    ) -> str:
+        if "range" in kwargs:
+            range_val = kwargs["range"]
+        result = await bridge.count_entities(entity_type, range_val)
+        if not isinstance(result, dict):
+            return str(result)
+        name = result.get("entity_type") or entity_type or "entities"
+        search_range = result.get("range", range_val)
+        count = int(result.get("count", 0) or 0)
+        entities = result.get("entities") or []
+        if not entities:
+            return f"Found 0 {name} within {search_range} blocks."
+        details = "\n".join(
+            f"  {e.get('name', name)} id:{e.get('id', '?')} "
+            f"dist:{float(e.get('distance', 0) or 0):.1f}"
+            for e in entities[:10]
+            if isinstance(e, dict)
+        )
+        return f"Found {count} {name} within {search_range} blocks.\n{details}"
+
+    @staticmethod
     async def _nearby_blocks(bridge: Any, *_args: Any) -> str:
         types = await bridge.get_nearby_blocks()
         return "Nearby block types: " + ", ".join(types)
@@ -335,6 +358,18 @@ class ActionExecutor:
     @staticmethod
     async def _collect_blocks(bridge: Any, block_type: str, count: int = 8) -> Any:
         return await bridge.collect_blocks(block_type, count)
+
+    @staticmethod
+    async def _break_nearby_blocks(
+        bridge: Any,
+        block_type: str,
+        count: int = 1,
+        range_val: float = 6,
+        **kwargs: Any,
+    ) -> Any:
+        if "range" in kwargs:
+            range_val = kwargs["range"]
+        return await bridge.break_nearby_blocks(block_type, count, range_val)
 
     @staticmethod
     async def _use_on(bridge: Any, tool_name: str, target: str) -> Any:
@@ -506,6 +541,7 @@ class ActionExecutor:
             "inventory": self._inventory,
             "goal": self._goal,
             "entities": self._entities,
+            "countEntities": self._count_entities,
             "nearbyBlocks": self._nearby_blocks,
             "craftable": self._craftable,
             "help": self._help,
@@ -534,6 +570,7 @@ class ActionExecutor:
             "placeHere": self._place_here,
             "activateBlock": self._activate_block,
             "collectBlocks": self._collect_blocks,
+            "breakNearbyBlocks": self._break_nearby_blocks,
             "useOn": self._use_on,
             # Chest
             "viewChest": self._view_chest,

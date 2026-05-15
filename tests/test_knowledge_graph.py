@@ -102,6 +102,27 @@ async def test_known_non_craftable_item_is_not_fuzzy_matched_to_recipe() -> None
     assert "decorated_pot" not in plan
 
 
+async def test_loot_tables_answer_block_and_entity_drops() -> None:
+    kg = await _loaded_graph()
+
+    tall_grass_drops = kg.get_block_drops("tall_grass")
+    chicken_drops = kg.get_entity_drops("chicken")
+
+    assert any(drop["item"] == "wheat_seeds" for drop in tall_grass_drops)
+    assert any(drop["item"] == "feather" for drop in chicken_drops)
+    assert kg.drops_item("tall_grass", "wheat_seeds")
+    assert not kg.drops_item("chicken", "wheat_seeds", source="entity")
+
+
+async def test_extra_minecraft_data_files_are_loaded() -> None:
+    kg = await _loaded_graph()
+
+    assert kg.version["minecraftVersion"] == "1.21.6"
+    assert kg.get_biome_info("cherry_grove")["dimension"] == "overworld"
+    assert "iron_pickaxe" in kg.get_material_tool_speeds("mineable/pickaxe")
+    assert kg.get_feature("blockStateId")["versions"][-1] == "latest"
+
+
 async def test_bed_target_prefers_existing_wool_color() -> None:
     kg = await _loaded_graph()
 

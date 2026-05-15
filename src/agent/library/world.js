@@ -1,6 +1,10 @@
 import pf from 'mineflayer-pathfinder';
 import * as mc from '../../utils/mcdata.js';
+import { traceBotEvent } from '../trace_logger.js';
 
+function traceWorldCall(bot, method, args = {}) {
+    traceBotEvent('world.call', bot, { method, args });
+}
 
 export function getNearestFreeSpace(bot, size=1, distance=8) {
     /**
@@ -12,6 +16,7 @@ export function getNearestFreeSpace(bot, size=1, distance=8) {
      * @example
      * let position = world.getNearestFreeSpace(bot, 1, 8);
      **/
+    traceWorldCall(bot, 'getNearestFreeSpace', { size, distance });
     let empty_pos = bot.findBlocks({
         matching: (block) => {
             return block && block.name == 'air';
@@ -126,6 +131,7 @@ export function getNearestBlocks(bot, block_types=null, distance=8, count=10000)
      * @example
      * let woodBlocks = world.getNearestBlocks(bot, ['oak_log', 'birch_log'], 16, 1);
      **/
+    traceWorldCall(bot, 'getNearestBlocks', { block_types, distance, count });
     // if blocktypes is not a list, make it a list
     let block_ids = [];
     if (block_types === null) {
@@ -152,6 +158,7 @@ export function getNearestBlocksWhere(bot, predicate, distance=8, count=10000) {
      * @example
      * let waterBlocks = world.getNearestBlocksWhere(bot, block => block.name === 'water', 16, 10);
      **/
+    traceWorldCall(bot, 'getNearestBlocksWhere', { predicate: predicate?.name || String(predicate), distance, count });
     let positions = bot.findBlocks({matching: predicate, maxDistance: distance, count: count});
     let blocks = positions.map(position => bot.blockAt(position));
     return blocks;
@@ -168,6 +175,7 @@ export function getNearestBlock(bot, block_type, distance=16) {
      * @example
      * let coalBlock = world.getNearestBlock(bot, 'coal_ore', 16);
      **/
+    traceWorldCall(bot, 'getNearestBlock', { block_type, distance });
     let blocks = getNearestBlocks(bot, block_type, distance, 1);
     if (blocks.length > 0) {
         return blocks[0];
@@ -177,6 +185,7 @@ export function getNearestBlock(bot, block_type, distance=16) {
 
 
 export function getNearbyEntities(bot, maxDistance=16) {
+    traceWorldCall(bot, 'getNearbyEntities', { maxDistance });
     let entities = [];
     for (const entity of Object.values(bot.entities)) {
         const distance = entity.position.distanceTo(bot.entity.position);
@@ -192,11 +201,13 @@ export function getNearbyEntities(bot, maxDistance=16) {
 }
 
 export function getNearestEntityWhere(bot, predicate, maxDistance=16) {
+    traceWorldCall(bot, 'getNearestEntityWhere', { predicate: predicate?.name || String(predicate), maxDistance });
     return bot.nearestEntity(entity => predicate(entity) && bot.entity.position.distanceTo(entity.position) < maxDistance);
 }
 
 
 export function getNearbyPlayers(bot, maxDistance) {
+    traceWorldCall(bot, 'getNearbyPlayers', { maxDistance });
     if (maxDistance == null) maxDistance = 16;
     let players = [];
     for (const entity of Object.values(bot.entities)) {
@@ -269,6 +280,7 @@ export function getInventoryCounts(bot) {
      * let oakLogCount = inventory['oak_log'];
      * let hasWoodenPickaxe = inventory['wooden_pickaxe'] > 0;
      **/
+    traceWorldCall(bot, 'getInventoryCounts');
     let inventory = {};
     for (const slot of bot.inventory.slots) {
         if (slot != null && slot.name) {
@@ -290,6 +302,7 @@ export function getCraftableItems(bot) {
      * @example
      * let craftableItems = world.getCraftableItems(bot);
      **/
+    traceWorldCall(bot, 'getCraftableItems');
     let table = getNearestBlock(bot, 'crafting_table');
     if (!table) {
         for (const item of bot.inventory.items()) {
@@ -318,6 +331,7 @@ export function getPosition(bot) {
      * let position = world.getPosition(bot);
      * let x = position.x;
      **/
+    traceWorldCall(bot, 'getPosition');
     return bot.entity.position;
 }
 
@@ -330,6 +344,7 @@ export function getNearbyEntityTypes(bot) {
      * @example
      * let mobs = world.getNearbyEntityTypes(bot);
      **/
+    traceWorldCall(bot, 'getNearbyEntityTypes');
     let mobs = getNearbyEntities(bot, 16);
     let found = [];
     for (let i = 0; i < mobs.length; i++) {
@@ -357,6 +372,7 @@ export function getNearbyPlayerNames(bot) {
      * @example
      * let players = world.getNearbyPlayerNames(bot);
      **/
+    traceWorldCall(bot, 'getNearbyPlayerNames');
     let players = getNearbyPlayers(bot, 64);
     let found = [];
     for (let i = 0; i < players.length; i++) {
@@ -377,6 +393,7 @@ export function getNearbyBlockTypes(bot, distance=16) {
      * @example
      * let blocks = world.getNearbyBlockTypes(bot);
      **/
+    traceWorldCall(bot, 'getNearbyBlockTypes', { distance });
     let blocks = getNearestBlocks(bot, null, distance);
     let found = [];
     for (let i = 0; i < blocks.length; i++) {
@@ -394,6 +411,7 @@ export async function isClearPath(bot, target) {
      * @param {Entity} target - The target to path to.
      * @returns {boolean} - True if there is a clear path, false otherwise.
      */
+    traceWorldCall(bot, 'isClearPath', { target });
     let movements = new pf.Movements(bot)
     movements.canDig = false;
     movements.canPlaceOn = false;
@@ -404,6 +422,7 @@ export async function isClearPath(bot, target) {
 }
 
 export function shouldPlaceTorch(bot) {
+    traceWorldCall(bot, 'shouldPlaceTorch');
     if (!bot.modes.isOn('torch_placing') || bot.interrupt_code) return false;
     const pos = getPosition(bot);
     // TODO: check light level instead of nearby torches, block.light is broken
@@ -426,6 +445,7 @@ export function getBiomeName(bot) {
      * @example
      * let biome = world.getBiomeName(bot);
      **/
+    traceWorldCall(bot, 'getBiomeName');
     const biomeId = bot.world.getBiome(bot.entity.position);
     return mc.getAllBiomes()[biomeId].name;
 }
