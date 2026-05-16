@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from logging_config import log_date
+
 
 class SessionSink:
     """Append-only NDJSON writer for L1 raw event traces."""
@@ -27,8 +29,7 @@ class SessionSink:
     # ── path helpers ───────────────────────────────────────────────────
 
     def _session_path(self, session_id: str) -> Path:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return self._base / self._world_id / "sessions" / today / f"{session_id}.ndjson"
+        return self._base / self._world_id / "sessions" / log_date() / f"{session_id}.ndjson"
 
     @staticmethod
     def _ensure_parent(p: Path) -> None:

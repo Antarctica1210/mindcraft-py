@@ -14,8 +14,10 @@ flowchart TD
     F -->|action_command| H[Set planning_strategy]
     F -->|ignore/system| Z[No task]
     H --> H2[Start ActiveTask: react by default]
+    H2 --> H3[Generate completion_spec]
+    H3 --> H4[Infer delivery requirement]
 
-    H2 --> I[Observe current state]
+    H4 --> I[Observe current state]
     I --> I1[Inventory]
     I --> I2[Entities]
     I --> I3[Nearby blocks]
@@ -27,15 +29,17 @@ flowchart TD
     I4 --> J
     J --> J0[Strategy prompt]
     J --> J1[Command docs + completion_kind]
-    J --> J2[Conversation/task history]
+    J --> J2[Current task history only]
     J --> J3[Memory recall]
-    J --> J4[Wiki/RAG context when enabled]
+    J --> J4[Completion spec + active task events]
+    J --> J5[Wiki/RAG context when enabled]
 
     J0 --> K[LLM planner]
     J1 --> K
     J2 --> K
     J3 --> K
     J4 --> K
+    J5 --> K
 
     K --> L[Parse assistant output]
     L --> M{Has !command?}
@@ -60,10 +64,11 @@ flowchart TD
 
     Y --> AA[Record ActiveTask action event]
     AA --> AB[Post-action observe]
-    AB --> AC{Command success + state evidence?}
-    AC -->|Yes, delivery task| AD[Finish after givePlayer/delivery]
-    AC -->|Yes, world/custom task| AE[Finish without item delivery]
-    AC -->|No or still missing evidence| AF{Failure limit or max attempts?}
+    AB --> AC{Matches completion_spec?}
+    AC -->|Intermediate step| AF{Failure limit or max attempts?}
+    AC -->|Terminal + delivery required| AD[Deliver item, then finish]
+    AC -->|Terminal + no delivery| AE[Finish without item delivery]
+    AC -->|No or still missing evidence| AF
     AF -->|No| J
     AF -->|Yes| AG[Finish failed]
 
@@ -80,7 +85,9 @@ flowchart TD
 - `InputRouter` 还会给 action task 打 `planning_strategy`，但现在默认统一使用 `react`。Minecraft 世界状态变化快，执行链路优先采用“观察 -> 执行一个命令 -> 再观察”的短循环。
 - `rolling_plan` 仍保留在类型和执行保护里，方便以后做 opt-in 实验；当前路由层不会自动启用它。即使 LLM 输出多个命令，loop 也只保留第一条并在执行后重新 `observe`。
 - `observe` 是规划的地基。每轮执行前后都会读取背包、实体、附近方块和基础状态，避免 LLM 只靠对话历史猜。
-- `CommandDef.completion_kind` 告诉 loop 怎么判断结束：例如 `delivery` 依赖交付，`world_change`/`custom_action` 可以用状态证据结束，`query`/`navigation` 默认不直接完成任务。
+- `ActiveTask.completion_spec` 是任务成功边界。它在任务开始时生成，记录任务类型、目标物品、数量、可接受物品、terminal commands、intermediate commands，以及是否需要交付。
+- `CommandDef.completion_kind` 只是命令级信号；最终能不能结束任务要先通过 `completion_spec`。例如 `挖8铁矿` 中 `craftRecipe("oak_planks")` 只是 intermediate，不能结束任务；只有收集到足量 `raw_iron`/`iron_ore` 后才算达成收集边界。
+- 是否需要交付由 spec 的主判断和 `DispatchGate` 小模型信号联合决定。主判断权重更高，小模型只做校准；如果小模型不可用，则使用 spec 的本地判断。
 - `newAction` 仍然通过 `socket_server.js` 执行，但只能使用动态 API 文档暴露的 `api.*` 方法，不应假设原生 Mindcraft 的 `skills.*` 对象存在。
 - 任务结束后会写入 episodic memory；失败任务也会记录原因，后续 prompt 可引用这些经验。
 

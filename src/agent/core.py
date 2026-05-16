@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import sys
 import time
@@ -88,6 +89,14 @@ _REUSABLE_WORKSTATIONS: frozenset[str] = frozenset({
     "smoker",
 })
 _DELIVERY_RESULT_RE = re.compile(r"\bGave\s+(?P<count>\d+)x\s+", re.IGNORECASE)
+_MISSING_TOOL_RE = re.compile(
+    r"Need a (?P<tool>[A-Za-z0-9_]+) to mine (?P<target>[A-Za-z0-9_]+)",
+    re.IGNORECASE,
+)
+_MISSING_MATERIALS_RE = re.compile(
+    r"Missing materials for (?P<target>[A-Za-z0-9_]+): (?P<missing>.+?)(?:\.|\n|$)",
+    re.IGNORECASE,
+)
 
 # Loop guards for the plan loop (mitigations after the 2026-05-12 bed-craft
 # log where the model spammed searchWiki with paraphrased queries).
@@ -111,6 +120,10 @@ _DELIVERY_RESULT_RE = re.compile(r"\bGave\s+(?P<count>\d+)x\s+", re.IGNORECASE)
 _MAX_REPEATED_QUERY_PER_NAME = 3
 _MAX_CONSECUTIVE_QUERY_CALLS = 4
 _MAX_TOOL_CALLS_PER_TURN = 25
+_MAX_RECOVERY_ATTEMPTS_PER_TASK = 3
+_DELIVERY_PRIMARY_WEIGHT = 0.70
+_DELIVERY_SMALL_MODEL_WEIGHT = 0.30
+_DELIVERY_DECISION_THRESHOLD = 0.50
 _WOOD_TYPES: tuple[str, ...] = (
     "oak",
     "spruce",
@@ -144,6 +157,70 @@ _GENERIC_WOOD_BLOCK_ALIASES: frozenset[str] = frozenset({
     "tree",
 })
 _COAL_ORE_BLOCKS: frozenset[str] = frozenset({"coal_ore", "deepslate_coal_ore"})
+_SMELT_INPUT_ALIASES: dict[str, str] = {
+    "raw_porkchop": "porkchop",
+    "raw_beef": "beef",
+    "raw_chicken": "chicken",
+    "raw_mutton": "mutton",
+    "raw_rabbit": "rabbit",
+    "raw_cod": "cod",
+    "raw_salmon": "salmon",
+}
+_COMMON_SMELT_OUTPUTS: dict[str, str] = {
+    "porkchop": "cooked_porkchop",
+    "beef": "cooked_beef",
+    "chicken": "cooked_chicken",
+    "mutton": "cooked_mutton",
+    "rabbit": "cooked_rabbit",
+    "cod": "cooked_cod",
+    "salmon": "cooked_salmon",
+    "potato": "baked_potato",
+    "raw_iron": "iron_ingot",
+    "raw_gold": "gold_ingot",
+    "raw_copper": "copper_ingot",
+    "iron_ore": "iron_ingot",
+    "deepslate_iron_ore": "iron_ingot",
+    "gold_ore": "gold_ingot",
+    "deepslate_gold_ore": "gold_ingot",
+    "copper_ore": "copper_ingot",
+    "deepslate_copper_ore": "copper_ingot",
+    "sand": "glass",
+    "red_sand": "glass",
+    "cobblestone": "stone",
+    "stone": "smooth_stone",
+    "clay_ball": "brick",
+    "netherrack": "nether_brick",
+}
+_COMMON_FUEL_SMELTS: dict[str, float] = {
+    "lava_bucket": 100.0,
+    "coal": 8.0,
+    "charcoal": 8.0,
+    "blaze_rod": 12.0,
+    "stick": 0.5,
+}
+_TOOL_FAMILY_MATERIAL_COUNTS: dict[str, int] = {
+    "axe": 3,
+    "hoe": 2,
+    "pickaxe": 3,
+    "shovel": 1,
+    "sword": 2,
+}
+_TOOL_FAMILY_STICK_COUNTS: dict[str, int] = {
+    "axe": 2,
+    "hoe": 2,
+    "pickaxe": 2,
+    "shovel": 2,
+    "sword": 1,
+}
+_TOOL_MATERIAL_ITEMS: dict[str, str] = {
+    "wooden": "oak_planks",
+    "stone": "cobblestone",
+    "iron": "iron_ingot",
+    "golden": "gold_ingot",
+    "gold": "gold_ingot",
+    "diamond": "diamond",
+}
+_CRAFTING_TABLE_TOOL_FAMILIES: frozenset[str] = frozenset({"axe", "hoe", "pickaxe"})
 _COMMAND_COMPLETION_KINDS: dict[str, str] = {
     # Control / meta
     "stop": "control",
@@ -216,7 +293,6 @@ _TERMINAL_COMPLETION_KINDS: frozenset[str] = frozenset({
 _ALWAYS_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
     "activateBlock",
     "breedAnimals",
-    "digDown",
     "goToBed",
     "placeHere",
     "tillAndSow",
@@ -229,6 +305,15 @@ _CONDITIONAL_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
     "attackPlayer",
     "breakNearbyBlocks",
     "clearFurnace",
+    "digDown",
+})
+_INVENTORY_PREP_COMMANDS: frozenset[str] = frozenset({
+    "craftRecipe",
+    "getCraftingPlan",
+    "equip",
+    "searchWiki",
+    "inventory",
+    "craftable",
 })
 _NAVIGATION_ONLY_ALLOWED_COMMANDS: frozenset[str] = frozenset({
     "stats",
@@ -271,6 +356,31 @@ class ActiveTaskEvent:
 
 
 @dataclass
+class ActiveTaskSnapshot:
+    """Compact immutable observation attached to one active task frame."""
+
+    seq: int
+    note: str
+    inventory: dict[str, int]
+    position: tuple[float, float, float] | None = None
+
+
+@dataclass
+class CompletionSpec:
+    """Deterministic success boundary for one player task."""
+
+    kind: str
+    target_items: tuple[str, ...] = ()
+    acceptable_items: tuple[str, ...] = ()
+    quantity: int | None = None
+    terminal_commands: frozenset[str] = frozenset()
+    intermediate_commands: frozenset[str] = frozenset()
+    requires_delivery: bool = False
+    delivery_score: float = 0.0
+    delivery_reason: str = ""
+
+
+@dataclass
 class ActiveTask:
     """Lightweight single-task tracker for one player request."""
 
@@ -287,10 +397,19 @@ class ActiveTask:
     timeout_s: float | None = None  # task-level timeout (seconds), None = no limit
     started_at: float = 0.0
     history_start_index: int = 0
+    completion_spec: CompletionSpec | None = None
+    recovery_attempts: int = 0
+    baseline_inventory: dict[str, int] | None = None
+    baseline_position: tuple[float, float, float] | None = None
+    snapshots: list[ActiveTaskSnapshot] | None = None
 
     def __post_init__(self) -> None:
         if self.events is None:
             self.events = []
+        if self.snapshots is None:
+            self.snapshots = []
+        if self.baseline_inventory is None:
+            self.baseline_inventory = {}
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -537,8 +656,220 @@ def _best_inventory_log_item(state: BotState) -> tuple[str, int] | None:
     return max(logs, key=lambda item: item[1])
 
 
+def _tool_parts(tool_name: str) -> tuple[str, str] | None:
+    """Return (material, family) for a vanilla tool name."""
+    name = tool_name.strip().lower()
+    for family in _TOOL_FAMILY_MATERIAL_COUNTS:
+        suffix = f"_{family}"
+        if not name.endswith(suffix):
+            continue
+        material = name[:-len(suffix)]
+        if material:
+            return material, family
+    return None
+
+
+def _parse_missing_counts(text: str) -> dict[str, int]:
+    """Parse snippets like 'stick x2, cobblestone x3' into a count map."""
+    counts: dict[str, int] = {}
+    for item, count in re.findall(r"([A-Za-z0-9_]+)\s+x\s*(\d+)", text):
+        counts[item.lower()] = counts.get(item.lower(), 0) + int(count)
+    return counts
+
+
+def _normalise_smelt_input(item_name: str) -> str:
+    name = item_name.strip().lower()
+    return _SMELT_INPUT_ALIASES.get(name, name)
+
+
+def _fuel_smelt_capacity(item_name: str) -> float:
+    name = item_name.strip().lower()
+    if name in _COMMON_FUEL_SMELTS:
+        return _COMMON_FUEL_SMELTS[name]
+    if (
+        name.endswith("_log")
+        or name.endswith("_stem")
+        or name.endswith("_hyphae")
+        or name.endswith("_planks")
+    ):
+        return 1.5
+    if name.endswith("_slab"):
+        return 0.75
+    if name.endswith("_sapling"):
+        return 0.5
+    if name.startswith("wooden_"):
+        return 1.0
+    return 0.0
+
+
+def _inventory_has_smelting_fuel(state: BotState, needed_items: int) -> bool:
+    for item in state.inventory:
+        capacity = _fuel_smelt_capacity(item.name)
+        if capacity <= 0:
+            continue
+        if item.count >= math.ceil(max(needed_items, 1) / capacity):
+            return True
+    return False
+
+
+def _summary_contradicts_task_status(summary: str, status: str) -> bool:
+    text = (summary or "").lower()
+    if status == "succeeded":
+        return bool(re.search(
+            r"\b(failed|failure|unable|could not|couldn't|did not|didn't|missing|"
+            r"cancelled|canceled|stuck)\b|失败|未能|没有完成|缺少|取消|卡住",
+            text,
+        ))
+    if status == "failed":
+        return bool(re.search(r"\b(succeeded|successfully completed)\b|成功完成", text))
+    return False
+
+
 def _command_completion_kind(command_name: str) -> str:
     return _COMMAND_COMPLETION_KINDS.get(command_name.lstrip("!"), "none")
+
+
+def _acceptable_items_for_target(item_name: str) -> tuple[str, ...]:
+    if item_name == "raw_iron":
+        return ("raw_iron", "iron_ore", "deepslate_iron_ore")
+    if item_name == "coal":
+        return ("coal", "coal_ore", "deepslate_coal_ore")
+    return (item_name,)
+
+
+def _message_sounds_like_delivery_request(message: str) -> bool:
+    text = (message or "").lower()
+    return bool(re.search(
+        r"\b(give|bring|fetch|get|collect|gather|mine|make|craft|cook)\b|"
+        r"给我|拿给我|带给我|获取|采集|收集|挖|做|制作|合成|烧|烤",
+        text,
+    ))
+
+
+def _completion_spec_from_message(message: str) -> CompletionSpec:
+    """Infer the task's success boundary before the first action runs."""
+    if _is_navigation_only_request(message):
+        return CompletionSpec(
+            kind="navigation",
+            terminal_commands=frozenset({
+                "moveTo",
+                "goToPlayer",
+                "followPlayer",
+                "goToCoordinates",
+                "moveAway",
+                "stay",
+                "goToSurface",
+                "lookAtPlayer",
+                "lookAtPosition",
+            }),
+            requires_delivery=False,
+            delivery_score=0.05,
+            delivery_reason="navigation task",
+        )
+
+    cook_request = _parse_cook_request(message)
+    if cook_request is not None:
+        return CompletionSpec(
+            kind="cook_item",
+            target_items=(cook_request.cooked_item,),
+            acceptable_items=(cook_request.cooked_item,),
+            quantity=cook_request.quantity,
+            terminal_commands=frozenset({"smeltItem", "givePlayer"}),
+            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
+                "collectBlocks",
+                "searchForBlock",
+                "searchForEntity",
+                "attack",
+                "clearFurnace",
+            }),
+            requires_delivery=True,
+            delivery_score=0.90,
+            delivery_reason="cooked item requested",
+        )
+
+    craft_request = _parse_craft_request(message)
+    if craft_request is not None:
+        return CompletionSpec(
+            kind="craft_item",
+            target_items=(craft_request.item_name,),
+            acceptable_items=(craft_request.item_name,),
+            quantity=craft_request.quantity,
+            terminal_commands=frozenset({"craftRecipe", "givePlayer"}),
+            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
+                "collectBlocks",
+                "searchForBlock",
+                "searchForEntity",
+                "attack",
+                "smeltItem",
+                "clearFurnace",
+            }),
+            requires_delivery=True,
+            delivery_score=0.90,
+            delivery_reason="crafted item requested",
+        )
+
+    item_request = _parse_item_request(message)
+    if item_request is not None:
+        acceptable = _acceptable_items_for_target(item_request.item_name)
+        return CompletionSpec(
+            kind="collect_item",
+            target_items=(item_request.item_name,),
+            acceptable_items=acceptable,
+            quantity=item_request.quantity,
+            terminal_commands=frozenset({
+                "collectBlocks",
+                "breakNearbyBlocks",
+                "pickupNearbyItems",
+                "givePlayer",
+            }),
+            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
+                "searchForBlock",
+                "searchForEntity",
+                "attack",
+                "smeltItem",
+                "clearFurnace",
+            }),
+            requires_delivery=_message_sounds_like_delivery_request(message),
+            delivery_score=0.85 if _message_sounds_like_delivery_request(message) else 0.20,
+            delivery_reason="collectable item requested",
+        )
+
+    planting_quantity = _planting_request_quantity(message)
+    if planting_quantity is not None:
+        return CompletionSpec(
+            kind="planting",
+            quantity=planting_quantity,
+            terminal_commands=frozenset({"tillAndSow"}),
+            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
+                "breakNearbyBlocks",
+                "collectBlocks",
+                "searchForBlock",
+            }),
+            requires_delivery=False,
+            delivery_score=0.05,
+            delivery_reason="world planting task",
+        )
+
+    if re.search(r"\b(breed|feed)\b|繁殖|喂|养", (message or "").lower()):
+        return CompletionSpec(
+            kind="breeding",
+            terminal_commands=frozenset({"breedAnimals"}),
+            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
+                "collectBlocks",
+                "searchForBlock",
+                "searchForEntity",
+            }),
+            requires_delivery=False,
+            delivery_score=0.05,
+            delivery_reason="world animal task",
+        )
+
+    return CompletionSpec(
+        kind="unknown",
+        requires_delivery=False,
+        delivery_score=0.25,
+        delivery_reason="no structured target inferred",
+    )
 
 
 def _task_boundary_block_reason(task: ActiveTask | None, command_name: str) -> str | None:
@@ -562,6 +893,72 @@ def _completion_kind_matches_task(task: ActiveTask, command_name: str, kind: str
             and command_name.lstrip("!") in _NAVIGATION_ONLY_ALLOWED_COMMANDS
         )
     return True
+
+
+def _inventory_count_any_from_state(state: BotState, item_names: tuple[str, ...]) -> int:
+    wanted = set(item_names)
+    return sum(item.count for item in state.inventory if item.name in wanted)
+
+
+def _completion_spec_allows_command_completion(
+    task: ActiveTask,
+    command_name: str,
+    kind: str,
+    bot_state: BotState,
+) -> bool:
+    spec = task.completion_spec
+    if spec is None or spec.kind == "unknown":
+        return _completion_kind_matches_task(task, command_name, kind)
+
+    name = command_name.lstrip("!")
+    if name in spec.intermediate_commands and name not in spec.terminal_commands:
+        logger.info(
+            "Command treated as intermediate by completion spec: "
+            "task=%s spec=%s command=%s request=%r",
+            task.id,
+            spec.kind,
+            name,
+            task.original_message,
+        )
+        return False
+
+    if spec.kind == "navigation":
+        return kind == "navigation" and name in spec.terminal_commands
+
+    if spec.kind in {"collect_item", "craft_item", "cook_item"}:
+        if name not in spec.terminal_commands:
+            return False
+        if name == "givePlayer":
+            return True
+        if not spec.acceptable_items:
+            return True
+        have = _inventory_count_any_from_state(bot_state, spec.acceptable_items)
+        requested = spec.quantity or 1
+        delta = _inventory_delta_from_baseline(task, bot_state, spec.acceptable_items)
+        if delta >= requested:
+            return True
+        if spec.kind == "cook_item" and have >= requested:
+            return True
+        logger.info(
+            "Inventory command is partial progress by completion spec: "
+            "task=%s spec=%s command=%s have=%d delta=%d requested=%d acceptable=%s",
+            task.id,
+            spec.kind,
+            name,
+            have,
+            delta,
+            requested,
+            spec.acceptable_items,
+        )
+        return False
+
+    if spec.kind == "planting":
+        return name == "tillAndSow"
+
+    if spec.kind == "breeding":
+        return name == "breedAnimals"
+
+    return _completion_kind_matches_task(task, command_name, kind)
 
 
 def _world_change_command_can_complete_task(command_name: str, task: ActiveTask) -> bool:
@@ -593,6 +990,11 @@ def _world_change_command_can_complete_task(command_name: str, task: ActiveTask)
         ))
     if name == "clearFurnace":
         return bool(re.search(r"\bclear\s+(the\s+)?furnace\b|清空.*熔炉|清理.*熔炉", message))
+    if name == "digDown":
+        return bool(re.search(
+            r"\b(dig\s+down|mine\s+down|tunnel\s+down)\b|向下挖|往下挖|挖下去|垂直挖",
+            message,
+        ))
     return False
 
 
@@ -687,6 +1089,9 @@ _ITEM_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _ITEM_ALIAS_SOURCES: dict[str, tuple[str, str | None]] = {
+    "iron pickaxe": ("iron_pickaxe", None),
+    "iron_pickaxes": ("iron_pickaxe", None),
+    "iron_pickaxe": ("iron_pickaxe", None),
     "wood": ("oak_log", "oak_log"),
     "log": ("oak_log", "oak_log"),
     "logs": ("oak_log", "oak_log"),
@@ -694,6 +1099,11 @@ _ITEM_ALIAS_SOURCES: dict[str, tuple[str, str | None]] = {
     "oak_log": ("oak_log", "oak_log"),
     "coal": ("coal", "coal_ore"),
     "coal_ore": ("coal", "coal_ore"),
+    "iron": ("raw_iron", "iron_ore"),
+    "iron ore": ("raw_iron", "iron_ore"),
+    "iron_ore": ("raw_iron", "iron_ore"),
+    "raw iron": ("raw_iron", "iron_ore"),
+    "raw_iron": ("raw_iron", "iron_ore"),
     "stone": ("cobblestone", "stone"),
     "cobblestone": ("cobblestone", "cobblestone"),
     "dirt": ("dirt", "dirt"),
@@ -717,6 +1127,10 @@ _ITEM_ALIAS_SOURCES: dict[str, tuple[str, str | None]] = {
     "煤": ("coal", "coal_ore"),
     "煤炭": ("coal", "coal_ore"),
     "煤矿": ("coal", "coal_ore"),
+    "铁": ("raw_iron", "iron_ore"),
+    "铁镐": ("iron_pickaxe", None),
+    "铁矿": ("raw_iron", "iron_ore"),
+    "粗铁": ("raw_iron", "iron_ore"),
     "石头": ("cobblestone", "stone"),
     "圆石": ("cobblestone", "cobblestone"),
     "泥土": ("dirt", "dirt"),
@@ -747,6 +1161,9 @@ _CRAFT_ALIASES: dict[str, str] = {
     "torches": "torch",
     "stick": "stick",
     "sticks": "stick",
+    "iron pickaxe": "iron_pickaxe",
+    "iron_pickaxes": "iron_pickaxe",
+    "iron_pickaxe": "iron_pickaxe",
     "wooden shovel": "wooden_shovel",
     "wooden_shovel": "wooden_shovel",
     "wooden axe": "wooden_axe",
@@ -758,6 +1175,7 @@ _CRAFT_ALIASES: dict[str, str] = {
     "木铲子": "wooden_shovel",
     "木斧头": "wooden_axe",
     "木镐": "wooden_pickaxe",
+    "铁镐": "iron_pickaxe",
     "火把": "torch",
     "工作台": "crafting_table",
 }
@@ -876,7 +1294,10 @@ def _parse_item_request(message: str) -> ItemRequest | None:
 
     quantity = _quantity_from_item_request(text)
     for alias in sorted(_ITEM_ALIAS_SOURCES, key=len, reverse=True):
-        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", text):
+        if (
+            re.search(r"[\u4e00-\u9fff]", alias) and alias in text
+            or re.search(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", text)
+        ):
             item_name, source_block = _ITEM_ALIAS_SOURCES[alias]
             return ItemRequest(item_name=item_name, source_block=source_block, quantity=quantity)
     return None
@@ -890,7 +1311,10 @@ def _parse_craft_request(message: str) -> CraftRequest | None:
     quantity = _quantity_from_craft_request(text)
     additive = bool(re.search(r"\b(more|extra|additional|another)\b|再|额外|更多", text))
     for alias in sorted(_CRAFT_ALIASES, key=len, reverse=True):
-        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", text):
+        if (
+            re.search(r"[\u4e00-\u9fff]", alias) and alias in text
+            or re.search(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", text)
+        ):
             return CraftRequest(
                 item_name=_CRAFT_ALIASES[alias],
                 quantity=quantity,
@@ -977,6 +1401,39 @@ def _inventory_count_from_state(state: BotState, item_name: str) -> int:
     return sum(item.count for item in state.inventory if item.name == item_name)
 
 
+def _inventory_counts_from_state(state: BotState) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in state.inventory:
+        counts[item.name] = counts.get(item.name, 0) + item.count
+    return counts
+
+
+def _position_tuple_from_state(state: BotState) -> tuple[float, float, float] | None:
+    pos = state.position
+    if pos is None:
+        return None
+    return (float(pos.x), float(pos.y), float(pos.z))
+
+
+def _inventory_count_any(
+    inventory: dict[str, int] | None,
+    item_names: tuple[str, ...],
+) -> int:
+    if not inventory:
+        return 0
+    return sum(int(inventory.get(item_name, 0)) for item_name in item_names)
+
+
+def _inventory_delta_from_baseline(
+    task: ActiveTask,
+    state: BotState,
+    item_names: tuple[str, ...],
+) -> int:
+    current = _inventory_count_any(_inventory_counts_from_state(state), item_names)
+    baseline = _inventory_count_any(task.baseline_inventory, item_names)
+    return current - baseline
+
+
 def _slugify_task_name(text: str, *, limit: int = 48) -> str:
     slug = re.sub(r"[^a-zA-Z0-9_\u4e00-\u9fff]+", "_", text.strip().lower())
     slug = re.sub(r"_+", "_", slug).strip("_")
@@ -1044,6 +1501,7 @@ class Agent:
         # Error recovery — guided task resumption
         self._pending_task: PendingTask | None = None
         self._active_task: ActiveTask | None = None
+        self._active_task_stack: list[ActiveTask] = []
         self._direct_shortcut_retry_reason: str | None = None
         self._guided_loop_task: asyncio.Task[None] | None = None
         self._self_prompt_goal: str | None = None
@@ -1625,6 +2083,46 @@ class Agent:
             )
         return allowed
 
+    def _direct_shortcut_block_reason(
+        self,
+        route: str,
+        bot_state: BotState,
+    ) -> str | None:
+        """Return why a local shortcut should yield to the planner.
+
+        Shortcuts stay narrow: stop/follow/come-to-me remain direct actions.
+        Direct item is only for inventory-satisfied delivery. If the bot would
+        need to search, mine, gather, craft, smelt, fight, or repair missing
+        dependencies, the planner/recovery loop owns the task.
+        """
+        if route != "direct_item":
+            return None
+
+        request = _parse_item_request(self._last_message)
+        if request is None:
+            return None
+        if _cook_request_is_compound(self._last_message):
+            return "compound cook request"
+
+        if _is_generic_wood_request(self._last_message) and (
+            request.item_name == "oak_log"
+            or request.source_block == "oak_log"
+            or _wood_family_from_log(request.item_name) is not None
+        ):
+            have = _inventory_log_count_from_state(bot_state)
+        else:
+            have = max(
+                _inventory_count_from_state(bot_state, item_name)
+                for item_name in _acceptable_items_for_target(request.item_name)
+            )
+
+        if have >= request.quantity:
+            return None
+        return (
+            f"needs multi-step acquisition for {request.item_name} "
+            f"(have {have}, need {request.quantity})"
+        )
+
     # ── Plan loop (action / question / chitchat) ────────────────────
 
     async def _run_plan_loop(
@@ -1658,6 +2156,7 @@ class Agent:
         dispatch_decision: DispatchDecision | None = None
         if use_tools and self._dispatch_gate is not None:
             dispatch_decision = await self._dispatch_gate.classify(self._last_message, bot_state)
+            self._apply_delivery_joint_judgement(dispatch_decision)
         if use_tools:
             if await self._maybe_complete_satisfied_craft(bot_state):
                 return True
@@ -1671,9 +2170,19 @@ class Agent:
                     return cook_result
             if self._direct_shortcut_retry_reason is None:
                 if self._dispatch_allows_shortcut(dispatch_decision, "direct_item"):
-                    item_result = await self._try_direct_item_request(bot_state)
-                    if item_result is not None:
-                        return item_result
+                    block_reason = self._direct_shortcut_block_reason(
+                        "direct_item",
+                        bot_state,
+                    )
+                    if block_reason is None:
+                        item_result = await self._try_direct_item_request(bot_state)
+                        if item_result is not None:
+                            return item_result
+                    else:
+                        logger.info(
+                            "Direct shortcut skipped route=direct_item reason=%s",
+                            block_reason,
+                        )
             if self._direct_shortcut_retry_reason is None:
                 if self._dispatch_allows_shortcut(dispatch_decision, "skill"):
                     skill_used = await self._try_phase5a_skill(self._last_message, bot_state)
@@ -2148,6 +2657,21 @@ class Agent:
                     return used_command
 
                 if is_fail:
+                    if await self._recover_missing_dependency(
+                        normalized_name,
+                        cmd_args,
+                        cmd_kwargs,
+                        result,
+                    ):
+                        consecutive_failures = 0
+                        last_failed = None
+                        bot_state = await self.observe()
+                        if not self._running:
+                            return used_command
+                        if self._active_task is None:
+                            return True
+                        continue
+
                     if await self._recover_nearby_miss(
                         normalized_name,
                         cmd_args,
@@ -2250,6 +2774,7 @@ class Agent:
             return False
         if not _action_succeeded(result):
             return False
+        self._active_task_add_snapshot(bot_state, note=f"after {command_name}")
 
         kind = _command_completion_kind(command_name)
         evidence = self._completion_evidence_for_command(
@@ -2261,7 +2786,12 @@ class Agent:
         if evidence is None:
             return False
 
-        if not _completion_kind_matches_task(task, command_name, kind):
+        if not _completion_spec_allows_command_completion(
+            task,
+            command_name,
+            kind,
+            bot_state,
+        ):
             logger.info(
                 "Command completion evidence ignored outside task boundary: "
                 "task=%s command=%s kind=%s request=%r",
@@ -2469,6 +2999,7 @@ class Agent:
                     "player_name": self._last_sender,
                     "item_name": item_name,
                     "num": quantity,
+                    "_delivery_prepositioned": True,
                 },
             ),
         ]:
@@ -2892,13 +3423,25 @@ class Agent:
                 })
                 await self._send_chat(f"Done: {result}")
                 if not ok:
+                    recovered = await self._recover_missing_dependency(
+                        command,
+                        [],
+                        kwargs,
+                        result,
+                    )
+                    if recovered:
+                        if self._active_task is None or not self._running:
+                            return True
+                        continue
                     await self._finish_active_task("failed", reason=str(result or ""))
                     return True
 
         delivery_item_name = request.item_name
         delivery_quantity = request.quantity
+        latest_state = await self.observe()
+        if not self._running:
+            return True
         if generic_wood_request:
-            latest_state = await self.observe()
             best_log = _best_inventory_log_item(latest_state)
             if best_log is not None:
                 delivery_item_name = best_log[0]
@@ -2908,6 +3451,10 @@ class Agent:
                 and _wood_family_from_log(effective_source_block)
             ):
                 delivery_item_name = effective_source_block
+        else:
+            candidate = self._delivery_candidate_from_state(latest_state)
+            if candidate is not None:
+                delivery_item_name, delivery_quantity = candidate
 
         final_ok = True
         for command, kwargs in [
@@ -2918,6 +3465,7 @@ class Agent:
                     "player_name": self._last_sender,
                     "item_name": delivery_item_name,
                     "num": delivery_quantity,
+                    "_delivery_prepositioned": True,
                 },
             ),
         ]:
@@ -3051,6 +3599,328 @@ class Agent:
             if not recover_ok:
                 break
         return True
+
+    async def _recover_missing_dependency(
+        self,
+        command_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any] | None,
+        result: Any,
+    ) -> bool:
+        """Recover from explicit dependency failures before failing the task."""
+        text = str(result or "")
+        task = self._active_task
+        if task is None:
+            return False
+        if task.recovery_attempts >= _MAX_RECOVERY_ATTEMPTS_PER_TASK:
+            logger.info(
+                "Recovery budget exhausted: task=%s attempts=%d result=%s",
+                task.id,
+                task.recovery_attempts,
+                _log_preview(text),
+            )
+            return False
+
+        cause = ""
+        retry_command = command_name
+        retry_args = list(args)
+        retry_kwargs = dict(kwargs or {})
+        recovery_steps: list[tuple[str, list[Any], dict[str, Any]]] = []
+
+        tool_match = _MISSING_TOOL_RE.search(text)
+        if command_name == "collectBlocks" and tool_match is not None:
+            tool_name = tool_match.group("tool").lower()
+            target = tool_match.group("target").lower()
+            cause = f"Missing {tool_name} for {target}"
+            recovery_steps = await self._tool_recovery_steps(tool_name)
+
+        material_match = _MISSING_MATERIALS_RE.search(text)
+        if not recovery_steps and material_match is not None:
+            target = material_match.group("target").lower()
+            missing_counts = _parse_missing_counts(material_match.group("missing"))
+            if missing_counts:
+                cause = f"Missing materials for {target}: {missing_counts}"
+                recovery_steps = await self._missing_material_recovery_steps(missing_counts)
+
+        if not recovery_steps:
+            return False
+
+        task.recovery_attempts += 1
+        logger.info(
+            "Recovering missing dependency: task=%s attempt=%d command=%s cause=%s steps=%s",
+            task.id,
+            task.recovery_attempts,
+            command_name,
+            cause,
+            [step[0] for step in recovery_steps],
+        )
+        self._active_task_add_event(
+            "recovery",
+            f"{cause}; recovering dependencies before retry.",
+        )
+        self._history.append(ConversationTurn(
+            role="system",
+            content=(
+                f"The previous command failed because {cause}. "
+                f"Recover the dependency, then retry {command_name}."
+            ),
+        ))
+
+        for recover_command, recover_args, recover_kwargs in recovery_steps:
+            recover_result = await self._run_recovery_action(
+                recover_command,
+                recover_args,
+                recover_kwargs,
+                recovery_kind="missing_dependency",
+            )
+            if not _action_succeeded(recover_result):
+                return False
+
+        retry_result = await self._run_recovery_action(
+            retry_command,
+            retry_args,
+            retry_kwargs,
+            recovery_kind="retry_after_missing_dependency",
+        )
+        if not _action_succeeded(retry_result):
+            return False
+
+        retry_state = await self.observe()
+        if not self._running:
+            return True
+        await self._maybe_finish_after_command_completion(
+            command_name,
+            retry_result,
+            retry_state,
+        )
+        return True
+
+    async def _run_recovery_action(
+        self,
+        command: str,
+        args: list[Any],
+        kwargs: dict[str, Any],
+        *,
+        recovery_kind: str,
+    ) -> Any:
+        action_desc = _describe_action(command, args if args else list(kwargs.values()))
+        await self._send_chat(action_desc)
+        result = await self._execute_agent_command(command, args, kwargs)
+        self._record_action(command, args, result)
+        ok = _action_succeeded(result)
+        self._active_task_add_event(
+            "action_result",
+            f"{command} args={args} kwargs={kwargs} -> {result}",
+            ok=ok,
+        )
+        await self._record_event("action_result", {
+            "command": command,
+            "args": args,
+            "kwargs": kwargs,
+            "result": result,
+            "recovery": recovery_kind,
+        })
+        self._history.append(ConversationTurn(role="system", content=str(result or "")))
+        await self._send_chat(f"Done: {result}")
+        return result
+
+    async def _tool_recovery_steps(
+        self,
+        tool_name: str,
+    ) -> list[tuple[str, list[Any], dict[str, Any]]]:
+        state = await self.observe()
+        if not self._running:
+            return []
+        inventory = {item.name: item.count for item in state.inventory}
+        steps: list[tuple[str, list[Any], dict[str, Any]]] = []
+
+        def have(item: str, count: int = 1) -> bool:
+            return inventory.get(item, 0) >= count
+
+        def add_craft(item: str, count: int = 1) -> None:
+            steps.append(("craftRecipe", [], {"recipe_name": item, "num": count}))
+
+        def ensure_planks(count: int) -> bool:
+            current = sum(inventory.get(planks, 0) for planks in _WOOD_PLANK_ITEMS)
+            if current >= count:
+                return True
+            best_log = _best_inventory_log_item(state)
+            family = _wood_family_from_log(best_log[0]) if best_log else None
+            if family is None:
+                return False
+            planks = _planks_for_wood_family(family)
+            crafts = max(1, math.ceil((count - current) / 4))
+            add_craft(planks, crafts)
+            inventory[planks] = inventory.get(planks, 0) + crafts * 4
+            return True
+
+        def consume_planks(count: int) -> None:
+            remaining = count
+            for planks in sorted(_WOOD_PLANK_ITEMS):
+                if remaining <= 0:
+                    return
+                take = min(inventory.get(planks, 0), remaining)
+                if take > 0:
+                    inventory[planks] -= take
+                    remaining -= take
+
+        def ensure_sticks(count: int) -> bool:
+            if have("stick", count):
+                return True
+            missing = count - inventory.get("stick", 0)
+            crafts = max(1, math.ceil(missing / 4))
+            if not ensure_planks(crafts * 2):
+                return False
+            consume_planks(crafts * 2)
+            add_craft("stick", crafts)
+            inventory["stick"] = inventory.get("stick", 0) + crafts * 4
+            return True
+
+        parts = _tool_parts(tool_name)
+        if parts is not None:
+            material, family = parts
+            material_item = _TOOL_MATERIAL_ITEMS.get(material)
+            material_count = _TOOL_FAMILY_MATERIAL_COUNTS[family]
+            stick_count = _TOOL_FAMILY_STICK_COUNTS[family]
+            if family in _CRAFTING_TABLE_TOOL_FAMILIES and not (
+                have("crafting_table", 1) or "crafting_table" in state.nearby_block_types
+            ):
+                if not ensure_planks(4):
+                    return []
+                consume_planks(4)
+                add_craft("crafting_table", 1)
+                inventory["crafting_table"] = inventory.get("crafting_table", 0) + 1
+            if not ensure_sticks(stick_count):
+                return []
+            if material in {"wooden", "wood"}:
+                if not ensure_planks(material_count):
+                    return []
+                consume_planks(material_count)
+            elif material_item is not None:
+                if material_item == "cobblestone" and not have("cobblestone", material_count):
+                    missing = material_count - inventory.get("cobblestone", 0)
+                    steps.append((
+                        "collectBlocks",
+                        [],
+                        {"block_type": "cobblestone", "count": missing},
+                    ))
+                    inventory["cobblestone"] = inventory.get("cobblestone", 0) + missing
+                elif not have(material_item, material_count):
+                    return []
+            else:
+                return []
+            add_craft(tool_name, 1)
+            return steps
+
+        add_craft(tool_name, 1)
+        return steps
+
+    async def _missing_material_recovery_steps(
+        self,
+        missing_counts: dict[str, int],
+    ) -> list[tuple[str, list[Any], dict[str, Any]]]:
+        """Build deterministic recovery steps for common missing recipe materials."""
+        state = await self.observe()
+        if not self._running:
+            return []
+        inventory = {item.name: item.count for item in state.inventory}
+        steps: list[tuple[str, list[Any], dict[str, Any]]] = []
+
+        def have(item: str, count: int = 1) -> bool:
+            return inventory.get(item, 0) >= count
+
+        def craft(item: str, count: int = 1) -> None:
+            steps.append(("craftRecipe", [], {"recipe_name": item, "num": count}))
+
+        def ensure_planks(count: int) -> bool:
+            current = sum(inventory.get(planks, 0) for planks in _WOOD_PLANK_ITEMS)
+            if current >= count:
+                return True
+            best_log = _best_inventory_log_item(state)
+            family = _wood_family_from_log(best_log[0]) if best_log else None
+            if family is None:
+                return False
+            planks = _planks_for_wood_family(family)
+            crafts = max(1, math.ceil((count - current) / 4))
+            craft(planks, crafts)
+            inventory[planks] = inventory.get(planks, 0) + crafts * 4
+            return True
+
+        def consume_planks(count: int) -> None:
+            remaining = count
+            for planks in sorted(_WOOD_PLANK_ITEMS):
+                if remaining <= 0:
+                    return
+                take = min(inventory.get(planks, 0), remaining)
+                if take > 0:
+                    inventory[planks] -= take
+                    remaining -= take
+
+        for item, count in sorted(missing_counts.items()):
+            if have(item, count):
+                continue
+            if item == "stick":
+                crafts = max(1, math.ceil((count - inventory.get("stick", 0)) / 4))
+                if not ensure_planks(crafts * 2):
+                    return []
+                consume_planks(crafts * 2)
+                craft("stick", crafts)
+                inventory["stick"] = inventory.get("stick", 0) + crafts * 4
+                continue
+            if item in _WOOD_PLANK_ITEMS:
+                if not ensure_planks(count):
+                    return []
+                continue
+            if item == "crafting_table":
+                if "crafting_table" in state.nearby_block_types:
+                    continue
+                if not ensure_planks(4):
+                    return []
+                consume_planks(4)
+                craft("crafting_table", 1)
+                inventory["crafting_table"] = inventory.get("crafting_table", 0) + 1
+                continue
+            if item == "furnace":
+                if "furnace" in state.nearby_block_types:
+                    continue
+                if not have("furnace", 1):
+                    missing_cobble = max(0, 8 - inventory.get("cobblestone", 0))
+                    if missing_cobble > 0:
+                        steps.append((
+                            "collectBlocks",
+                            [],
+                            {"block_type": "cobblestone", "count": missing_cobble},
+                        ))
+                        inventory["cobblestone"] = (
+                            inventory.get("cobblestone", 0) + missing_cobble
+                        )
+                    craft("furnace", 1)
+                    inventory["furnace"] = inventory.get("furnace", 0) + 1
+                steps.append(("placeHere", [], {"block_type": "furnace"}))
+                continue
+            if item == "cobblestone":
+                missing = count - inventory.get("cobblestone", 0)
+                if missing > 0:
+                    steps.append((
+                        "collectBlocks",
+                        [],
+                        {"block_type": "cobblestone", "count": missing},
+                    ))
+                    inventory["cobblestone"] = inventory.get("cobblestone", 0) + missing
+                continue
+            if item == "coal":
+                missing = count - inventory.get("coal", 0)
+                if missing > 0:
+                    steps.append((
+                        "collectBlocks",
+                        [],
+                        {"block_type": "coal_ore", "count": missing},
+                    ))
+                    inventory["coal"] = inventory.get("coal", 0) + missing
+                continue
+            return []
+
+        return steps
 
     @staticmethod
     def _target_from_failed_search(
@@ -3274,6 +4144,43 @@ class Agent:
             return await self._execute_dynamic_action(prompt)
         args, kwargs = self._normalize_player_command_args(name, args, kwargs)
         args, kwargs = await self._normalise_wood_resource_args(name, args, kwargs)
+        if name == "givePlayer":
+            kwargs = dict(kwargs or {})
+            prepositioned = bool(kwargs.pop("_delivery_prepositioned", False))
+            if not prepositioned:
+                player_name = str(
+                    kwargs.get("player_name", args[0] if args else self._last_sender or "")
+                ).strip()
+                if not player_name:
+                    return "FAILED: Cannot deliver item without a target player."
+                move_result = await self.execute_command(
+                    "goToPlayer",
+                    [],
+                    {"player_name": player_name, "closeness": 3},
+                )
+                self._record_action("goToPlayer", [], move_result)
+                move_ok = _action_succeeded(move_result)
+                self._active_task_add_event(
+                    "action_result",
+                    (
+                        "goToPlayer kwargs="
+                        f"{{'player_name': {player_name!r}, 'closeness': 3}} "
+                        f"-> {move_result}"
+                    ),
+                    ok=move_ok,
+                )
+                await self._record_event("action_result", {
+                    "command": "goToPlayer",
+                    "args": [],
+                    "kwargs": {"player_name": player_name, "closeness": 3},
+                    "result": move_result,
+                    "delivery_preposition": True,
+                })
+                if not move_ok:
+                    return (
+                        "FAILED: Could not get close enough to deliver item before "
+                        f"givePlayer: {move_result}"
+                    )
         if name == "getCraftingPlan":
             target = str((kwargs or {}).get("target_item", values[0] if values else ""))
             quantity = int((kwargs or {}).get("quantity", values[1] if len(values) > 1 else 1) or 1)
@@ -3342,8 +4249,35 @@ class Agent:
                     "Use the existing furnace instead of crafting another one."
                 )
 
+        if command_name == "collectBlocks" and self._knowledge is not None:
+            block_type = str((kwargs or {}).get("block_type", args[0] if args else "")).strip()
+            if block_type:
+                inventory = [
+                    {"name": item.name, "count": item.count}
+                    for item in state.inventory
+                ]
+                try:
+                    tool_choice = self._knowledge.select_tool_for_block(block_type, inventory)
+                except Exception:
+                    logger.exception("KnowledgeGraph collectBlocks preflight failed")
+                    tool_choice = None
+                if tool_choice and not bool(tool_choice.get("can_mine", True)):
+                    min_tool = str(tool_choice.get("min_tool") or "").strip()
+                    if min_tool:
+                        inv_text = ", ".join(
+                            f"{item.name} x{item.count}" for item in state.inventory
+                        ) or "nothing"
+                        return (
+                            f"FAILED: Need a {min_tool} to mine {block_type}. "
+                            f"You have: {inv_text}. Craft a {min_tool} first, then retry."
+                        )
+
         if command_name == "smeltItem":
             item_name = str((kwargs or {}).get("item_name", args[0] if args else "")).strip()
+            count = int((kwargs or {}).get("num", args[1] if len(args) > 1 else 1) or 1)
+            smelt_preflight = self._smelt_item_preflight_hint(item_name, count, state)
+            if smelt_preflight is not None:
+                return smelt_preflight
             if self._should_defer_log_charcoal_smelt(item_name, state):
                 return (
                     "FAILED: Do not smelt logs into charcoal for this task yet. "
@@ -3354,6 +4288,62 @@ class Agent:
                 )
 
         return None
+
+    def _smelt_item_preflight_hint(
+        self,
+        item_name: str,
+        count: int,
+        state: BotState,
+    ) -> str | None:
+        """Catch obvious smelting dependency failures before opening a furnace."""
+        if not item_name:
+            return None
+        count = max(int(count or 1), 1)
+        input_name = _normalise_smelt_input(item_name)
+        inventory = {item.name: item.count for item in state.inventory}
+        have_input = inventory.get(input_name, 0)
+        if have_input < count:
+            missing = count - have_input
+            return (
+                f"FAILED: Missing materials for smeltItem: {input_name} x{missing}.\n"
+                f"HINT: Gather {missing}x {input_name} before retrying smeltItem."
+            )
+
+        if "furnace" not in state.nearby_block_types and not self._recently_found_block("furnace"):
+            return (
+                "FAILED: Missing materials for smeltItem: furnace x1.\n"
+                "HINT: Craft or place a furnace before retrying smeltItem."
+            )
+
+        if not _inventory_has_smelting_fuel(state, count):
+            fuel_needed = max(1, math.ceil(count / 8))
+            return (
+                f"FAILED: Missing materials for smeltItem: coal x{fuel_needed}.\n"
+                "HINT: Use coal/charcoal or gather fuel before retrying smeltItem."
+            )
+
+        if input_name in _COMMON_SMELT_OUTPUTS:
+            return None
+        # Avoid blocking uncommon-but-valid recipes from the Mineflayer side;
+        # only surface a hint so the planner has context.
+        return None
+
+    def _recently_found_block(self, block_type: str) -> bool:
+        target = block_type.strip().lower()
+        for action in reversed(self._recent_actions[-6:]):
+            if action.get("name") != "searchForBlock":
+                continue
+            args = list(action.get("args") or [])
+            searched = str(args[0] if args else "").strip().lower()
+            result = str(action.get("result") or "").lower()
+            if searched and searched != target and target not in result:
+                continue
+            if "failed:" in result or result.startswith("no ") or " not found" in result:
+                return False
+            if searched == target or target in result:
+                return True
+            return True
+        return False
 
     def _should_defer_log_charcoal_smelt(self, item_name: str, state: BotState) -> bool:
         family = _wood_family_from_log(item_name)
@@ -4137,8 +5127,13 @@ class Agent:
     ) -> None:
         """Start a new lightweight task, cancelling any unfinished one."""
         await self._finish_active_task("cancelled", reason="Replaced by a newer player command.")
+        baseline_state = (
+            await self.observe()
+            if self._running and self._bridge is not None
+            else BotState()
+        )
         task_id = f"{int(time.time())}_{_slugify_task_name(message)}"
-        self._active_task = ActiveTask(
+        task = ActiveTask(
             id=task_id,
             requester=requester,
             original_message=message,
@@ -4147,16 +5142,36 @@ class Agent:
             timeout_s=300.0,  # 5 min default, mirrors Minecollab benchmark
             started_at=time.time(),
             history_start_index=max(0, len(self._history) - 1),
+            completion_spec=_completion_spec_from_message(message),
+            baseline_inventory=_inventory_counts_from_state(baseline_state),
+            baseline_position=_position_tuple_from_state(baseline_state),
         )
+        self._active_task_stack = [task]
+        self._active_task = task
         self._active_task.events.append(ActiveTaskEvent(
             kind="start",
             message=f"{requester}: {message}",
         ))
+        self._active_task_add_snapshot(baseline_state, note="baseline")
+        spec = self._active_task.completion_spec
+        if spec is not None:
+            self._active_task.events.append(ActiveTaskEvent(
+                kind="completion_spec",
+                message=(
+                    f"kind={spec.kind} targets={list(spec.target_items)} "
+                    f"acceptable={list(spec.acceptable_items)} quantity={spec.quantity} "
+                    f"requires_delivery={spec.requires_delivery} "
+                    f"delivery_score={spec.delivery_score:.2f}"
+                ),
+            ))
         logger.info(
-            "ActiveTask start: id=%s requester=%s planning_strategy=%s message=%r",
+            "ActiveTask start: id=%s requester=%s planning_strategy=%s "
+            "completion_spec=%s delivery=%s message=%r",
             task_id,
             requester,
             planning_strategy.value,
+            spec.kind if spec is not None else None,
+            spec.requires_delivery if spec is not None else None,
             message,
         )
         await self._record_event("task_start", {
@@ -4164,7 +5179,22 @@ class Agent:
             "requester": requester,
             "message": message,
             "planning_strategy": planning_strategy.value,
+            "stack_depth": len(self._active_task_stack),
+            "baseline_inventory": self._active_task.baseline_inventory,
         })
+
+    def _active_task_add_snapshot(self, state: BotState, *, note: str) -> None:
+        task = self._active_task
+        if task is None or task.status != "running":
+            return
+        snapshots = task.snapshots if task.snapshots is not None else []
+        snapshots.append(ActiveTaskSnapshot(
+            seq=len(snapshots),
+            note=note,
+            inventory=_inventory_counts_from_state(state),
+            position=_position_tuple_from_state(state),
+        ))
+        task.snapshots = snapshots
 
     def _active_task_add_event(
         self,
@@ -4181,6 +5211,80 @@ class Agent:
             task.attempts += 1
             if ok is False:
                 task.failures += 1
+
+    def _apply_delivery_joint_judgement(
+        self,
+        decision: DispatchDecision | None,
+    ) -> None:
+        task = self._active_task
+        if task is None or task.status != "running" or task.completion_spec is None:
+            return
+        small_score = self._small_model_delivery_score(decision)
+        if small_score is None:
+            return
+        spec = task.completion_spec
+        combined = (
+            spec.delivery_score * _DELIVERY_PRIMARY_WEIGHT
+            + small_score * _DELIVERY_SMALL_MODEL_WEIGHT
+        )
+        requires_delivery = combined >= _DELIVERY_DECISION_THRESHOLD
+        if (
+            requires_delivery == spec.requires_delivery
+            and abs(combined - spec.delivery_score) < 0.01
+        ):
+            return
+        task.completion_spec = CompletionSpec(
+            kind=spec.kind,
+            target_items=spec.target_items,
+            acceptable_items=spec.acceptable_items,
+            quantity=spec.quantity,
+            terminal_commands=spec.terminal_commands,
+            intermediate_commands=spec.intermediate_commands,
+            requires_delivery=requires_delivery,
+            delivery_score=combined,
+            delivery_reason=(
+                f"{spec.delivery_reason}; joint delivery judgement "
+                f"primary={spec.delivery_score:.2f} small={small_score:.2f}"
+            ),
+        )
+        self._active_task_add_event(
+            "completion_spec",
+            (
+                "delivery_judgement "
+                f"primary={spec.delivery_score:.2f} small={small_score:.2f} "
+                f"combined={combined:.2f} requires_delivery={requires_delivery}"
+            ),
+        )
+        logger.info(
+            "ActiveTask delivery judgement: task=%s primary=%.2f small=%.2f "
+            "combined=%.2f requires_delivery=%s",
+            task.id,
+            spec.delivery_score,
+            small_score,
+            combined,
+            requires_delivery,
+        )
+
+    @staticmethod
+    def _small_model_delivery_score(decision: DispatchDecision | None) -> float | None:
+        if decision is None:
+            return None
+        text = " ".join((
+            decision.route,
+            decision.task_shape,
+            decision.reason,
+            " ".join(decision.requested_outputs),
+            " ".join(decision.required_steps),
+        )).lower()
+        if decision.route in {"direct_item", "direct_cook"}:
+            return 0.90
+        if decision.requested_outputs:
+            return 0.80
+        if re.search(r"\b(deliver|give|bring|fetch|hand)\b|交付|给|拿给|带给", text):
+            return 0.75
+        if decision.route in {"direct_action", "chat", "ask_clarify"}:
+            return 0.10
+        return 0.40
 
     async def _finish_active_task(self, status: str, *, reason: str = "") -> None:
         """Summarise, write memory, then clear the current active task."""
@@ -4228,9 +5332,11 @@ class Agent:
             "attempts": task.attempts,
             "failures": task.failures,
             "summary": task.summary,
+            "stack_depth": len(self._active_task_stack),
         })
         await self._remember_active_task(task)
         self._active_task = None
+        self._active_task_stack.clear()
 
     @staticmethod
     def _active_task_has_delivery(task: ActiveTask) -> bool:
@@ -4250,6 +5356,8 @@ class Agent:
 
     @staticmethod
     def _active_task_expects_delivery(task: ActiveTask) -> bool:
+        if task.completion_spec is not None:
+            return task.completion_spec.requires_delivery
         message = task.original_message or ""
         return (
             _parse_cook_request(message) is not None
@@ -4282,6 +5390,15 @@ class Agent:
         )
 
     def _delivery_candidate_from_state(self, state: BotState) -> tuple[str, int] | None:
+        task = self._active_task
+        spec = task.completion_spec if task is not None else None
+        if spec is not None and spec.requires_delivery and spec.acceptable_items:
+            for item_name in spec.acceptable_items:
+                have = _inventory_count_from_state(state, item_name)
+                requested = spec.quantity or have
+                if have >= requested:
+                    return item_name, requested
+
         cook_request = _parse_cook_request(self._last_message)
         if cook_request is not None:
             have = _inventory_count_from_state(state, cook_request.cooked_item)
@@ -4367,14 +5484,44 @@ class Agent:
         task = self._active_task
         if task is None or task.status != "running":
             return ""
+        spec = task.completion_spec
+        spec_lines = ""
+        if spec is not None:
+            spec_lines = (
+                "completion_spec:\n"
+                f"- kind: {spec.kind}\n"
+                f"- target_items: {list(spec.target_items)}\n"
+                f"- acceptable_items: {list(spec.acceptable_items)}\n"
+                f"- quantity: {spec.quantity}\n"
+                f"- terminal_commands: {sorted(spec.terminal_commands)}\n"
+                f"- intermediate_commands: {sorted(spec.intermediate_commands)}\n"
+                f"- requires_delivery: {spec.requires_delivery}\n"
+            )
+        baseline_items = ""
+        if task.baseline_inventory:
+            relevant = (
+                set(spec.acceptable_items if spec is not None else ())
+                | set(spec.target_items if spec is not None else ())
+            )
+            baseline_subset = {
+                name: count
+                for name, count in task.baseline_inventory.items()
+                if not relevant or name in relevant
+            }
+            if baseline_subset:
+                baseline_items = f"baseline_inventory: {baseline_subset}\n"
         return (
             "ACTIVE TASK\n"
             f"id: {task.id}\n"
+            f"stack_depth: {len(self._active_task_stack)} (only top task is active)\n"
             f"requester: {task.requester}\n"
             f"request: {task.original_message}\n"
             f"planning_strategy: {task.planning_strategy.value}\n"
             f"attempts: {task.attempts}\n"
             f"failures: {task.failures}\n"
+            f"snapshots: {len(task.snapshots or [])}\n"
+            f"{baseline_items}"
+            f"{spec_lines}"
             "recent task events:\n"
             f"{self._active_task_event_lines(task, limit=6)}\n"
             "Task boundary: complete only this request from the requester. "
@@ -4410,24 +5557,41 @@ class Agent:
     async def _remember_active_task(self, task: ActiveTask) -> None:
         if self._memory is None:
             return
+        quality = self._active_task_memory_quality(task)
+        if quality is None:
+            logger.info(
+                "ActiveTask memory skipped by quality gate: task=%s status=%s summary=%s",
+                task.id,
+                task.status,
+                _log_preview(task.summary),
+            )
+            return
+        confidence, quality_tags = quality
+        spec = task.completion_spec
+        task_kind = spec.kind if spec is not None else "unknown"
         record = MemoryRecord(
             name=f"task_{task.id}",
             description=task.summary[:150],
             type=MemoryType.EPISODIC,
             scope=Scope.WORLD,
-            confidence=0.75 if task.status == "succeeded" else 0.65,
+            confidence=confidence,
             source="llm_reflected",
             tags=[
                 "active_task",
                 f"task_{task.status}",
+                f"task_kind_{task_kind}",
                 f"requester_{_slugify_task_name(task.requester, limit=24)}",
+                *quality_tags,
             ],
             body=(
                 f"**Request:** {task.requester}: {task.original_message}\n\n"
                 f"**Status:** {task.status}\n\n"
+                f"**Task Kind:** {task_kind}\n\n"
                 f"**Attempts:** {task.attempts}\n\n"
                 f"**Failures:** {task.failures}\n\n"
                 f"**Summary:** {task.summary}\n\n"
+                f"**Completion Evidence:** "
+                f"{'yes' if self._active_task_has_completion_evidence(task) else 'no'}\n\n"
                 f"**Events:**\n{self._active_task_event_lines(task, limit=20)}\n"
             ),
         )
@@ -4435,6 +5599,36 @@ class Agent:
             await self._memory.remember(record)
         except Exception:
             logger.exception("ActiveTask memory write failed")
+
+    def _active_task_memory_quality(self, task: ActiveTask) -> tuple[float, list[str]] | None:
+        """Return confidence/tags for a task memory, or None to skip writing."""
+        has_completion = self._active_task_has_completion_evidence(task)
+        has_delivery = self._active_task_has_delivery(task)
+        contradicts = _summary_contradicts_task_status(task.summary, task.status)
+        tags: list[str] = []
+
+        if task.status == "succeeded":
+            if contradicts:
+                return None
+            if not has_completion and not has_delivery:
+                return None
+            tags.append("memory_quality_verified")
+            return 0.82, tags
+
+        if task.status == "failed":
+            tags.extend(["memory_quality_lesson_only", "memory_quality_low_confidence"])
+            if contradicts:
+                tags.append("memory_quality_summary_conflict")
+            return 0.45, tags
+
+        if task.status == "cancelled":
+            if task.attempts <= 0:
+                return None
+            tags.extend(["memory_quality_lesson_only", "memory_quality_cancelled"])
+            return 0.35, tags
+
+        tags.append("memory_quality_low_confidence")
+        return 0.40, tags
 
     def _query_knowledge(
         self, target: str, inventory: list[str] | None = None,
@@ -4531,10 +5725,10 @@ class Agent:
         if not missing_counts:
             return None
 
-        # Let the Mineflayer side decide whether a crafting table in inventory
-        # or nearby is usable. The cheap nearby-block snapshot is not reliable
-        # enough to block otherwise valid 3x3 crafts here.
-        missing_counts.pop("crafting_table", None)
+        if "crafting_table" in missing_counts:
+            bot_state = await self.observe()
+            if "crafting_table" in bot_state.nearby_block_types:
+                missing_counts.pop("crafting_table", None)
         if not missing_counts:
             return None
 

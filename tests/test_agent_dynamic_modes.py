@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from conftest import FakeBridge
+from conftest import FakeBridge, SmartBridge
 
 from agent.core import Agent, _command_defs
 from agent.models import AgentConfig, BotState, EntityInfo, Position
@@ -187,6 +187,264 @@ async def test_navigation_task_blocks_crafting_bleed_from_previous_task() -> Non
         and "Ignored craftRecipe because the current task is only" in turn.content
         for turn in agent._history
     )
+
+
+async def test_active_task_completion_spec_for_iron_mining() -> None:
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+
+    await agent._replace_active_task("Wilson", "挖8铁矿")
+
+    assert agent._active_task is not None
+    spec = agent._active_task.completion_spec
+    assert spec is not None
+    assert spec.kind == "collect_item"
+    assert spec.target_items == ("raw_iron",)
+    assert "raw_iron" in spec.acceptable_items
+    assert "iron_ore" in spec.acceptable_items
+    assert spec.quantity == 8
+    assert "craftRecipe" in spec.intermediate_commands
+    assert "collectBlocks" in spec.terminal_commands
+
+
+async def test_active_task_completion_spec_for_chinese_iron_pickaxe_crafting() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "iron_pickaxe", "count": 1}]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    await agent._replace_active_task("Wilson", "帮我做两把铁镐")
+
+    assert agent._active_task is not None
+    assert len(agent._active_task_stack) == 1
+    assert agent._active_task.baseline_inventory == {"iron_pickaxe": 1}
+    assert agent._active_task.snapshots
+    spec = agent._active_task.completion_spec
+    assert spec is not None
+    assert spec.kind == "craft_item"
+    assert spec.target_items == ("iron_pickaxe",)
+    assert spec.quantity == 2
+    assert spec.requires_delivery is True
+
+
+async def test_crafting_prep_does_not_complete_iron_mining_task() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [
+        {"name": "oak_planks", "count": 4},
+        {"name": "cobblestone", "count": 12},
+    ]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "挖8铁矿"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "挖8铁矿")
+
+    state = await agent.observe()
+    finished = await agent._maybe_finish_after_command_completion(
+        "craftRecipe",
+        "Crafted 1x oak_planks.\nInventory: oak_log -1, oak_planks +4.",
+        state,
+    )
+
+    assert finished is False
+    assert agent._active_task is not None
+    assert not any(
+        event.kind == "completion_evidence"
+        for event in (agent._active_task.events or [])
+    )
+
+
+async def test_dig_down_does_not_complete_iron_pickaxe_crafting_task() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "帮我做两把铁镐"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "帮我做两把铁镐")
+
+    state = await agent.observe()
+    finished = await agent._maybe_finish_after_command_completion(
+        "digDown",
+        "Dug down 5 blocks max.",
+        state,
+    )
+
+    assert finished is False
+    assert agent._active_task is not None
+    assert len(agent._active_task_stack) == 1
+    assert not any(
+        event.kind == "completion_evidence"
+        for event in (agent._active_task.events or [])
+    )
+
+
+async def test_completion_spec_delivery_candidate_for_mined_iron() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "raw_iron", "count": 8}]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "挖8铁矿"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "挖8铁矿")
+
+    state = await agent.observe()
+
+    assert agent._delivery_candidate_from_state(state) == ("raw_iron", 8)
+
+
+async def test_missing_pickaxe_failure_recovers_and_retries_collect() -> None:
+    bridge = SmartBridge()
+    bridge.inventory = [
+        {"name": "oak_log", "count": 1},
+        {"name": "oak_planks", "count": 4},
+        {"name": "cobblestone", "count": 12},
+    ]
+    bridge.nearby_blocks = ["iron_ore", "stone"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "挖8铁矿"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "挖8铁矿")
+
+    recovered = await agent._recover_missing_dependency(
+        "collectBlocks",
+        ["iron_ore", 8],
+        None,
+        (
+            "FAILED: Need a stone_pickaxe to mine iron_ore. "
+            "You have: oak_planks x4, cobblestone x12. "
+            "Craft a stone_pickaxe first, then retry."
+        ),
+    )
+
+    assert recovered is True
+    assert ("craft_recipe", "stick", 1) in bridge.calls
+    assert ("craft_recipe", "stone_pickaxe", 1) in bridge.calls
+    assert bridge.calls.count(("collect_blocks", "iron_ore", 8)) == 1
+    assert any(item["name"] == "iron_ore" and item["count"] == 8 for item in bridge.inventory)
+
+
+async def test_missing_material_failure_recovers_common_materials_and_retries() -> None:
+    bridge = SmartBridge()
+    bridge.inventory = [
+        {"name": "oak_log", "count": 1},
+        {"name": "coal", "count": 2},
+    ]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "做8个火把"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "做8个火把")
+
+    recovered = await agent._recover_missing_dependency(
+        "craftRecipe",
+        ["torch", 8],
+        None,
+        "FAILED: Missing materials for torch: stick x2.",
+    )
+
+    assert recovered is True
+    assert any(call[0] == "craft_recipe" and call[1].endswith("_planks") for call in bridge.calls)
+    assert ("craft_recipe", "stick", 1) in bridge.calls
+    assert ("craft_recipe", "torch", 8) in bridge.calls
+
+
+async def test_direct_give_player_command_moves_to_player_first() -> None:
+    bridge = SmartBridge()
+    bridge.inventory = [{"name": "iron_pickaxe", "count": 2}]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "把两把铁镐带给我"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "把两把铁镐带给我")
+
+    result = await agent._execute_agent_command(
+        "givePlayer",
+        ["Wilson", "iron_pickaxe", 2],
+    )
+
+    assert result == "Gave 2x iron_pickaxe to Wilson."
+    go_index = bridge.calls.index(("go_to_player", "Wilson", 3))
+    give_index = bridge.calls.index(("give_to_player", "Wilson", "iron_pickaxe", 2))
+    assert go_index < give_index
+
+
+async def test_recovery_budget_limits_repeated_dependency_repairs() -> None:
+    bridge = SmartBridge()
+    bridge.inventory = [
+        {"name": "oak_log", "count": 2},
+        {"name": "cobblestone", "count": 12},
+    ]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "挖8铁矿"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "挖8铁矿")
+    assert agent._active_task is not None
+    agent._active_task.recovery_attempts = 3
+
+    recovered = await agent._recover_missing_dependency(
+        "collectBlocks",
+        ["iron_ore", 8],
+        None,
+        "FAILED: Need a stone_pickaxe to mine iron_ore.",
+    )
+
+    assert recovered is False
+    assert not any(call[0] == "craft_recipe" for call in bridge.calls)
+
+
+async def test_delivery_joint_judgement_keeps_primary_model_weight_higher() -> None:
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    await agent._replace_active_task("Wilson", "做8个火把")
+    assert agent._active_task is not None
+
+    agent._apply_delivery_joint_judgement(DispatchDecision(
+        route="direct_action",
+        task_shape="atomic",
+        confidence=0.9,
+        reason="do an action in the world",
+    ))
+
+    assert agent._active_task.completion_spec is not None
+    assert agent._active_task.completion_spec.requires_delivery is True
+    assert agent._active_task.completion_spec.delivery_score > 0.5
+
+    await agent._replace_active_task("Wilson", "跟我来")
+    assert agent._active_task is not None
+    agent._apply_delivery_joint_judgement(DispatchDecision(
+        route="direct_item",
+        task_shape="atomic",
+        confidence=0.9,
+        reason="maybe give an item",
+        requested_outputs=["torch"],
+    ))
+
+    assert agent._active_task.completion_spec is not None
+    assert agent._active_task.completion_spec.requires_delivery is False
 
 
 async def test_observe_keeps_entity_counts_beyond_display_cap() -> None:
@@ -455,6 +713,8 @@ async def test_active_task_marks_hard_craft_failure_failed() -> None:
     finish_events = [payload for event, payload in memory.events if event == "task_finish"]
     assert finish_events[-1]["status"] == "failed"
     assert "task_failed" in memory.records[-1].tags
+    assert "memory_quality_lesson_only" in memory.records[-1].tags
+    assert memory.records[-1].confidence == 0.45
 
 
 async def test_successful_llm_cook_task_auto_delivers_result_on_finish() -> None:
@@ -474,6 +734,34 @@ async def test_successful_llm_cook_task_auto_delivers_result_on_finish() -> None
     assert ("go_to_player", "Wilson", 3) in bridge.calls
     assert ("give_to_player", "Wilson", "cooked_porkchop", 2) in bridge.calls
     assert agent._active_task is None
+
+
+async def test_memory_quality_gate_skips_unverified_success() -> None:
+    memory = FakeTaskMemory()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._running = True
+    agent._memory = memory  # type: ignore[assignment]
+    agent._prompter = SummaryPrompter()  # type: ignore[assignment]
+    await agent._replace_active_task("Wilson", "跟我来")
+
+    await agent._finish_active_task("succeeded", reason="Plan loop ended.")
+
+    assert agent._active_task is None
+    assert memory.records == []
+
+
+async def test_memory_quality_gate_skips_cancelled_task_without_actions() -> None:
+    memory = FakeTaskMemory()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._running = True
+    agent._memory = memory  # type: ignore[assignment]
+    agent._prompter = SummaryPrompter()  # type: ignore[assignment]
+    await agent._replace_active_task("Wilson", "跟我来")
+
+    await agent._finish_active_task("cancelled", reason="Replaced by a newer player command.")
+
+    assert agent._active_task is None
+    assert memory.records == []
 
 
 async def test_give_me_some_torch_uses_inventory_without_llm() -> None:
@@ -498,7 +786,7 @@ async def test_give_me_some_torch_uses_inventory_without_llm() -> None:
     assert ("give_to_player", "Wilson", "torch", 8) in bridge.calls
 
 
-async def test_want_to_eat_pork_uses_direct_food_workflow_without_llm() -> None:
+async def test_want_to_eat_pork_uses_planner_instead_of_direct_food_shortcut() -> None:
     bridge = FakeBridge()
     agent = Agent(AgentConfig(name="bot", max_commands=3))
     agent._bridge = bridge
@@ -507,24 +795,33 @@ async def test_want_to_eat_pork_uses_direct_food_workflow_without_llm() -> None:
     agent._executor.set_bridge(bridge)
     agent._executor._register_builtins()
 
-    async def fail_plan(*_args: object, **_kwargs: object) -> LLMOutput:
-        raise AssertionError("LLM should not be called for direct food requests")
+    plan_calls = 0
 
-    agent.plan = fail_plan  # type: ignore[method-assign]
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        nonlocal plan_calls
+        plan_calls += 1
+        assert tool_choice == "auto"
+        return LLMOutput(content='!searchForEntity("pig", 64)', model="fake")
 
-    used_command = await agent.handle_message("Wilson", "I want to eat some pork")
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message(
+        "Wilson",
+        "I want to eat some pork",
+        max_responses=1,
+    )
 
     assert used_command is True
+    assert plan_calls == 1
     assert ("search_for_entity", "pig", 64) in bridge.calls
-    assert ("attack", "pig", 64) in bridge.calls
-    assert ("pickup_nearby_items", 8) in bridge.calls
-    assert ("go_to_player", "Wilson", 3) in bridge.calls
-    assert ("give_to_player", "Wilson", "porkchop", 8) in bridge.calls
+    assert ("attack", "pig", 64) not in bridge.calls
+    assert ("pickup_nearby_items", 8) not in bridge.calls
+    assert not any(call[0] == "give_to_player" for call in bridge.calls)
 
 
 async def test_cook_some_pork_reuses_furnace_and_delivers_cooked_food() -> None:
     bridge = FakeBridge()
-    bridge.inventory = [{"name": "porkchop", "count": 3}]
+    bridge.inventory = [{"name": "porkchop", "count": 3}, {"name": "coal", "count": 1}]
 
     async def smelt_item(item_name: str, num: int = 1) -> str:
         bridge.calls.append(("smelt_item", item_name, num))
@@ -646,7 +943,7 @@ async def test_cook_task_retries_smelt_after_successful_furnace_clear() -> None:
             )
 
     bridge = FakeBridge()
-    bridge.inventory = [{"name": "mutton", "count": 6}, {"name": "stick", "count": 8}]
+    bridge.inventory = [{"name": "mutton", "count": 6}, {"name": "coal", "count": 1}]
     bridge.nearby_blocks = ["furnace", "stone"]
     agent = Agent(AgentConfig(name="bot", max_commands=1))
     agent._bridge = bridge
@@ -763,7 +1060,7 @@ async def test_preflight_skips_placing_workstation_when_one_is_nearby() -> None:
     assert not any(call[0] == "place_block" for call in bridge.calls)
 
 
-async def test_get_some_wood_defaults_to_8_and_delivers_to_player() -> None:
+async def test_get_some_wood_uses_planner_instead_of_direct_item_shortcut() -> None:
     bridge = FakeBridge()
     agent = Agent(AgentConfig(name="bot", max_commands=3))
     agent._bridge = bridge
@@ -772,21 +1069,26 @@ async def test_get_some_wood_defaults_to_8_and_delivers_to_player() -> None:
     agent._executor.set_bridge(bridge)
     agent._executor._register_builtins()
 
-    async def fail_plan(*_args: object, **_kwargs: object) -> LLMOutput:
-        raise AssertionError("LLM should not be called for direct item requests")
+    plan_calls = 0
 
-    agent.plan = fail_plan  # type: ignore[method-assign]
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        nonlocal plan_calls
+        plan_calls += 1
+        assert tool_choice == "auto"
+        return LLMOutput(content='!searchForBlock("oak_log", 64)', model="fake")
 
-    used_command = await agent.handle_message("Wilson", "get some wood")
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "get some wood", max_responses=1)
 
     assert used_command is True
+    assert plan_calls == 1
     assert ("search_for_block", "oak_log", 64) in bridge.calls
-    assert ("collect_blocks", "oak_log", 8) in bridge.calls
-    assert ("go_to_player", "Wilson", 3) in bridge.calls
-    assert ("give_to_player", "Wilson", "oak_log", 8) in bridge.calls
+    assert ("collect_blocks", "oak_log", 8) not in bridge.calls
+    assert not any(call[0] == "give_to_player" for call in bridge.calls)
 
 
-async def test_get_some_wood_uses_nearby_non_oak_log_and_delivers_it() -> None:
+async def test_get_some_wood_with_nearby_log_still_uses_planner() -> None:
     bridge = FakeBridge()
     bridge.nearby_blocks = ["grass_block", "spruce_log"]
     agent = Agent(AgentConfig(name="bot", max_commands=3))
@@ -796,17 +1098,57 @@ async def test_get_some_wood_uses_nearby_non_oak_log_and_delivers_it() -> None:
     agent._executor.set_bridge(bridge)
     agent._executor._register_builtins()
 
-    async def fail_plan(*_args: object, **_kwargs: object) -> LLMOutput:
-        raise AssertionError("LLM should not be called for direct item requests")
+    plan_calls = 0
 
-    agent.plan = fail_plan  # type: ignore[method-assign]
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        nonlocal plan_calls
+        plan_calls += 1
+        assert tool_choice == "auto"
+        return LLMOutput(content='!searchForBlock("spruce_log", 64)', model="fake")
 
-    used_command = await agent.handle_message("Wilson", "get some wood")
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "get some wood", max_responses=1)
 
     assert used_command is True
+    assert plan_calls == 1
     assert ("search_for_block", "spruce_log", 64) in bridge.calls
-    assert ("collect_blocks", "spruce_log", 8) in bridge.calls
-    assert ("give_to_player", "Wilson", "spruce_log", 8) in bridge.calls
+    assert ("collect_blocks", "spruce_log", 8) not in bridge.calls
+    assert not any(call[0] == "give_to_player" for call in bridge.calls)
+
+
+async def test_iron_request_uses_planner_instead_of_direct_item_shortcut() -> None:
+    bridge = SmartBridge()
+    bridge.inventory = [
+        {"name": "oak_log", "count": 5},
+        {"name": "oak_planks", "count": 4},
+        {"name": "cobblestone", "count": 12},
+    ]
+    bridge.nearby_blocks = ["iron_ore", "stone"]
+    agent = Agent(AgentConfig(name="bot", max_commands=3))
+    agent._bridge = bridge
+    agent._running = True
+    agent._prompter = object()  # type: ignore[assignment]
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    plan_calls = 0
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        nonlocal plan_calls
+        plan_calls += 1
+        assert tool_choice == "auto"
+        return LLMOutput(content='!getCraftingPlan("stone_pickaxe", 1)', model="fake")
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "挖8铁矿", max_responses=1)
+
+    assert used_command is True
+    assert plan_calls == 1
+    assert ("get_crafting_plan", "stone_pickaxe", 1) in bridge.calls
+    assert not any(call[0] == "collect_blocks" and call[1] == "iron_ore" for call in bridge.calls)
+    assert not any(call[0] == "give_to_player" for call in bridge.calls)
 
 
 async def test_break_nearby_blocks_command_dispatches() -> None:
@@ -919,6 +1261,57 @@ async def test_torch_task_allows_charcoal_after_failed_coal_search() -> None:
 
     assert result == "Smelted 8x oak_log."
     assert ("smelt_item", "oak_log", 8) in bridge.calls
+
+
+async def test_smelt_preflight_reports_missing_furnace() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "raw_iron", "count": 3}, {"name": "coal", "count": 1}]
+    bridge.nearby_blocks = ["stone"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command("smeltItem", ["raw_iron", 3])
+
+    assert result is not None
+    assert "Missing materials for smeltItem: furnace x1" in result
+    assert not any(call[0] == "smelt_item" for call in bridge.calls)
+
+
+async def test_smelt_preflight_reports_missing_fuel() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "raw_iron", "count": 3}]
+    bridge.nearby_blocks = ["furnace"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command("smeltItem", ["raw_iron", 3])
+
+    assert result is not None
+    assert "Missing materials for smeltItem: coal x1" in result
+    assert not any(call[0] == "smelt_item" for call in bridge.calls)
+
+
+async def test_smelt_preflight_reports_missing_input() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "raw_iron", "count": 1}, {"name": "coal", "count": 1}]
+    bridge.nearby_blocks = ["furnace"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command("smeltItem", ["raw_iron", 3])
+
+    assert result is not None
+    assert "Missing materials for smeltItem: raw_iron x2" in result
+    assert not any(call[0] == "smelt_item" for call in bridge.calls)
 
 
 async def test_breed_animals_command_dispatches() -> None:
@@ -1193,7 +1586,7 @@ async def test_craft_recipe_preflight_reports_missing_materials() -> None:
     assert not any(call[0] == "craft_recipe" for call in bridge.calls)
 
 
-async def test_craft_recipe_preflight_allows_table_only_missing() -> None:
+async def test_craft_recipe_preflight_reports_missing_crafting_table() -> None:
     class FakeKnowledge:
         def resolve_craft_target(self, target_item: str, inventory: object) -> str:
             return str(target_item)
@@ -1209,6 +1602,42 @@ async def test_craft_recipe_preflight_allows_table_only_missing() -> None:
             }
 
     bridge = FakeBridge()
+
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    agent._knowledge = FakeKnowledge()
+
+    result = await agent._execute_agent_command(
+        "craftRecipe",
+        [],
+        {"recipe_name": "wooden_pickaxe", "num": 1},
+    )
+
+    assert result is not None
+    assert "Missing materials for wooden_pickaxe" in result
+    assert "crafting_table x1" in result
+    assert not any(call[0] == "craft_recipe" for call in bridge.calls)
+
+
+async def test_craft_recipe_preflight_allows_table_missing_when_nearby() -> None:
+    class FakeKnowledge:
+        def resolve_craft_target(self, target_item: str, inventory: object) -> str:
+            return str(target_item)
+
+        def get_missing_materials(
+            self, target_item: str, inventory: object, quantity: int = 1,
+        ) -> dict[str, object]:
+            return {
+                "target": target_item,
+                "have_all": False,
+                "missing_counts": {"crafting_table": 1},
+                "steps": ["1. Craft or place a crafting table"],
+            }
+
+    bridge = FakeBridge()
+    bridge.nearby_blocks = ["crafting_table"]
 
     async def craft_recipe(recipe_name: str, num: int = 1) -> str:
         bridge.calls.append(("craft_recipe", recipe_name, num))
@@ -1229,6 +1658,36 @@ async def test_craft_recipe_preflight_allows_table_only_missing() -> None:
 
     assert result == "crafted wooden_pickaxe"
     assert ("craft_recipe", "wooden_pickaxe", 1) in bridge.calls
+
+
+async def test_collect_blocks_preflight_reports_missing_required_tool() -> None:
+    class FakeKnowledge:
+        def select_tool_for_block(self, block_name: str, inventory: object) -> dict[str, object]:
+            assert block_name == "iron_ore"
+            return {
+                "can_mine": False,
+                "requires_tool": True,
+                "min_tool": "stone_pickaxe",
+                "tool_type": "pickaxe",
+            }
+
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "cobblestone", "count": 12}]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    agent._knowledge = FakeKnowledge()
+
+    result = await agent._execute_agent_command(
+        "collectBlocks",
+        [],
+        {"block_type": "iron_ore", "count": 8},
+    )
+
+    assert result is not None
+    assert "Need a stone_pickaxe to mine iron_ore" in result
+    assert not any(call[0] == "collect_blocks" for call in bridge.calls)
 
 
 async def test_bed_crafting_rejects_wool_to_dye_misconception() -> None:

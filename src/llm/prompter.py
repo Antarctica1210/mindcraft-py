@@ -31,6 +31,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field, SecretStr
 
+from logging_config import log_date
 from settings import EmbeddingSettings, LLMSettings
 
 logger = logging.getLogger(__name__)
@@ -331,9 +332,8 @@ def _raw_response_logger() -> logging.Logger:
     if not raw_logger.handlers:
         log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         handler = logging.FileHandler(
-            log_dir / f"{today}.llm_responses.jsonl",
+            log_dir / f"{log_date()}.llm_responses.jsonl",
             encoding="utf-8",
         )
         handler.setFormatter(logging.Formatter("%(message)s"))
@@ -351,9 +351,8 @@ def _jsonl_logger(name: str, filename_suffix: str) -> logging.Logger:
     if not json_logger.handlers:
         log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         handler = logging.FileHandler(
-            log_dir / f"{today}.{filename_suffix}.jsonl",
+            log_dir / f"{log_date()}.{filename_suffix}.jsonl",
             encoding="utf-8",
         )
         handler.setFormatter(logging.Formatter("%(message)s"))
