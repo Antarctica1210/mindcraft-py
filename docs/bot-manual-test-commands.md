@@ -101,6 +101,32 @@
 | N02 | `build a small 3 by 3 cobblestone platform here` | 坐标/放置 | 建简单平台 | `newAction`、block placement |
 | N03 | `put 3 porkchops and fuel into the nearby furnace` | 容器窗口动态代码 | 不应导致 socket 断开；失败要可恢复 | `windowOpen`、`Socket server closed connection` |
 
+## Wiki RAG 游戏内冒烟
+
+这些用例需要真实 LLM + Minecraft 服务器，不进入 mock bridge 自动回归。建议先用小索引验证链路，再扩到完整 wiki 索引。
+
+测试前环境：
+
+```bash
+WIKI_RAG_ENABLED=true
+WIKI_RAG_INDEX_DIR=data/wiki-test/chicken
+WIKI_RAG_EMBED_MODEL=models/BAAI/bge-m3
+WIKI_RAG_RERANK_MODEL=models/BAAI/bge-reranker-v2-m3
+WIKI_RAG_DEVICE=cpu
+WIKI_RAG_USE_FP16=false
+```
+
+| ID | 玩家输入 | 主要覆盖 | 预期结果 | 重点看日志 |
+| --- | --- | --- | --- | --- |
+| WIKI_RAG_CHICKEN_01 | `Use the wiki knowledge about chickens, then breed two nearby chickens with the right seed.` | 本地 Wiki RAG 加载、`searchWiki`、Chicken 页面检索、`breedAnimals` 繁殖流程 | bot 应从 Chicken 知识中选择 `wheat_seeds` 等种子，调用 `breedAnimals("chicken", "wheat_seeds")`，找到/接近两只鸡并喂食；若缺鸡或缺种子，应清晰失败 | `Wiki RAG loaded from data/wiki-test/chicken`、`searchWiki`、`Chicken`、`wheat_seeds`、`breedAnimals` |
+
+手动布置：
+
+- 玩家和 bot 附近放两只成年 chicken。
+- bot 背包里放至少 2 个 `wheat_seeds`。
+- 白天、安全平地测试，避免敌对生物打断。
+- 通过测试的标准：两只鸡进入 love mode 并生成 baby chicken；或者在缺鸡/缺种子时明确说明资源不足，不要胡乱攻击鸡或声称成功。
+
 ## 长流程回归
 
 | ID | 玩家输入 | 主要覆盖 | 预期结果 | 重点看日志 |

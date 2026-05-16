@@ -1,20 +1,20 @@
 ---
-name: skills.attackNearest
+name: api.attack
 description: Attack the nearest hostile mob of the given type
 keywords: attack, fight, kill, combat, mob, hostile, defend
 ---
 
-Attack a mob of the given type. Optionally continues until the mob is dead.
+Calls the built-in `api.attack(entityType, range)` helper. Attack the nearest mob/entity of the given type.
 
 Parameters:
-- `mobType` (string): The type of mob to attack (e.g. "zombie")
-- `kill` (boolean, optional): Continue attacking until dead, default true
+- `entityType` (string): The type of mob/entity to attack (e.g. "zombie", "cow")
+- `range` (number, optional): Search radius, default 16
 
 Returns: `true` if the mob was attacked, `false` if not found.
 
-Equips the highest-damage weapon before attacking.
+The socket command handles approaching and attacking the target.
 
 Example:
 ```js
-await skills.attackNearest(bot, "zombie", true);
+await api.attack("zombie", 16);
 ```

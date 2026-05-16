@@ -266,6 +266,19 @@ class SocketBridge:
             "block_type": block_type, "count": count, "range": range_val,
         })
 
+    async def breed_animals(
+        self,
+        animal_type: str,
+        breeding_item: str | None = None,
+        range_val: float = 16,
+    ) -> Any:
+        """Breed two nearby animals using a breeding item."""
+        return await self._request("breed_animals", {
+            "animal_type": animal_type,
+            "breeding_item": breeding_item,
+            "range": range_val,
+        })
+
     # ── Chest operations ────────────────────────────────────────────
     async def view_chest(self) -> Any:
         """Show contents of the nearest chest."""

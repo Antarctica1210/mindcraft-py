@@ -1,25 +1,21 @@
 ---
-name: skills.placeBlock
+name: api.placeBlock
 description: Place a block at specified coordinates
 keywords: place, build, put, block, construct
 ---
 
-Place the given block type at the given position. Builds off from any adjacent blocks.
+Calls the built-in `api.placeBlock(blockType)` helper. Place the given block type at the bot's current position.
 
 Parameters:
 - `blockType` (string): The block or item name to place
-- `x` (number): X coordinate
-- `y` (number): Y coordinate
-- `z` (number): Z coordinate
-- `placeOn` (string, optional): Preferred side — "top", "bottom", "north", "south", "east", "west", "side". Default "bottom".
-- `dontCheat` (boolean, optional): Override cheat mode. Default false.
+- `blockType` (string): The block or item name to place.
 
 Returns: `true` if the block was placed, `false` otherwise.
 
-Will fail if there's a block in the way or nothing to build off of.
+Move to the target location first with `api.moveTo`, then call `api.placeBlock`.
 
 Example:
 ```js
-let p = world.getPosition(bot);
-await skills.placeBlock(bot, "torch", p.x + 1, p.y, p.z, "side");
+await api.moveTo(100, 64, -50);
+await api.placeBlock("torch");
 ```

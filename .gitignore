@@ -1,6 +1,7 @@
 .vscode/
 .idea/
 node_modules/
+models/
 package-lock.json
 logs/
 log-js/
@@ -43,3 +44,4 @@ server_data*
 **/.DS_Store
 **/__pycache__/
 .env
+data/wiki-survival/raw/*

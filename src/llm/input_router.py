@@ -45,6 +45,13 @@ class InputIntent(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
+class PlanningStrategy(str, Enum):
+    """How the agent should ask the planner to think about an action task."""
+
+    REACT = "react"
+    ROLLING_PLAN = "rolling_plan"
+
+
 @dataclass(frozen=True)
 class RouterDecision:
     """Result of classification — passed to AgentLoop dispatcher."""
@@ -52,6 +59,7 @@ class RouterDecision:
     intent: InputIntent
     matched_pattern: str | None = None  # which regex fired, for debugging
     confidence: float = 1.0             # 1.0 = regex hit, lower = heuristic
+    planning_strategy: PlanningStrategy = PlanningStrategy.REACT
 
 
 # Built-in fallback keywords (used when YAML config is missing).
@@ -106,20 +114,23 @@ _BUILTIN_KEYWORDS: dict[str, dict[str, list[str]]] = {
             r"^\s*(?:i\s+)?(?:want|need|would\s+like)\s+(?:to\s+)?"
             r"(?:go|move|come|collect|gather|get|bring|fetch|mine|dig|break|"
             r"craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|"
-            r"consume|place|put|drop|follow|escort|find|search|give|hand|"
+            r"consume|smelt|cook|farm|plant|sow|till|harvest|breed|feed|"
+            r"place|put|drop|follow|escort|find|search|give|hand|"
             r"take|grab|stop|stay|wait|sleep|rest)\b",
             r"^\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|"
             r"craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|"
-            r"consume|place|put|drop|follow|escort|find|search|give|hand|"
+            r"consume|smelt|cook|farm|plant|sow|till|harvest|breed|feed|"
+            r"place|put|drop|follow|escort|find|search|give|hand|"
             r"take|grab|stop|stay|wait|sleep|rest)\b",
         ],
         "zh": [
             # Multi-char verbs and prefixes
             r"^(去|走到|过来|跟我来|采集|拾取|开采|破坏|合成|制作|建造|"
-            r"攻击|装备|跟随|跟着|护送|寻找|搜索|放置|停下|不动|休息)",
+            r"攻击|装备|跟随|跟着|护送|寻找|搜索|放置|停下|不动|休息|"
+            r"种植|播种|耕地|收获|养|繁殖|喂)",
             # Single-char verbs followed by a quantity / object (the common
             # Chinese imperative pattern, e.g. "挖10个橡木", "采5朵花").
-            r"^(挖|采|砍|捡|打|杀|拿|放|找|搜|看|说|给|做|建|造|烧|喂|吃|喝)",
+            r"^(挖|采|砍|捡|打|杀|拿|放|找|搜|看|说|给|做|建|造|烧|喂|种|养|吃|喝)",
         ],
     },
 }
@@ -131,6 +142,24 @@ _CHITCHAT_PATTERNS = [
     r"^(thanks?|thx|thank\s+you|谢谢|多谢)[\s\.\,\!]*$",
     r"^(ok|okay|cool|nice|好|好的|嗯|哦)[\s\.\,\!]*$",
     r"^(lol|haha|hehe|哈+|嘿+)[\s\.\,\!]*$",
+]
+
+
+_REACT_STRATEGY_PATTERNS = [
+    # Highly reactive / safety / moving targets.
+    r"\b(attack|kill|fight|defend|escape|run away|flee|avoid|danger|"
+    r"hostile|zombie|skeleton|creeper|spider)\b",
+    r"\b(follow|come|come here|go to player|find|search|look for|where)\b",
+    r"\b(stop|stay|wait|pause|cancel|stfu)\b",
+    r"(攻击|打|杀|防御|逃|躲|危险|僵尸|骷髅|苦力怕|蜘蛛)",
+    r"(跟随|跟着|过来|来我这|寻找|搜索|找|停下|不动|等)",
+]
+
+
+_ROLLING_PLAN_STRATEGY_PATTERNS = [
+    # Stable workflows where a short horizon helps.
+    r"\b(craft|make|build|smelt|cook|mine|dig|collect|gather|get|farm|plant|sow|till|harvest|breed|feed|raise|animal|chicken|cow|sheep|pig|seed|wheat|ore)\b",
+    r"(合成|制作|建造|烧|烤|熔炼|挖矿|开采|采集|获取|种|播种|耕|收获|养|繁殖|喂|动物|鸡|牛|羊|猪|种子|小麦|矿)",
 ]
 
 
@@ -254,7 +283,9 @@ class InputRouter:
         # 4. action verb at start
         if (m := self._first_match(text, self._tables.action_verb)):
             return RouterDecision(
-                intent=InputIntent.ACTION_COMMAND, matched_pattern=m,
+                intent=InputIntent.ACTION_COMMAND,
+                matched_pattern=m,
+                planning_strategy=self._classify_planning_strategy(text),
             )
 
         # 5. chitchat (greetings, thanks, acks)
@@ -320,6 +351,7 @@ class InputRouter:
                 intent=InputIntent.ACTION_COMMAND,
                 matched_pattern="llm-fallback",
                 confidence=0.85,
+                planning_strategy=self._classify_planning_strategy(message),
             )
 
         logger.debug(
@@ -352,3 +384,23 @@ class InputRouter:
             if regex.search(text):
                 return pattern_str
         return None
+
+    @staticmethod
+    def _classify_planning_strategy(message: str) -> PlanningStrategy:
+        """Choose a lightweight planning mode for action commands.
+
+        ``react`` wins when both match, because combat, following, searching,
+        stop/cancel, and safety requests should stay tightly coupled to fresh
+        observations. Stable production workflows get a short rolling plan.
+        """
+        text = (message or "").strip().lower()
+        if not text:
+            return PlanningStrategy.REACT
+        if any(re.search(pattern, text, re.IGNORECASE) for pattern in _REACT_STRATEGY_PATTERNS):
+            return PlanningStrategy.REACT
+        if any(
+            re.search(pattern, text, re.IGNORECASE)
+            for pattern in _ROLLING_PLAN_STRATEGY_PATTERNS
+        ):
+            return PlanningStrategy.ROLLING_PLAN
+        return PlanningStrategy.REACT

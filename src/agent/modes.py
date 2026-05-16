@@ -4,8 +4,6 @@ Phase 2 — Behavior mode state machine.
 Reactive modes that run every tick: self-preservation, unstuck,
 hunting, idle.  Modes are evaluated in priority order and may
 interrupt lower-priority actions.
-
-Mirrors `src/agent/modes.js`.
 """
 from __future__ import annotations
 
@@ -256,6 +254,11 @@ class ModeEvaluator:
                 await bridge.move_away(5)
             except Exception:
                 pass
+            finally:
+                try:
+                    await bridge.set_control_state("jump", False)
+                except Exception:
+                    pass
             self.activate(BehaviorMode.UNSTUCK)
             return True
         return False

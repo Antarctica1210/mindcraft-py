@@ -134,6 +134,26 @@ class DispatchGateSettings:
 
 
 @dataclass
+class WikiRagSettings:
+    """Optional local Minecraft Wiki RAG index settings."""
+
+    enabled: bool = field(default_factory=lambda: _get_bool("WIKI_RAG_ENABLED", True))
+    index_dir: str = field(default_factory=lambda: _get("WIKI_RAG_INDEX_DIR", "data/wiki"))
+    embed_model: str = field(default_factory=lambda: _get("WIKI_RAG_EMBED_MODEL", "BAAI/bge-m3"))
+    rerank_model: str = field(
+        default_factory=lambda: _get("WIKI_RAG_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    )
+    use_fp16: bool = field(default_factory=lambda: _get_bool("WIKI_RAG_USE_FP16", True))
+    device: str = field(default_factory=lambda: _get("WIKI_RAG_DEVICE", "auto"))
+    dense_candidates: int = field(
+        default_factory=lambda: _get_int("WIKI_RAG_DENSE_CANDIDATES", 50)
+    )
+    rerank_candidates: int = field(
+        default_factory=lambda: _get_int("WIKI_RAG_RERANK_CANDIDATES", 20)
+    )
+
+
+@dataclass
 class BotSettings:
     """Bot identity and runtime behaviour."""
 
@@ -168,6 +188,7 @@ class Settings:
     llm: LLMSettings = field(default_factory=LLMSettings)
     embedding: EmbeddingSettings = field(default_factory=EmbeddingSettings)
     dispatch_gate: DispatchGateSettings = field(default_factory=DispatchGateSettings)
+    wiki_rag: WikiRagSettings = field(default_factory=WikiRagSettings)
     bot: BotSettings = field(default_factory=BotSettings)
 
     # Convenience: log level

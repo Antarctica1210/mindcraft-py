@@ -1,30 +1,26 @@
 ---
-name: skills.tillAndSow
+name: api.tillAndSow
 description: Till soil and plant seeds to set up a crop farm
 keywords: till, sow, plant, farm, seeds, wheat, farmland, grow, crop, 种地, 农场, 播种
 ---
 
-Tills the dirt or grass around the bot's current position and plants seeds on the resulting farmland. Must be near a water source (within 4 blocks) for crops to grow.
+Calls the built-in `api.tillAndSow(x, y, z, seedType)` helper. It tills one dirt/grass block at the given coordinates and optionally plants seeds on the resulting farmland.
 
 Parameters:
-- `pos` (Vec3, optional): Centre position to till around. Defaults to bot's current position.
-- `width` (number, optional): Width of the plot in blocks. Default `3`.
-- `length` (number, optional): Length of the plot in blocks. Default `3`.
+- `x` (number): X coordinate of the dirt/grass block.
+- `y` (number): Y coordinate of the dirt/grass block.
+- `z` (number): Z coordinate of the dirt/grass block.
 - `seedType` (string, optional): Seed item to plant. Default `"wheat_seeds"`. Also accepts `"carrot"`, `"potato"`, `"beetroot_seeds"`, `"melon_seeds"`, `"pumpkin_seeds"`.
 
-Returns: number of seeds planted, or `0` if no farmland could be tilled.
+Returns a status string.
 
-The skill:
-- Equips a hoe automatically (crafts one if none available and wood is in inventory)
-- Tills every tillable block in the plot
-- Plants seeds on each farmland block if the seed item is in inventory
-- Skips blocks already tilled or already planted
+The API requires a hoe and seed item to already be in inventory.
 
 Example:
 ```js
-// Till a 3×3 plot and plant wheat
-await skills.tillAndSow(bot, bot.entity.position, 3, 3, "wheat_seeds");
+const state = await api.observe();
+const p = state.position;
+await api.tillAndSow(Math.floor(p.x), Math.floor(p.y - 1), Math.floor(p.z), "wheat_seeds");
 
-// Plant carrots on an existing 5×5 farm
-await skills.tillAndSow(bot, bot.entity.position, 5, 5, "carrot");
+await api.tillAndSow(100, 63, -50, "carrot");
 ```

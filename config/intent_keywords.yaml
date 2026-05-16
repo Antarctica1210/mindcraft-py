@@ -65,11 +65,11 @@ question:
 
 action_verb:
   en:
-    - "^\\s*(?:i\\s+)?(?:want|need|would\\s+like)\\s+(?:to\\s+)?(?:go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b"
-    - "^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b"
+    - "^\\s*(?:i\\s+)?(?:want|need|would\\s+like)\\s+(?:to\\s+)?(?:go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|smelt|cook|farm|plant|sow|till|harvest|breed|feed|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b"
+    - "^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|smelt|cook|farm|plant|sow|till|harvest|breed|feed|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b"
   zh:
-    - "^(去|走到|过来|跟我来|采集|拾取|开采|破坏|合成|制作|建造|攻击|装备|跟随|跟着|护送|寻找|搜索|放置|停下|不动|休息)"
+    - "^(去|走到|过来|跟我来|采集|拾取|开采|破坏|合成|制作|建造|攻击|装备|跟随|跟着|护送|寻找|搜索|放置|停下|不动|休息|种植|播种|耕地|收获|养|繁殖|喂)"
     # Single-char verbs followed by quantity/object: 挖10个橡木 / 采5朵花
-    - "^(挖|采|砍|捡|打|杀|拿|放|找|搜|看|说|给|做|建|造|烧|喂|吃|喝)"
+    - "^(挖|采|砍|捡|打|杀|拿|放|找|搜|看|说|给|做|建|造|烧|喂|种|养|吃|喝)"
 
 # Chitchat patterns are hard-coded in input_router.py — too noisy for YAML.

@@ -234,6 +234,40 @@
       }
     },
     {
+      "id": "WIKI_RAG_CHICKEN_01",
+      "description": "in-game Wiki RAG smoke test: use Chicken page knowledge to breed chickens",
+      "message": "Use the wiki knowledge about chickens, then breed two nearby chickens with the right seed.",
+      "llm": true,
+      "manual_only": true,
+      "setup": {
+        "env": {
+          "WIKI_RAG_ENABLED": "true",
+          "WIKI_RAG_INDEX_DIR": "data/wiki-test/chicken",
+          "WIKI_RAG_EMBED_MODEL": "models/BAAI/bge-m3",
+          "WIKI_RAG_RERANK_MODEL": "models/BAAI/bge-reranker-v2-m3",
+          "WIKI_RAG_DEVICE": "cpu",
+          "WIKI_RAG_USE_FP16": "false"
+        },
+        "world": [
+          "Keep the player and bot near two adult chickens.",
+          "Give the bot at least 2 wheat_seeds.",
+          "Run in a safe daytime area so pathfinding is not interrupted."
+        ]
+      },
+      "expect": {
+        "log_must_contain": [
+          "Wiki RAG loaded from data/wiki-test/chicken",
+          "searchWiki",
+          "Chicken",
+          "wheat_seeds",
+          "breedAnimals"
+        ],
+        "response_contains_any": ["breed", "chicken", "seeds", "繁殖", "鸡", "种子"],
+        "response_not_contains": ["No chicken nearby", "wheat_seeds is not", "Gave 0x"],
+        "success_condition": "Two chickens enter love mode and produce a baby chicken, or the bot fails clearly because chickens/seeds are unavailable."
+      }
+    },
+    {
       "id": "F05",
       "description": "find ancient_debris returns within 64 range",
       "message": "find ancient_debris",

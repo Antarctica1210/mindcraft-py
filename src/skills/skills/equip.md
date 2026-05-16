@@ -1,10 +1,10 @@
 ---
-name: skills.equip
+name: api.equip
 description: Equip an item to the proper body slot
 keywords: equip, wear, hold, armor, tool, weapon
 ---
 
-Equip the given item to the proper body part (hand, armor slots, off-hand).
+Calls the built-in `api.equip(itemName, destination)` helper.
 
 Parameters:
 - `itemName` (string): The item to equip (e.g. "iron_pickaxe", "diamond_chestplate")
@@ -18,5 +18,5 @@ Automatically determines the correct slot:
 
 Example:
 ```js
-await skills.equip(bot, "iron_sword");
+await api.equip("iron_sword", "hand");
 ```

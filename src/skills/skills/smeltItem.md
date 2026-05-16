@@ -1,10 +1,10 @@
 ---
-name: skills.smeltItem
+name: api.smeltItem
 description: Smelt items in a furnace
 keywords: smelt, furnace, cook, heat, iron, gold, food
 ---
 
-Puts fuel in a furnace and smelts the given item. Waits until done.
+Calls the built-in `api.smeltItem(itemName, count)` helper. Puts fuel in a furnace and smelts the given item.
 
 Parameters:
 - `itemName` (string): The item to smelt (e.g. "raw_iron", "beef")
@@ -20,5 +20,5 @@ The skill:
 
 Example:
 ```js
-await skills.smeltItem(bot, "raw_iron", 3);
+await api.smeltItem("raw_iron", 3);
 ```

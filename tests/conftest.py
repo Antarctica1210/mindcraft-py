@@ -130,6 +130,16 @@ class FakeBridge:
         self.calls.append(("break_nearby_blocks", block_type, count, range_val))
         return f"broke {count} {block_type}"
 
+    async def breed_animals(
+        self,
+        animal_type: str,
+        breeding_item: str | None = None,
+        range_val: float = 16,
+    ) -> str:
+        self.calls.append(("breed_animals", animal_type, breeding_item, range_val))
+        item = breeding_item or "default_food"
+        return f"bred {animal_type} with {item}"
+
     async def move_to(self, x: float, y: float, z: float) -> str:
         self.calls.append(("move_to", x, y, z))
         return f"moved to ({x},{y},{z})"

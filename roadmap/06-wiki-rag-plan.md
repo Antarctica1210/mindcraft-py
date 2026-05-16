@@ -405,13 +405,14 @@ mwparserfromhell = ">=0.6"    # wikitext 解析
 **目标**: `python scripts/ingest_wiki.py --max-pages 50` 产出完整 `data/wiki/`
 
 任务清单：
-- [ ] MediaWiki API 抓取（分类成员 + 页面 wikitext）
-- [ ] mwparserfromhell 解析 + 段落优先分块
-- [ ] BGEM3FlagModel 批量编码（dense + sparse）
-- [ ] FAISS IndexFlatIP 写入 `index.faiss`
-- [ ] 构建 vocab.json + CSR 矩阵写入 `sparse.npz`
-- [ ] chunks.jsonl + manifest.json 写入
-- [ ] CLI 参数：`--max-pages`、`--categories`、`--output`、`--fp16/--fp32`
+- [x] MediaWiki API 抓取（分类成员 + 页面 wikitext）
+- [x] mwparserfromhell 解析 + 段落优先分块
+- [x] BGEM3FlagModel 批量编码（dense + sparse）
+- [x] FAISS IndexFlatIP 写入 `index.faiss`
+- [x] 构建 vocab.json + CSR 矩阵写入 `sparse.npz`
+- [x] chunks.jsonl + manifest.json 写入
+- [x] CLI 参数：`--max-pages`、`--categories`、`--output`、`--fp16/--fp32`
+- [x] Apple Silicon `--device auto` 自动优先选择 MPS
 
 ---
 
@@ -420,13 +421,13 @@ mwparserfromhell = ">=0.6"    # wikitext 解析
 **目标**: `store.search("床的配方", k=5)` 返回正确中文语义命中
 
 任务清单：
-- [ ] `src/knowledge/wiki_store.py`：`WikiChunk`、`WikiVectorStore` 完整实现
-- [ ] Dense 路径：FAISS.search
-- [ ] Sparse 路径：vocab 投影 + CSR 点积 top-N
-- [ ] RRF 融合逻辑（k=60）
-- [ ] FlagReranker 重排 + normalize=True 阈值过滤（< 0.1 的块丢弃）
-- [ ] 所有模型/索引缺失时静默 fallback，不影响 bot 启动
-- [ ] `src/knowledge/__init__.py` 导出
+- [x] `src/knowledge/wiki_store.py`：`WikiChunk`、`WikiVectorStore` 完整实现
+- [x] Dense 路径：FAISS.search
+- [x] Sparse 路径：vocab 投影 + CSR 点积 top-N
+- [x] RRF 融合逻辑（k=60）
+- [x] FlagReranker 重排 + normalize=True 阈值过滤（< 0.1 的块丢弃）
+- [x] 所有模型/索引缺失时静默 fallback，不影响 bot 启动
+- [x] `src/knowledge/__init__.py` 导出
 
 ---
 
@@ -435,9 +436,9 @@ mwparserfromhell = ">=0.6"    # wikitext 解析
 **目标**: bot 调用 `!searchWiki` 时走本地混合检索
 
 任务清单：
-- [ ] `executor.py`：`set_wiki_store(store)` + `_search_wiki` 改造
-- [ ] `core.py`：`Agent.start()` 初始化 `WikiVectorStore` 并注入 executor
-- [ ] 日志记录结果来源（`local` / `http`）及检索耗时
+- [x] `executor.py`：`set_wiki_store(store)` + `_search_wiki` 改造
+- [x] `core.py`：`Agent.start()` 初始化 `WikiVectorStore` 并注入 executor
+- [x] 日志记录结果来源（`local` / `http`）及检索耗时
 - [ ] LRU 缓存最近 50 条查询，避免同 turn 重复嵌入
 
 ---
@@ -445,7 +446,7 @@ mwparserfromhell = ">=0.6"    # wikitext 解析
 ### Stage 3d — 测试
 
 任务清单：
-- [ ] `tests/test_wiki_store.py`：mock BGEM3FlagModel + FlagReranker + FAISS，验证 search/load/fallback
+- [x] `tests/test_wiki_store.py`：mock BGEM3FlagModel + FlagReranker + FAISS，验证 search/load/fallback
 - [ ] `tests/test_ingest_wiki.py`：mock MediaWiki API，验证抓取/解析/分块/编码流程
 - [ ] 集成冒烟测试：用 5 页真实 wiki 建小索引，验证端到端中英文检索
 

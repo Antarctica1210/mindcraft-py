@@ -1,10 +1,10 @@
 ---
-name: skills.goToPosition
+name: api.moveTo
 description: Navigate to specific coordinates
 keywords: go, move, navigate, position, coordinates, travel
 ---
 
-Navigate to the given position using pathfinding.
+Calls the built-in `api.moveTo(x, y, z)` helper.
 
 Parameters:
 - `x` (number): X coordinate
@@ -18,5 +18,5 @@ Uses door-opening helpers and will find a path around obstacles.
 
 Example:
 ```js
-await skills.goToPosition(bot, 100, 64, -50, 2);
+await api.moveTo(100, 64, -50);
 ```

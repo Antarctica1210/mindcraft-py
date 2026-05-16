@@ -125,6 +125,9 @@ async def _call_bridge(bridge: SmartBridge, method: str, args: tuple[Any, ...]) 
 @pytest.mark.asyncio
 async def test_regression_case(case: dict[str, Any]) -> None:
     """Run a single command-level regression test case."""
+    if case.get("manual_only") or case.get("llm"):
+        pytest.skip("Manual in-game/LLM case; not run by the mock bridge suite.")
+
     bridge = SmartBridge()
     _apply_setup(bridge, case)
 

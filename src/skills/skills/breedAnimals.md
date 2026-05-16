@@ -1,10 +1,10 @@
 ---
-name: skills.breedAnimals
+name: api.breedAnimals
 description: Feed two animals of the same type to trigger breeding
 keywords: breed, breeding, baby, animal, cow, sheep, pig, chicken, reproduce, farm, 繁殖, 养殖, 配种
 ---
 
-Finds two nearby animals of the given type and feeds each one the appropriate food item to put them into love mode. A baby animal spawns shortly after.
+Calls the built-in `breedAnimals` socket API. It finds two nearby animals of the given type and feeds each one the appropriate food item to put them into love mode. A baby animal spawns shortly after.
 
 Parameters:
 - `animalType` (string): The animal to breed (e.g. `"cow"`, `"sheep"`, `"pig"`, `"chicken"`, `"rabbit"`).
@@ -24,7 +24,7 @@ Breeding food map (used when `breedingItem` is omitted):
 | horse, donkey | golden_apple or golden_carrot |
 | llama | hay_block |
 
-The skill:
+The API:
 - Searches within 32 blocks for two adults of the given type
 - Navigates close to each animal before feeding
 - Requires the food item to already be in inventory
@@ -33,11 +33,11 @@ The skill:
 Example:
 ```js
 // Breed cows (auto-detects wheat)
-await skills.breedAnimals(bot, "cow");
+await api.breedAnimals("cow");
 
 // Breed pigs with carrot explicitly
-await skills.breedAnimals(bot, "pig", "carrot");
+await api.breedAnimals("pig", "carrot");
 
 // Breed chickens
-await skills.breedAnimals(bot, "chicken", "wheat_seeds");
+await api.breedAnimals("chicken", "wheat_seeds");
 ```

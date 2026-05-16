@@ -1,10 +1,10 @@
 ---
-name: skills.goToPlayer
+name: api.goToPlayer
 description: Navigate to a specific player
 keywords: go, navigate, move, player, follow, travel
 ---
 
-Navigate to the given player.
+Calls the built-in `api.goToPlayer(username, closeness)` helper.
 
 Parameters:
 - `username` (string): The player to navigate to
@@ -16,5 +16,5 @@ Uses pathfinding and will open doors along the way.
 
 Example:
 ```js
-await skills.goToPlayer(bot, "Steve", 2);
+await api.goToPlayer("Steve", 2);
 ```

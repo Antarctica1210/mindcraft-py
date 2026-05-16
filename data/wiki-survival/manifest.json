@@ -1,0 +1,16 @@
+{
+  "embed_model": "models/BAAI/bge-m3",
+  "dim": 1024,
+  "num_chunks": 1967,
+  "num_pages_requested": 1229,
+  "categories": [
+    "Crafting",
+    "Blocks",
+    "Items",
+    "Mobs",
+    "Food",
+    "Mechanics"
+  ],
+  "device": "mps",
+  "created_at": "2026-05-15T23:56:01.543236+00:00"
+}

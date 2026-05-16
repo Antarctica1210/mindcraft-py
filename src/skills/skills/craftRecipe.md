@@ -1,10 +1,10 @@
 ---
-name: skills.craftRecipe
+name: api.craftRecipe
 description: Craft an item from a recipe using available materials
 keywords: craft, recipe, crafting, make, create
 ---
 
-Attempts to craft the given item name from a recipe. May craft many items.
+Calls the built-in `api.craftRecipe(itemName, count)` helper. Attempts to craft the given item name from a recipe.
 
 Parameters:
 - `itemName` (string): The item name to craft
@@ -20,5 +20,5 @@ The skill automatically:
 
 Example:
 ```js
-await skills.craftRecipe(bot, "stick", 4);
+await api.craftRecipe("stick", 4);
 ```

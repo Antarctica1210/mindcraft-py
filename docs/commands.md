@@ -1,6 +1,6 @@
 # 机器人命令参考
 
-LLM 智能体可用的全部 52 个移植命令。命令使用 `!commandName(args)` 语法。
+LLM 智能体可用的全部 53 个移植命令。命令使用 `!commandName(args)` 语法。
 
 ## 控制类
 
@@ -108,6 +108,7 @@ LLM 智能体可用的全部 52 个移植命令。命令使用 `!commandName(arg
 | 命令 | 参数 | 描述 |
 |---|---|---|
 | `!pickupNearbyItems(distance?)` | `distance: float`（默认 8） | 拾取地面上所有附近的掉落物。 |
+| `!breedAnimals(animal_type, breeding_item?, range?)` | `animal_type: string`，`breeding_item: string`（如 `wheat_seeds`），`range: float`（默认 16） | 用指定食物喂两只附近同类动物并尝试繁殖。 |
 | `!tillAndSow(x, y, z, seed_type?)` | `x: float`，`y: float`，`z: float`，`seed_type: string`（可选，如 `wheat_seeds`） | 耕地并可选种植种子。 |
 | `!useDoor(x?, y?, z?)` | `x: float`（可选），`y: float`（可选），`z: float`（可选） | 开门、通过并关门。未传坐标时自动找最近的门。 |
 | `!getCraftingPlan(target_item, quantity?)` | `target_item: string`（如 `diamond_sword`），`quantity: int`（默认 1） | 获取详细的合成计划，显示所需材料和步骤。 |

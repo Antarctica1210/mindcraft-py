@@ -22,6 +22,13 @@ retrieval = [
     "faiss-cpu>=1.8",
     "rank-bm25>=0.2",
 ]
+wiki-rag = [
+    "FlagEmbedding>=1.2",
+    "faiss-cpu>=1.8",
+    "huggingface-hub>=0.23",
+    "scipy>=1.11",
+    "mwparserfromhell>=0.6",
+]
 llm = []
 graph = [
     "networkx>=3.3",

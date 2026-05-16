@@ -1,10 +1,10 @@
 ---
-name: skills.moveAway
+name: api.moveAway
 description: Move the bot away from its current position by a given distance
 keywords: move away, retreat, back off, flee, escape, run, distance, danger, 撤退, 逃跑, 远离, 后退
 ---
 
-Moves the bot in a direction away from its current position. Use this to create distance from a hazard (hostile mob, lava, explosion), to clear space before placing blocks, or to back away after a failed action.
+Calls the built-in `api.moveAway(distance)` helper. Use this to create distance from a hazard, clear space before placing blocks, or back away after a failed action.
 
 Parameters:
 - `distance` (number, optional): How many blocks to move away. Default `16`.
@@ -20,12 +20,12 @@ The skill:
 Example:
 ```js
 // Back off 16 blocks (default)
-await skills.moveAway(bot);
+await api.moveAway();
 
 // Back off further when in serious danger
-await skills.moveAway(bot, 32);
+await api.moveAway(32);
 
 // Pattern: retreat, eat, then reassess
-await skills.moveAway(bot, 20);
-await skills.consume(bot, "cooked_beef");
+await api.moveAway(20);
+await api.consume("cooked_beef");
 ```

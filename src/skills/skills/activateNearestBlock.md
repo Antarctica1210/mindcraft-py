@@ -1,10 +1,10 @@
 ---
-name: skills.activateNearestBlock
+name: api.activateBlock
 description: Right-click / interact with the nearest block of a given type
 keywords: activate, use, interact, open, right-click, bed, furnace, chest, door, lever, button, crafting table, 使用, 交互, 激活, 打开
 ---
 
-Navigates to and right-clicks (activates) the nearest block of the given type. Use this to sleep in a bed, open a furnace or chest GUI, press a button, flip a lever, open a door, or interact with any other activatable block.
+Calls the built-in `api.activateBlock(blockType)` helper. It navigates to and right-clicks (activates) the nearest block of the given type. Use this to sleep in a bed, open a furnace or chest GUI, press a button, flip a lever, open a door, or interact with any other activatable block.
 
 Parameters:
 - `blockType` (string): The block to activate (e.g. `"bed"`, `"furnace"`, `"chest"`, `"crafting_table"`, `"lever"`, `"oak_door"`).
@@ -21,20 +21,20 @@ Common use cases:
 
 | Goal | Call |
 |---|---|
-| Sleep through the night | `activateNearestBlock(bot, "bed")` |
-| Open furnace to check output | `activateNearestBlock(bot, "furnace")` |
-| Open a chest | `activateNearestBlock(bot, "chest")` |
-| Use crafting table | `activateNearestBlock(bot, "crafting_table")` |
-| Flip a lever | `activateNearestBlock(bot, "lever")` |
+| Sleep through the night | `api.activateBlock("bed")` |
+| Open furnace to check output | `api.activateBlock("furnace")` |
+| Open a chest | `api.activateBlock("chest")` |
+| Use crafting table | `api.activateBlock("crafting_table")` |
+| Flip a lever | `api.activateBlock("lever")` |
 
 Example:
 ```js
 // Sleep in the nearest bed
-await skills.activateNearestBlock(bot, "bed");
+await api.activateBlock("bed");
 
 // Interact with the nearest furnace
-await skills.activateNearestBlock(bot, "furnace");
+await api.activateBlock("furnace");
 
 // Open a chest
-await skills.activateNearestBlock(bot, "chest");
+await api.activateBlock("chest");
 ```

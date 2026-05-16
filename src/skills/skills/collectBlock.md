@@ -1,15 +1,14 @@
 ---
-name: skills.collectBlock
+name: api.collectBlocks
 description: Mine and collect a specified number of blocks
 keywords: collect, mine, gather, block, harvest, dig
 ---
 
-Collect one or more blocks of the given type.
+Calls the built-in `api.collectBlocks(blockType, count)` helper. Collect one or more blocks of the given type.
 
 Parameters:
 - `blockType` (string): The type of block to collect (e.g. "oak_log")
-- `num` (number, optional): Number to collect, default 1
-- `exclude` (array, optional): Positions to exclude from search
+- `count` (number, optional): Number to collect, default 1
 
 Returns: `true` if at least one block was collected, `false` otherwise.
 
@@ -21,5 +20,5 @@ The skill handles:
 
 Example:
 ```js
-await skills.collectBlock(bot, "oak_log", 8);
+await api.collectBlocks("oak_log", 8);
 ```

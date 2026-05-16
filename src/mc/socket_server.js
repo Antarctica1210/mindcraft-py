@@ -61,6 +61,20 @@ let actionOutput = [];        // detailed action log, flushed to Python on deman
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
+const BREEDING_ITEMS = {
+  chicken: ["wheat_seeds", "melon_seeds", "pumpkin_seeds", "beetroot_seeds", "torchflower_seeds"],
+  cow: ["wheat"],
+  sheep: ["wheat"],
+  goat: ["wheat"],
+  mooshroom: ["wheat"],
+  pig: ["carrot", "potato", "beetroot"],
+  rabbit: ["carrot", "golden_carrot", "dandelion"],
+  horse: ["golden_carrot", "golden_apple"],
+  donkey: ["golden_carrot", "golden_apple"],
+  mule: ["golden_carrot", "golden_apple"],
+  llama: ["hay_block"],
+};
+
 function logAction(message) {
   const line = `[${new Date().toISOString()}] ${message}`;
   actionOutput.push(line);
@@ -381,7 +395,12 @@ async function gotoAndSummarize(label, goal, targetPos = null, range = 2, timeou
   const beforeInv = inventoryCounts(bot);
   logAction(`${label}: started at ${beforePos}`);
   bot.pathfinder.setGoal(goal);
-  const waitResult = await waitForPathfinderDone(timeoutMs, targetPos, range);
+  let waitResult;
+  try {
+    waitResult = await waitForPathfinderDone(timeoutMs, targetPos, range);
+  } finally {
+    releaseJump();
+  }
   const afterPos = positionSummary(bot);
   const afterInv = inventoryCounts(bot);
   const delta = inventoryDelta(beforeInv, afterInv);
@@ -655,6 +674,10 @@ function ensureMovements(b) {
   if (!b.pathfinder.Movements) {
     b.pathfinder.setMovements(new pathfinder.Movements(b));
   }
+}
+
+function releaseJump() {
+  try { if (bot) bot.setControlState("jump", false); } catch {}
 }
 
 function findPlayer(b, username) {
@@ -1240,6 +1263,99 @@ async function handleRequest(method, params) {
       return [
         `Broke ${broken}x ${blockType}.`,
         pickupResult,
+        `Position: ${beforePos} -> ${afterPos}.`,
+        `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
+        detail ? `Output:\n${detail}` : "",
+      ].filter(Boolean).join("\n");
+    }
+
+    case "breed_animals": {
+      if (!bot) throw new Error("No bot connected");
+      if (!bot.pathfinder) throw new Error("Pathfinder not loaded");
+      ensureMovements(bot);
+
+      const animalType = String(params.animal_type || params.entity_type || "").trim().toLowerCase();
+      if (!animalType) throw new Error("animal_type is required.");
+      const requestedItem = String(params.breeding_item || params.breedingItem || "").trim();
+      const candidates = requestedItem ? [requestedItem] : (BREEDING_ITEMS[animalType] || []);
+      if (!candidates.length) {
+        throw new Error(`No default breeding item is known for ${animalType}; pass breeding_item explicitly.`);
+      }
+
+      const searchRange = Math.min(clampSearchRange(params.range, 16), 64);
+      const beforePos = positionSummary(bot);
+      const beforeInv = inventoryCounts(bot);
+      const inv = bot.inventory.items();
+      let itemName = null;
+      let itemObj = null;
+      for (const candidate of candidates) {
+        const found = inv.find((item) => item.name === candidate);
+        if (found && (found.count || 0) >= 2) {
+          itemName = candidate;
+          itemObj = found;
+          break;
+        }
+      }
+      if (!itemObj) {
+        const have = candidates.map((name) => `${name} x${beforeInv[name] || 0}`).join(", ");
+        throw new Error(`Need 2 breeding items for ${animalType}. Candidate items: ${have}.`);
+      }
+
+      const matches = Object.values(bot.entities || {})
+        .filter((entity) => entity?.position && entityMatchesType(entity, animalType))
+        .map((entity) => ({ entity, distance: entityDistance(bot, entity) }))
+        .filter((item) => item.distance <= searchRange)
+        .sort((a, b2) => a.distance - b2.distance)
+        .map((item) => item.entity);
+      if (matches.length < 2) {
+        throw new Error(`Only found ${matches.length} ${animalType} within ${searchRange} blocks; need 2 to breed.`);
+      }
+
+      async function moveWithinReach(entity) {
+        const target = bot.entities[entity.id] || entity;
+        if (!target?.position) throw new Error(`${animalType} entity disappeared before breeding.`);
+        if (entityDistance(bot, target) <= 3.25) return target;
+        bot.pathfinder.setGoal(new pathfinder.goals.GoalNear(
+          target.position.x,
+          target.position.y,
+          target.position.z,
+          2,
+        ));
+        try {
+          await waitForPathfinderDone(20000, target.position, 2.5);
+        } finally {
+          releaseJump();
+        }
+        const refreshed = bot.entities[target.id] || target;
+        if (!refreshed?.position || entityDistance(bot, refreshed) > 4) {
+          throw new Error(`Could not get close enough to ${animalType} id:${target.id}.`);
+        }
+        return refreshed;
+      }
+
+      await bot.equip(itemObj, "hand");
+      logAction(`breed_animals ${animalType}: using ${itemName}`);
+      for (const target of matches.slice(0, 2)) {
+        const current = await moveWithinReach(target);
+        const lookAt = current.position.offset(0, current.height ? current.height * 0.5 : 0.6, 0);
+        await bot.lookAt(lookAt, true);
+        await bot.activateEntity(current);
+        logAction(`breed_animals ${animalType}: fed id:${current.id}`);
+        await sleepMs(700);
+      }
+
+      const afterPos = positionSummary(bot);
+      const afterInv = inventoryCounts(bot);
+      const consumed = (beforeInv[itemName] || 0) - (afterInv[itemName] || 0);
+      const detail = flushActionOutput();
+      if (consumed < 2 && bot.game?.gameMode !== "creative") {
+        throw new Error(
+          `Tried to feed 2 ${animalType} with ${itemName}, but only consumed ${consumed}. ` +
+          "The animals may be too young, already in cooldown, or out of interaction range.",
+        );
+      }
+      return [
+        `Bred 2 ${animalType} with ${itemName}.`,
         `Position: ${beforePos} -> ${afterPos}.`,
         `Inventory: ${inventoryDelta(beforeInv, afterInv)}.`,
         detail ? `Output:\n${detail}` : "",
@@ -1837,11 +1953,24 @@ async function handleRequest(method, params) {
           handleRequest("break_nearby_blocks", { block_type, count, range }),
         pickupNearbyItems: async (distance = 8) =>
           handleRequest("pickup_nearby_items", { distance }),
+        breedAnimals: async (animal_type, breeding_item = null, range = 16) =>
+          handleRequest("breed_animals", { animal_type, breeding_item, range }),
+        craftRecipe: async (recipe_name, num = 1) =>
+          handleRequest("craft_recipe", { recipe_name, num }),
+        smeltItem: async (item_name, num = 1) =>
+          handleRequest("smelt_item", { item_name, num }),
+        tillAndSow: async (x, y, z, seed_type = null) =>
+          handleRequest("till_and_sow", { x, y, z, seed_type }),
+        moveAway: async (distance = 16) =>
+          handleRequest("move_away", { distance }),
         attack: async (entity_type, range = 16) =>
           handleRequest("attack", { entity_type, range }),
         equip: async (item_name, destination = "hand") =>
           handleRequest("equip", { item_name, destination }),
+        consume: async (item_name) => handleRequest("consume", { item_name }),
         placeBlock: async (block_type) => handleRequest("place_block", { block_type }),
+        activateBlock: async (block_type) => handleRequest("activate_block", { block_type }),
+        useDoor: async (x = null, y = null, z = null) => handleRequest("use_door", { x, y, z }),
         waitForAction: async (ms = 60000) => handleRequest("wait_for_action", { timeout_ms: ms }),
         stop: async () => handleRequest("stop", {}),
         log,
@@ -1894,6 +2023,7 @@ async function handleRequest(method, params) {
       try { bot.pathfinder.stop(); } catch {}
       try { bot.pvp.stop(); } catch {}
       try { bot.clearControlStates(); } catch {}
+      releaseJump();
       return "All actions stopped.";
     }
 

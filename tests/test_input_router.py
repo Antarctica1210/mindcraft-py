@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from llm.input_router import InputIntent, InputRouter, RouterDecision
+from llm.input_router import (
+    InputIntent,
+    InputRouter,
+    PlanningStrategy,
+    RouterDecision,
+)
 
 # ── Fixtures ────────────────────────────────────────────────────────
 
@@ -156,3 +161,38 @@ def test_from_config_falls_back_when_file_missing(tmp_path: object) -> None:
     r = InputRouter.from_config(missing)
     # Built-in defaults still classify standard cases.
     assert r.classify("remember base").intent is InputIntent.META_COMMAND
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "craft a furnace",
+        "smelt 4 raw iron",
+        "breed two chickens",
+        "种小麦",
+        "养鸡",
+    ],
+)
+def test_stable_workflows_use_rolling_plan(
+    router: InputRouter,
+    message: str,
+) -> None:
+    decision = router.classify(message)
+    assert decision.intent is InputIntent.ACTION_COMMAND
+    assert decision.planning_strategy is PlanningStrategy.ROLLING_PLAN
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "attack the zombie",
+        "follow me",
+        "search for a chicken",
+        "stop",
+        "攻击僵尸",
+    ],
+)
+def test_dynamic_tasks_use_react(router: InputRouter, message: str) -> None:
+    decision = router.classify(message)
+    assert decision.intent is InputIntent.ACTION_COMMAND
+    assert decision.planning_strategy is PlanningStrategy.REACT

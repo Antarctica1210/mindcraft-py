@@ -90,10 +90,7 @@ class BotState:
 
 @dataclass
 class CommandCall:
-    """A parsed command extracted from LLM output.
-
-    Mirrors the JS `parseCommandMessage()` result from commands/index.js.
-    """
+    """A parsed command extracted from LLM output."""
     name: str          # e.g. "collectBlocks"
     args: list[Any] = field(default_factory=list)
     raw: str = ""      # original matched text
@@ -101,10 +98,7 @@ class CommandCall:
 
 @dataclass
 class AgentConfig:
-    """Configuration for an Agent instance.
-
-    Mirrors settings.js + profile system.
-    """
+    """Configuration for an Agent instance."""
     name: str = ""
     profile: dict[str, Any] = field(default_factory=dict)
     max_commands: int = -1  # -1 = unlimited, matches JS behavior

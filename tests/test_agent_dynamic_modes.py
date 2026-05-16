@@ -5,7 +5,7 @@ from typing import Any
 
 from conftest import FakeBridge
 
-from agent.core import Agent
+from agent.core import Agent, _command_defs
 from agent.models import AgentConfig, BotState, EntityInfo, Position
 from agent.modes import BehaviorMode, ModeEvaluator
 from llm.dispatch_gate import DispatchDecision
@@ -41,6 +41,15 @@ class FakeTaskMemory:
     async def remember(self, record: Any, *, is_player_requested: bool = False) -> str:
         self.records.append(record)
         return record.name
+
+
+def test_all_commands_have_completion_kind() -> None:
+    defs = _command_defs()
+
+    assert defs
+    assert all(cdef.completion_kind != "none" for cdef in defs.values())
+    assert defs["breedAnimals"].completion_kind == "world_change"
+    assert defs["givePlayer"].completion_kind == "delivery"
 
 
 async def test_set_goal_starts_and_end_goal_stops_self_prompt() -> None:
@@ -301,6 +310,7 @@ async def test_ok_you_can_stop_executes_direct_stop_without_llm() -> None:
 
     assert used_command is True
     assert ("stop",) in bridge.calls
+    assert ("set_control_state", "jump", False) in bridge.calls
 
 
 async def test_craft_request_already_satisfied_delivers_without_llm_or_crafting() -> None:
@@ -731,6 +741,158 @@ async def test_break_nearby_blocks_command_dispatches() -> None:
 
     assert result == "broke 3 tall_grass"
     assert ("break_nearby_blocks", "tall_grass", 3, 5) in bridge.calls
+
+
+async def test_breed_animals_command_dispatches() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command(
+        "breedAnimals",
+        ["chicken", "wheat_seeds"],
+        {"range": 16},
+    )
+
+    assert result == "bred chicken with wheat_seeds"
+    assert ("breed_animals", "chicken", "wheat_seeds", 16) in bridge.calls
+
+
+async def test_breed_animals_completion_finishes_without_delivery() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "breed two chickens"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "breed two chickens")
+
+    result = await agent._execute_agent_command(
+        "breedAnimals",
+        ["chicken", "wheat_seeds"],
+        {"range": 16},
+    )
+    agent._active_task_add_event(
+        "action_result",
+        f"breedAnimals args=['chicken', 'wheat_seeds'] kwargs={{'range': 16}} -> {result}",
+        ok=True,
+    )
+    state = await agent.observe()
+    finished = await agent._maybe_finish_after_command_completion(
+        "breedAnimals",
+        result,
+        state,
+    )
+
+    assert finished is True
+    assert agent._active_task is None
+    assert ("give_to_player", "Wilson", "wheat_seeds", 2) not in bridge.calls
+    assert not any(call[0] == "give_to_player" for call in bridge.calls)
+
+
+async def test_break_nearby_blocks_does_not_finish_planting_task() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "种8块小麦田"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "种8块小麦田")
+
+    state = await agent.observe()
+    finished = await agent._maybe_finish_after_command_completion(
+        "breakNearbyBlocks",
+        "Broke 1x tall_grass.\nPicked up 0 items.\nInventory: no inventory change.",
+        state,
+    )
+
+    assert finished is False
+    assert agent._active_task is not None
+    assert not any(
+        event.kind == "completion_evidence"
+        for event in (agent._active_task.events or [])
+    )
+
+
+async def test_till_and_sow_single_plot_does_not_finish_multi_plot_task() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "种8块小麦田"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "种8块小麦田")
+
+    state = await agent.observe()
+    finished = await agent._maybe_finish_after_command_completion(
+        "tillAndSow",
+        "Tilled dirt and planted wheat_seeds at (1, 63, 1).",
+        state,
+    )
+
+    assert finished is False
+    assert agent._active_task is not None
+
+
+async def test_till_and_sow_completion_finishes_single_plot_task() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "种1块小麦田"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "种1块小麦田")
+
+    state = await agent.observe()
+    finished = await agent._maybe_finish_after_command_completion(
+        "tillAndSow",
+        "Tilled dirt and planted wheat_seeds at (1, 63, 1).",
+        state,
+    )
+
+    assert finished is True
+    assert agent._active_task is None
+
+
+async def test_till_and_sow_completion_finishes_when_requested_plots_are_done() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "在我附近种植8田"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "在我附近种植8田")
+    assert agent._active_task is not None
+    for i in range(8):
+        result = f"Tilled and planted wheat_seeds at ({i}, 62, 335)."
+        agent._active_task_add_event(
+            "action_result",
+            f"tillAndSow args=[{i}, 62, 335, 'wheat_seeds'] kwargs={{}} -> {result}",
+            ok=True,
+        )
+
+    state = await agent.observe()
+    finished = await agent._maybe_finish_after_command_completion(
+        "tillAndSow",
+        "Tilled and planted wheat_seeds at (7, 62, 335).",
+        state,
+    )
+
+    assert finished is True
+    assert agent._active_task is None
 
 
 async def test_give_item_uses_inventory_and_defaults_to_8() -> None:

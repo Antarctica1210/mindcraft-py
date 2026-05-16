@@ -11,7 +11,7 @@ Pydantic-typed I/O: LLMInput → Prompter.send_request() → LLMOutput.
 """
 from .dispatch_gate import DispatchDecision, DispatchGate
 from .example_store import Example, ExampleStore
-from .input_router import InputIntent, InputRouter, RouterDecision
+from .input_router import InputIntent, InputRouter, PlanningStrategy, RouterDecision
 from .prompter import LLMInput, LLMOutput, Prompter
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     "LLMOutput",
     "InputRouter",
     "InputIntent",
+    "PlanningStrategy",
     "RouterDecision",
     "DispatchDecision",
     "DispatchGate",

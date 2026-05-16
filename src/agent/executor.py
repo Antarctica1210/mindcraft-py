@@ -67,6 +67,7 @@ class ActionExecutor:
     def __init__(self, bridge: Any = None) -> None:
         self._bridge = bridge
         self._handlers: dict[str, Callable[..., Any]] = {}
+        self._wiki_store: Any = None
 
     def register(self, name: str, handler: Callable[..., Any]) -> None:
         self._handlers[name] = handler
@@ -77,6 +78,10 @@ class ActionExecutor:
     def set_bridge(self, bridge: Any) -> None:
         """Attach the SocketBridge instance used to dispatch commands."""
         self._bridge = bridge
+
+    def set_wiki_store(self, store: Any) -> None:
+        """Attach an optional local Minecraft Wiki retrieval store."""
+        self._wiki_store = store
 
     async def execute(
         self,
@@ -158,7 +163,12 @@ class ActionExecutor:
 
     @staticmethod
     async def _stop(bridge: Any, *_args: Any) -> Any:
-        return await bridge.stop()
+        result = await bridge.stop()
+        try:
+            await bridge.set_control_state("jump", False)
+        except Exception:
+            logger.debug("Failed to release jump after stop", exc_info=True)
+        return result
 
     @staticmethod
     async def _stfu(_bridge: Any, *_args: Any) -> str:
@@ -372,6 +382,18 @@ class ActionExecutor:
         return await bridge.break_nearby_blocks(block_type, count, range_val)
 
     @staticmethod
+    async def _breed_animals(
+        bridge: Any,
+        animal_type: str,
+        breeding_item: str | None = None,
+        range_val: float = 16,
+        **kwargs: Any,
+    ) -> Any:
+        if "range" in kwargs:
+            range_val = kwargs["range"]
+        return await bridge.breed_animals(animal_type, breeding_item, range_val)
+
+    @staticmethod
     async def _use_on(bridge: Any, tool_name: str, target: str) -> Any:
         return await bridge.use_on(tool_name, target)
 
@@ -474,9 +496,21 @@ class ActionExecutor:
     async def _get_crafting_plan(bridge: Any, target_item: str, quantity: int = 1) -> Any:
         return await bridge.get_crafting_plan(target_item, quantity)
 
-    @staticmethod
-    async def _search_wiki(_bridge: Any, query: str) -> str:
-        """Search the Minecraft Wiki — implemented in Python via HTTP."""
+    async def _search_wiki(self, _bridge: Any, query: str) -> str:
+        """Search the Minecraft Wiki, preferring the local RAG index."""
+        started = time.perf_counter()
+        if self._wiki_store is not None and getattr(self._wiki_store, "loaded", False):
+            chunks = self._wiki_store.search(query, k=5)
+            if chunks:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                logger.info(
+                    "searchWiki: local hit chunks=%d elapsed_ms=%.1f",
+                    len(chunks),
+                    elapsed_ms,
+                )
+                return self._wiki_store.format_results(chunks)
+
+        logger.info("searchWiki: fallback to HTTP")
         import re
         import urllib.error
         import urllib.parse
@@ -527,6 +561,7 @@ class ActionExecutor:
             COMMAND_DOCS[name] = {
                 "description": cdef.description,
                 "params": cdef.params,
+                "completion_kind": cdef.completion_kind,
             }
 
         self.register_many({
@@ -571,6 +606,7 @@ class ActionExecutor:
             "activateBlock": self._activate_block,
             "collectBlocks": self._collect_blocks,
             "breakNearbyBlocks": self._break_nearby_blocks,
+            "breedAnimals": self._breed_animals,
             "useOn": self._use_on,
             # Chest
             "viewChest": self._view_chest,

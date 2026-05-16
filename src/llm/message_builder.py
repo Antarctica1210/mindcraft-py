@@ -49,8 +49,12 @@ DEFAULT_CODING_TEMPLATE = (
     "``` // using this syntax ```. The code will be executed and you will receive "
     "its output. If an error occurs, write another codeblock and try to fix the problem. "
     "Available runtime values: bot (mineflayer bot), api (safe helper methods like "
-    "api.moveTo, api.collectBlocks, api.breakNearbyBlocks, api.pickupNearbyItems, "
-    "api.searchForBlock, api.searchForEntity, api.attack, api.chat, api.observe, "
+    "api.moveTo, api.goToPlayer, api.moveAway, api.collectBlocks, "
+    "api.breakNearbyBlocks, api.pickupNearbyItems, api.breedAnimals, "
+    "api.craftRecipe, api.smeltItem, api.tillAndSow, api.placeBlock, "
+    "api.activateBlock, api.useDoor, "
+    "api.searchForBlock, api.searchForEntity, api.attack, api.equip, api.consume, "
+    "api.chat, api.observe, "
     "api.inventory, api.entities, api.countEntities, api.waitForAction, api.stop), "
     "Vec3, and log(...args). All api helper methods are async; await them. "
     "No skills object or other global helper namespace is injected. "
@@ -69,6 +73,7 @@ class CommandDef:
     name: str
     description: str = ""
     params: dict[str, dict[str, Any]] = field(default_factory=dict)
+    completion_kind: str = "none"
 
 
 @dataclass

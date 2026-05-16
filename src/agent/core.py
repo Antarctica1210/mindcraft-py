@@ -6,10 +6,7 @@ The central ``Agent`` class wires together:
   - MessageBuilder (prompt assembly, Phase 1)
   - action_parser (response parsing, Phase 1)
   - ActionExecutor (command dispatch, Phase 2)
-  - ConversationManager (history + turn mgmt, Phase 2)
   - ModeEvaluator (reactive behavior, Phase 2)
-
-Mirrors the ``Agent`` class in ``src/agent/agent.js``.
 """
 from __future__ import annotations
 
@@ -23,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from llm import ExampleStore, InputIntent, InputRouter, Prompter
+from llm import ExampleStore, InputIntent, InputRouter, PlanningStrategy, Prompter
 from llm.dispatch_gate import DispatchDecision, DispatchGate
 from llm.message_builder import CommandDef, ConversationTurn, MessageBuilder
 from llm.prompter import LLMInput, LLMOutput
@@ -67,6 +64,7 @@ _QUERY_COMMANDS: frozenset[str] = frozenset({
 _PRE_ACTION_OBSERVE_COMMANDS: frozenset[str] = frozenset({
     "attack",
     "breakNearbyBlocks",
+    "breedAnimals",
     "collectBlocks",
     "consume",
     "craftRecipe",
@@ -113,6 +111,92 @@ _DELIVERY_RESULT_RE = re.compile(r"\bGave\s+(?P<count>\d+)x\s+", re.IGNORECASE)
 _MAX_REPEATED_QUERY_PER_NAME = 3
 _MAX_CONSECUTIVE_QUERY_CALLS = 4
 _MAX_TOOL_CALLS_PER_TURN = 25
+_COMMAND_COMPLETION_KINDS: dict[str, str] = {
+    # Control / meta
+    "stop": "control",
+    "stfu": "control",
+    "unshut": "control",
+    "restart": "control",
+    "clearChat": "control",
+    "setMode": "control",
+    "setGoal": "control",
+    "endGoal": "control",
+    # Queries
+    "stats": "query",
+    "inventory": "query",
+    "goal": "query",
+    "entities": "query",
+    "countEntities": "query",
+    "nearbyBlocks": "query",
+    "craftable": "query",
+    "help": "query",
+    "modes": "query",
+    "getCraftingPlan": "query",
+    "searchWiki": "query",
+    "showVillagerTrades": "query",
+    # Navigation / locating
+    "moveTo": "navigation",
+    "goToPlayer": "navigation",
+    "followPlayer": "navigation",
+    "goToCoordinates": "navigation",
+    "searchForBlock": "navigation",
+    "searchForEntity": "navigation",
+    "moveAway": "navigation",
+    "goToBed": "world_change",
+    "goToSurface": "navigation",
+    "digDown": "world_change",
+    "stay": "navigation",
+    # Inventory and delivery
+    "equip": "inventory",
+    "consume": "inventory",
+    "discard": "inventory",
+    "givePlayer": "delivery",
+    "collectBlocks": "inventory",
+    "craftRecipe": "inventory",
+    "smeltItem": "inventory",
+    "pickupNearbyItems": "inventory",
+    # World changes
+    "attack": "world_change",
+    "attackPlayer": "world_change",
+    "placeHere": "world_change",
+    "activateBlock": "world_change",
+    "breakNearbyBlocks": "world_change",
+    "breedAnimals": "world_change",
+    "useOn": "world_change",
+    "clearFurnace": "world_change",
+    "tradeWithVillager": "world_change",
+    "lookAtPlayer": "navigation",
+    "lookAtPosition": "navigation",
+    "newAction": "custom_action",
+    "tillAndSow": "world_change",
+    "useDoor": "world_change",
+    "startConversation": "conversation",
+    "endConversation": "conversation",
+    "viewChest": "query",
+    "putInChest": "inventory",
+    "takeFromChest": "inventory",
+}
+_TERMINAL_COMPLETION_KINDS: frozenset[str] = frozenset({
+    "world_change",
+    "custom_action",
+})
+_ALWAYS_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
+    "activateBlock",
+    "breedAnimals",
+    "digDown",
+    "goToBed",
+    "placeHere",
+    "tillAndSow",
+    "tradeWithVillager",
+    "useDoor",
+    "useOn",
+})
+_CONDITIONAL_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
+    "attack",
+    "attackPlayer",
+    "breakNearbyBlocks",
+    "clearFurnace",
+})
 
 
 @dataclass
@@ -149,6 +233,7 @@ class ActiveTask:
     events: list[ActiveTaskEvent] | None = None
     summary: str = ""
     requires_ctable: bool = False
+    planning_strategy: PlanningStrategy = PlanningStrategy.REACT
     timeout_s: float | None = None  # task-level timeout (seconds), None = no limit
     started_at: float = 0.0
 
@@ -302,6 +387,121 @@ def _delivery_succeeded(result: Any) -> bool:
     if match is None:
         return True
     return int(match.group("count")) > 0
+
+
+def _command_completion_kind(command_name: str) -> str:
+    return _COMMAND_COMPLETION_KINDS.get(command_name.lstrip("!"), "none")
+
+
+def _world_change_command_can_complete_task(command_name: str, task: ActiveTask) -> bool:
+    """Return whether a world mutation is specific enough to close this task.
+
+    Some world-changing commands are often intermediate steps in a larger
+    workflow.  Breaking tall grass while planting wheat, attacking sheep while
+    crafting a bed, or clearing a furnace while cooking should not by itself
+    mark the player request as complete.
+    """
+    name = command_name.lstrip("!")
+    if name in _ALWAYS_TERMINAL_WORLD_CHANGE_COMMANDS:
+        return True
+    if name not in _CONDITIONAL_TERMINAL_WORLD_CHANGE_COMMANDS:
+        return False
+
+    message = (task.original_message or "").lower()
+    if name in {"attack", "attackPlayer"}:
+        return bool(re.search(
+            r"\b(attack|kill|fight|hunt)\b|攻击|打死|杀|猎杀",
+            message,
+        ))
+    if name == "breakNearbyBlocks":
+        if re.search(r"\b(plant|farm|sow|seed|wheat)\b|种|播种|耕|小麦|种子|田", message):
+            return False
+        return bool(re.search(
+            r"\b(break|destroy|clear|remove|mine|dig)\b|破坏|打掉|清理|挖|采",
+            message,
+        ))
+    if name == "clearFurnace":
+        return bool(re.search(r"\bclear\s+(the\s+)?furnace\b|清空.*熔炉|清理.*熔炉", message))
+    return False
+
+
+def _planting_request_quantity(message: str) -> int | None:
+    """Return requested plot/seed count for planting workflows, if explicit."""
+    text = (message or "").strip().lower()
+    if not re.search(
+        r"\b(plant|farm|sow|seed|wheat|field|crop)\b|种|播种|耕|小麦|种子|田",
+        text,
+    ):
+        return None
+    digit = re.search(r"(?<!\d)(\d{1,2})(?!\d)", text)
+    if digit:
+        return max(1, min(int(digit.group(1)), 64))
+    for word, value in _CHINESE_NUMBERS.items():
+        if word in text:
+            return value
+    return None
+
+
+def _successful_till_and_sow_count(task: ActiveTask, current_result: Any) -> int:
+    """Count successful single-plot tillAndSow actions in this active task."""
+    result_text = str(current_result or "").strip()
+    count = 0
+    current_result_already_recorded = False
+
+    for event in task.events or []:
+        if event.kind != "action_result" or event.ok is not True:
+            continue
+        message = event.message
+        if "tillAndSow" not in message:
+            continue
+        lower = message.lower()
+        if "failed:" in lower:
+            continue
+        if "tilled" not in lower and "planted" not in lower:
+            continue
+        count += 1
+        if result_text and result_text in message:
+            current_result_already_recorded = True
+
+    lower_result = result_text.lower()
+    if (
+        result_text
+        and not current_result_already_recorded
+        and "failed:" not in lower_result
+        and ("tilled" in lower_result or "planted" in lower_result)
+    ):
+        count += 1
+    return count
+
+
+def _world_change_completion_has_required_progress(
+    command_name: str,
+    task: ActiveTask,
+    result: Any,
+) -> bool:
+    """Return whether a terminal world-change command satisfies explicit quantity."""
+    name = command_name.lstrip("!")
+    if name != "tillAndSow":
+        return True
+
+    requested = _planting_request_quantity(task.original_message)
+    if requested is None or requested <= 1:
+        return True
+
+    completed = _successful_till_and_sow_count(task, result)
+    if completed >= requested:
+        return True
+
+    logger.info(
+        "Planting command treated as partial progress: task=%s command=%s "
+        "completed=%d requested=%d request=%r",
+        task.id,
+        command_name,
+        completed,
+        requested,
+        task.original_message,
+    )
+    return False
 
 
 _NEARBY_MISS_RE = re.compile(
@@ -772,6 +972,25 @@ class Agent:
         else:
             logger.info("No minecraft-data found — KnowledgeGraph disabled")
 
+        if global_settings.wiki_rag.enabled:
+            from knowledge import WikiVectorStore
+            wiki_store = WikiVectorStore(
+                index_dir=global_settings.wiki_rag.index_dir,
+                embed_model=global_settings.wiki_rag.embed_model,
+                rerank_model=global_settings.wiki_rag.rerank_model,
+                use_fp16=global_settings.wiki_rag.use_fp16,
+                device=global_settings.wiki_rag.device,
+                dense_candidates=global_settings.wiki_rag.dense_candidates,
+                rerank_candidates=global_settings.wiki_rag.rerank_candidates,
+            )
+            if wiki_store.load():
+                self._executor.set_wiki_store(wiki_store)
+                logger.info("Wiki RAG loaded from %s", global_settings.wiki_rag.index_dir)
+            else:
+                logger.info("Wiki RAG unavailable; searchWiki will use HTTP fallback")
+        else:
+            logger.info("Wiki RAG disabled by configuration")
+
         # Phase 2: safety polling (Plan A — Python-side observe loop)
         self._safety = SafetyMonitor(bridge)
         await self._safety.start()
@@ -981,6 +1200,8 @@ class Agent:
             )
         else:
             hints = []
+            if self._active_task:
+                hints.append(self._planning_strategy_prompt(self._active_task))
             if self._active_task and self._active_task.requires_ctable:
                 hints.append(
                     "This task likely requires a crafting table. "
@@ -1141,19 +1362,22 @@ class Agent:
         # ── 1. Classify intent ────────────────────────────────────────
         intent = InputIntent.ACTION_COMMAND
         matched: str | None = None
+        planning_strategy = PlanningStrategy.REACT
         if self._router is not None:
             decision = await self._router.classify_async(message)
             intent = decision.intent
             matched = decision.matched_pattern
+            planning_strategy = decision.planning_strategy
         logger.info(
-            "InputRouter: source=%s intent=%s match=%r",
-            source, intent.value, matched,
+            "InputRouter: source=%s intent=%s planning_strategy=%s match=%r",
+            source, intent.value, planning_strategy.value, matched,
         )
 
         # Record L1 player message event
         await self._record_event("player_msg", {
             "source": source, "message": message,
             "intent": intent.value,
+            "planning_strategy": planning_strategy.value,
         })
 
         # Include the sender's name so the LLM can reference them in
@@ -1169,7 +1393,11 @@ class Agent:
                     reason=f"{source} asked me to stop.",
                 )
             else:
-                await self._replace_active_task(source, message)
+                await self._replace_active_task(
+                    source,
+                    message,
+                    planning_strategy=planning_strategy,
+                )
 
         if _player_requested_stop(message):
             direct_result = await self._try_direct_action_command()
@@ -1430,6 +1658,34 @@ class Agent:
                 # Speak plain text (question/chitchat path, or retry exhausted)
                 await self._send_chat(llm_response.content.strip())
                 break
+
+            if (
+                use_tools
+                and self._active_task is not None
+                and self._active_task.planning_strategy == PlanningStrategy.ROLLING_PLAN
+                and len(parsed.commands) > 1
+            ):
+                dropped = [cmd.name for cmd in parsed.commands[1:]]
+                logger.info(
+                    "Rolling plan produced multiple commands; executing only first=%s "
+                    "dropped=%s",
+                    parsed.commands[0].name,
+                    dropped,
+                )
+                self._history.append(ConversationTurn(
+                    role="system",
+                    content=(
+                        "Rolling-plan mode executes only one command per turn. "
+                        f"Ignored later commands from the previous response: {', '.join(dropped)}. "
+                        "Keep future plan steps as plain text with no !command syntax."
+                    ),
+                ))
+                if llm_response.tool_calls:
+                    llm_response = llm_response.model_copy(
+                        update={"tool_calls": llm_response.tool_calls[:1]}
+                    )
+                parsed.commands = parsed.commands[:1]
+                parsed.has_command = True
 
             repeated_query: tuple[str, str] | None = None
             if use_tools:
@@ -1758,6 +2014,12 @@ class Agent:
                 bot_state = await self.observe()
                 if not self._running:
                     return used_command
+                if await self._maybe_finish_after_command_completion(
+                    normalized_name,
+                    result,
+                    bot_state,
+                ):
+                    return True
                 if use_tools and await self._maybe_complete_satisfied_craft(bot_state):
                     return True
 
@@ -1772,11 +2034,165 @@ class Agent:
             recovered_after_clear = await self._maybe_retry_cook_after_furnace_clear()
             if recovered_after_clear:
                 return True
+            if self._active_task_has_completion_evidence(self._active_task):
+                await self._finish_active_task(
+                    "succeeded",
+                    reason="Plan loop ended after verified non-delivery completion.",
+                )
+                return True
             await self._finish_active_task(
                 "succeeded" if used_command else "failed",
                 reason="Plan loop ended.",
             )
         return used_command
+
+    async def _maybe_finish_after_command_completion(
+        self,
+        command_name: str,
+        result: Any,
+        bot_state: BotState,
+    ) -> bool:
+        """Finish non-delivery tasks when a terminal command has evidence."""
+        task = self._active_task
+        if task is None or task.status != "running":
+            return False
+        if not _action_succeeded(result):
+            return False
+
+        kind = _command_completion_kind(command_name)
+        evidence = self._completion_evidence_for_command(
+            command_name,
+            kind,
+            result,
+            bot_state,
+        )
+        if evidence is None:
+            return False
+
+        expects_delivery = self._active_task_expects_delivery(task)
+        if kind in _TERMINAL_COMPLETION_KINDS and expects_delivery:
+            return False
+        if kind == "inventory" and expects_delivery:
+            return False
+        if kind == "world_change" and not _world_change_command_can_complete_task(
+            command_name,
+            task,
+        ):
+            logger.info(
+                "World-change command treated as intermediate progress: "
+                "task=%s command=%s request=%r",
+                task.id,
+                command_name,
+                task.original_message,
+            )
+            return False
+        if kind == "world_change" and not _world_change_completion_has_required_progress(
+            command_name,
+            task,
+            result,
+        ):
+            return False
+
+        self._active_task_add_event(
+            "completion_evidence",
+            f"{command_name} completion_kind={kind}: {evidence}",
+            ok=True,
+        )
+        logger.info(
+            "Command completion evidence: task=%s command=%s kind=%s evidence=%s",
+            task.id,
+            command_name,
+            kind,
+            evidence,
+        )
+
+        if kind == "delivery":
+            await self._finish_active_task(
+                "succeeded",
+                reason=f"Delivery completed via {command_name}.",
+            )
+            return True
+
+        if kind in _TERMINAL_COMPLETION_KINDS:
+            await self._finish_active_task(
+                "succeeded",
+                reason=f"Verified non-delivery task completion via {command_name}: {evidence}",
+            )
+            return True
+
+        if kind == "inventory":
+            await self._finish_active_task(
+                "succeeded",
+                reason=f"Inventory task completed via {command_name}: {evidence}",
+            )
+            return True
+
+        return False
+
+    def _completion_evidence_for_command(
+        self,
+        command_name: str,
+        completion_kind: str,
+        result: Any,
+        bot_state: BotState,
+    ) -> str | None:
+        """Return a short evidence string when a command can close a task."""
+        text = str(result or "").strip()
+        if not text:
+            return None
+        first_line = text.splitlines()[0][:180]
+
+        if completion_kind == "delivery":
+            return first_line if _delivery_succeeded(result) else None
+
+        if completion_kind == "custom_action":
+            lower = text.lower()
+            if "dynamic action ok" in lower and "failed:" not in lower:
+                return first_line
+            return None
+
+        if completion_kind == "inventory":
+            lower = text.lower()
+            if "inventory: no inventory change" in lower:
+                return None
+            if "inventory:" in lower or re.search(
+                r"\b(collected|crafted|smelted|picked up)\b",
+                lower,
+            ):
+                return first_line
+            return None
+
+        if completion_kind != "world_change":
+            return None
+
+        lower = text.lower()
+        positive_markers = (
+            "bred ",
+            "broke ",
+            "placed ",
+            "activated ",
+            "used ",
+            "tilled",
+            "sowed",
+            "planted",
+            "cleared",
+            "traded",
+            "attacked",
+            "killed",
+            "slept",
+            "dug",
+            "opened",
+            "closed",
+            "dynamic action ok",
+        )
+        if any(marker in lower for marker in positive_markers):
+            return first_line
+        # A few bridge actions report success mostly through a position or
+        # inventory summary. Treat that as evidence only for commands whose
+        # purpose is intrinsically a world mutation.
+        if command_name in {"breedAnimals", "tillAndSow", "placeHere", "breakNearbyBlocks"}:
+            return first_line
+        return None
 
     async def _maybe_complete_satisfied_craft(self, bot_state: BotState) -> bool:
         """Deliver craft requests once current inventory satisfies them."""
@@ -3328,7 +3744,13 @@ class Agent:
         if self._memory is not None:
             await self._memory.record_event(event_type, payload)
 
-    async def _replace_active_task(self, requester: str, message: str) -> None:
+    async def _replace_active_task(
+        self,
+        requester: str,
+        message: str,
+        *,
+        planning_strategy: PlanningStrategy = PlanningStrategy.REACT,
+    ) -> None:
         """Start a new lightweight task, cancelling any unfinished one."""
         await self._finish_active_task("cancelled", reason="Replaced by a newer player command.")
         task_id = f"{int(time.time())}_{_slugify_task_name(message)}"
@@ -3337,6 +3759,7 @@ class Agent:
             requester=requester,
             original_message=message,
             requires_ctable=_looks_like_crafting_request(message),
+            planning_strategy=planning_strategy,
             timeout_s=300.0,  # 5 min default, mirrors Minecollab benchmark
             started_at=time.time(),
         )
@@ -3344,11 +3767,18 @@ class Agent:
             kind="start",
             message=f"{requester}: {message}",
         ))
-        logger.info("ActiveTask start: id=%s requester=%s message=%r", task_id, requester, message)
+        logger.info(
+            "ActiveTask start: id=%s requester=%s planning_strategy=%s message=%r",
+            task_id,
+            requester,
+            planning_strategy.value,
+            message,
+        )
         await self._record_event("task_start", {
             "task_id": task_id,
             "requester": requester,
             "message": message,
+            "planning_strategy": planning_strategy.value,
         })
 
     def _active_task_add_event(
@@ -3372,7 +3802,11 @@ class Agent:
         task = self._active_task
         if task is None or task.status != "running":
             return
-        if status == "succeeded" and not self._active_task_has_delivery(task):
+        if (
+            status == "succeeded"
+            and not self._active_task_has_delivery(task)
+            and not self._active_task_has_completion_evidence(task)
+        ):
             delivered = await self._maybe_deliver_active_task_result()
             if delivered is False:
                 status = "failed"
@@ -3419,6 +3853,13 @@ class Agent:
             event.kind == "action_result"
             and ("givePlayer" in event.message or "give_to_player" in event.message)
             and event.ok is not False
+            for event in (task.events or [])
+        )
+
+    @staticmethod
+    def _active_task_has_completion_evidence(task: ActiveTask) -> bool:
+        return any(
+            event.kind == "completion_evidence" and event.ok is True
             for event in (task.events or [])
         )
 
@@ -3546,6 +3987,7 @@ class Agent:
             f"id: {task.id}\n"
             f"requester: {task.requester}\n"
             f"request: {task.original_message}\n"
+            f"planning_strategy: {task.planning_strategy.value}\n"
             f"attempts: {task.attempts}\n"
             f"failures: {task.failures}\n"
             "recent task events:\n"
@@ -3555,6 +3997,22 @@ class Agent:
             "strictly required by this request. Failed memories are lessons, not "
             "pending objectives. Use recent task events to avoid repeating "
             "completed or failed steps."
+        )
+
+    @staticmethod
+    def _planning_strategy_prompt(task: ActiveTask) -> str:
+        if task.planning_strategy == PlanningStrategy.ROLLING_PLAN:
+            return (
+                "Planning strategy: rolling_plan. Think 2-3 short steps ahead "
+                "for this stable workflow, but execute ONLY the immediate next "
+                "command. Future steps must be plain text without !command "
+                "syntax or tool calls. After the command runs, observe the new "
+                "state and revise or discard the remaining plan if reality "
+                "changed. Do not make a full long-horizon plan."
+            )
+        return (
+            "Planning strategy: react. Choose only the best immediate next "
+            "command from the latest observation; do not write future steps."
         )
 
     async def _remember_active_task(self, task: ActiveTask) -> None:
@@ -3761,7 +4219,7 @@ def _command_defs() -> dict[str, CommandDef]:
 
     Mirrors the JS command list in ``src/agent/commands/``.
     """
-    return {
+    defs = {
         # ── Control ─────────────────────────────────────────────────
         "stop": CommandDef(
             name="stop",
@@ -4010,6 +4468,27 @@ def _command_defs() -> dict[str, CommandDef]:
                 },
             },
         ),
+        "breedAnimals": CommandDef(
+            name="breedAnimals",
+            description=(
+                "Breed two nearby animals of the same type by feeding each the specified "
+                "breeding item. Prefer this over newAction for animal breeding."
+            ),
+            params={
+                "animal_type": {
+                    "type": "string",
+                    "description": "Animal type, e.g. chicken, cow, sheep, pig",
+                },
+                "breeding_item": {
+                    "type": "string",
+                    "description": "Food item to feed, e.g. wheat_seeds for chicken",
+                },
+                "range": {
+                    "type": "float",
+                    "description": "Search radius for two matching animals, max 64 (default 16)",
+                },
+            },
+        ),
         "useOn": CommandDef(
             name="useOn",
             description="Use a tool on a target entity or block.",
@@ -4212,6 +4691,9 @@ def _command_defs() -> dict[str, CommandDef]:
             },
         ),
     }
+    for name, command in defs.items():
+        command.completion_kind = _command_completion_kind(name)
+    return defs
 
 
 def _build_tool_defs(handlers: dict[str, Callable[..., Any]]) -> list[dict[str, Any]] | None:
