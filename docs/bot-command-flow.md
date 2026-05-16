@@ -11,14 +11,11 @@ flowchart TD
     D --> E[InputRouter keyword/regex classifier]
     E --> F{Intent}
     F -->|chitchat| G[Prompter replies as conversation]
-    F -->|action_command| H[Choose planning_strategy]
+    F -->|action_command| H[Set planning_strategy]
     F -->|ignore/system| Z[No task]
-    H --> H1{Strategy}
-    H1 -->|react| H2[Start ActiveTask: immediate next step only]
-    H1 -->|rolling_plan| H3[Start ActiveTask: 2-3 step short horizon]
+    H --> H2[Start ActiveTask: react by default]
 
     H2 --> I[Observe current state]
-    H3 --> I
     I --> I1[Inventory]
     I --> I2[Entities]
     I --> I3[Nearby blocks]
@@ -44,7 +41,7 @@ flowchart TD
     L --> M{Has !command?}
     M -->|No| N[Send chat response]
     N --> O{Task done?}
-    M -->|Yes| M1{rolling_plan produced multiple commands?}
+    M -->|Yes| M1{Multiple commands produced?}
     M1 -->|Yes| M2[Keep first command, ignore later commands]
     M1 -->|No| P[ActionExecutor.execute]
     M2 --> P
@@ -80,8 +77,8 @@ flowchart TD
 ## Key Points
 
 - `InputRouter` 决定一句话是否应该进入执行链路；`DispatchGate` 可作为 LLM 分类器补充，但不可用时会回退到关键词路由。
-- `InputRouter` 还会给 action task 打 `planning_strategy`：`react` 用于战斗、跟随、搜索、停止等高动态任务；`rolling_plan` 用于制作、烧炼、挖矿、种植、养动物等稳定流程。
-- `rolling_plan` 不是 full plan。LLM 可以提前想 2-3 步，但只有第一条命令会执行；未来步骤必须是普通文字，执行后重新 `observe` 再决定是否保留或改写。
+- `InputRouter` 还会给 action task 打 `planning_strategy`，但现在默认统一使用 `react`。Minecraft 世界状态变化快，执行链路优先采用“观察 -> 执行一个命令 -> 再观察”的短循环。
+- `rolling_plan` 仍保留在类型和执行保护里，方便以后做 opt-in 实验；当前路由层不会自动启用它。即使 LLM 输出多个命令，loop 也只保留第一条并在执行后重新 `observe`。
 - `observe` 是规划的地基。每轮执行前后都会读取背包、实体、附近方块和基础状态，避免 LLM 只靠对话历史猜。
 - `CommandDef.completion_kind` 告诉 loop 怎么判断结束：例如 `delivery` 依赖交付，`world_change`/`custom_action` 可以用状态证据结束，`query`/`navigation` 默认不直接完成任务。
 - `newAction` 仍然通过 `socket_server.js` 执行，但只能使用动态 API 文档暴露的 `api.*` 方法，不应假设原生 Mindcraft 的 `skills.*` 对象存在。

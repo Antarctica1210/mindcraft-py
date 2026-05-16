@@ -173,13 +173,13 @@ def test_from_config_falls_back_when_file_missing(tmp_path: object) -> None:
         "养鸡",
     ],
 )
-def test_stable_workflows_use_rolling_plan(
+def test_action_workflows_default_to_react(
     router: InputRouter,
     message: str,
 ) -> None:
     decision = router.classify(message)
     assert decision.intent is InputIntent.ACTION_COMMAND
-    assert decision.planning_strategy is PlanningStrategy.ROLLING_PLAN
+    assert decision.planning_strategy is PlanningStrategy.REACT
 
 
 @pytest.mark.parametrize(

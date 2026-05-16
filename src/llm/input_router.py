@@ -389,18 +389,10 @@ class InputRouter:
     def _classify_planning_strategy(message: str) -> PlanningStrategy:
         """Choose a lightweight planning mode for action commands.
 
-        ``react`` wins when both match, because combat, following, searching,
-        stop/cancel, and safety requests should stay tightly coupled to fresh
-        observations. Stable production workflows get a short rolling plan.
+        Default to ``react`` for all player action commands. Minecraft world
+        state shifts quickly enough that even stable-looking workflows are
+        safer when the bot observes, executes one command, then observes again.
+        ``rolling_plan`` stays in the enum/executor path for future opt-in
+        experiments, but the router no longer enables it automatically.
         """
-        text = (message or "").strip().lower()
-        if not text:
-            return PlanningStrategy.REACT
-        if any(re.search(pattern, text, re.IGNORECASE) for pattern in _REACT_STRATEGY_PATTERNS):
-            return PlanningStrategy.REACT
-        if any(
-            re.search(pattern, text, re.IGNORECASE)
-            for pattern in _ROLLING_PLAN_STRATEGY_PATTERNS
-        ):
-            return PlanningStrategy.ROLLING_PLAN
         return PlanningStrategy.REACT

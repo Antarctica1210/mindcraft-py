@@ -9,7 +9,7 @@ from agent.core import Agent, _command_defs
 from agent.models import AgentConfig, BotState, EntityInfo, Position
 from agent.modes import BehaviorMode, ModeEvaluator
 from llm.dispatch_gate import DispatchDecision
-from llm.message_builder import MessageBuilder
+from llm.message_builder import ConversationTurn, MessageBuilder
 from llm.prompter import LLMInput, LLMOutput, ToolCallFunction, ToolCallOutput
 
 
@@ -126,6 +126,67 @@ async def test_player_command_preserves_sender_casing() -> None:
 
     assert result == "went to Wilson"
     assert ("go_to_player", "Wilson", 3) in bridge.calls
+
+
+async def test_active_task_prompt_history_starts_at_current_user_request() -> None:
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._history = [
+        ConversationTurn(role="user", content="Wilson: 造8个火把"),
+        ConversationTurn(role="assistant", content='!craftRecipe("torch", 8)'),
+        ConversationTurn(role="system", content="FAILED: Missing stick"),
+        ConversationTurn(role="user", content="Wilson: 跟我来"),
+    ]
+
+    await agent._replace_active_task("Wilson", "跟我来")
+
+    scoped = agent._history_for_active_task_prompt()
+
+    assert [turn.content for turn in scoped] == ["Wilson: 跟我来"]
+
+
+async def test_navigation_task_blocks_crafting_bleed_from_previous_task() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=2))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._last_message = "跟我来"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    agent._history = [
+        ConversationTurn(role="user", content="Wilson: 造8个火把"),
+        ConversationTurn(role="assistant", content='!craftRecipe("torch", 8)'),
+        ConversationTurn(role="system", content="FAILED: Missing stick"),
+        ConversationTurn(role="user", content="Wilson: 跟我来"),
+    ]
+    await agent._replace_active_task("Wilson", "跟我来")
+
+    async def no_direct_shortcut() -> None:
+        return None
+
+    agent._try_direct_action_command = no_direct_shortcut  # type: ignore[method-assign]
+    responses = [
+        LLMOutput(content='!craftRecipe("oak_planks", 1)', model="fake"),
+        LLMOutput(content='!goToPlayer("Wilson", 3)', model="fake"),
+    ]
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        assert tool_choice == "auto"
+        return responses.pop(0)
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent._run_plan_loop(max_responses=2, use_tools=True)
+
+    assert used_command is True
+    assert not any(call[0] == "craft_recipe" for call in bridge.calls)
+    assert ("go_to_player", "Wilson", 3) in bridge.calls
+    assert agent._active_task is None
+    assert any(
+        turn.role == "system"
+        and "Ignored craftRecipe because the current task is only" in turn.content
+        for turn in agent._history
+    )
 
 
 async def test_observe_keeps_entity_counts_beyond_display_cap() -> None:
@@ -725,6 +786,29 @@ async def test_get_some_wood_defaults_to_8_and_delivers_to_player() -> None:
     assert ("give_to_player", "Wilson", "oak_log", 8) in bridge.calls
 
 
+async def test_get_some_wood_uses_nearby_non_oak_log_and_delivers_it() -> None:
+    bridge = FakeBridge()
+    bridge.nearby_blocks = ["grass_block", "spruce_log"]
+    agent = Agent(AgentConfig(name="bot", max_commands=3))
+    agent._bridge = bridge
+    agent._running = True
+    agent._prompter = object()  # type: ignore[assignment]
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    async def fail_plan(*_args: object, **_kwargs: object) -> LLMOutput:
+        raise AssertionError("LLM should not be called for direct item requests")
+
+    agent.plan = fail_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "get some wood")
+
+    assert used_command is True
+    assert ("search_for_block", "spruce_log", 64) in bridge.calls
+    assert ("collect_blocks", "spruce_log", 8) in bridge.calls
+    assert ("give_to_player", "Wilson", "spruce_log", 8) in bridge.calls
+
+
 async def test_break_nearby_blocks_command_dispatches() -> None:
     bridge = FakeBridge()
     agent = Agent(AgentConfig(name="bot", max_commands=1))
@@ -741,6 +825,100 @@ async def test_break_nearby_blocks_command_dispatches() -> None:
 
     assert result == "broke 3 tall_grass"
     assert ("break_nearby_blocks", "tall_grass", 3, 5) in bridge.calls
+
+
+async def test_generic_wood_search_prefers_nearby_non_oak_log() -> None:
+    bridge = FakeBridge()
+    bridge.nearby_blocks = ["grass_block", "spruce_log"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_message = "make some sticks"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command("searchForBlock", ["oak_log", 64])
+
+    assert result == "found spruce_log"
+    assert ("search_for_block", "spruce_log", 64) in bridge.calls
+    assert ("search_for_block", "oak_log", 64) not in bridge.calls
+
+
+async def test_generic_planks_craft_prefers_inventory_log_family() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "spruce_log", "count": 1}]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_message = "make planks"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command("craftRecipe", ["oak_planks", 1])
+
+    assert result == "Crafted 1x spruce_planks."
+    assert ("craft_recipe", "spruce_planks", 1) in bridge.calls
+    assert ("craft_recipe", "oak_planks", 1) not in bridge.calls
+
+
+async def test_explicit_oak_request_does_not_remap_wood_target() -> None:
+    bridge = FakeBridge()
+    bridge.nearby_blocks = ["spruce_log"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_message = "find oak log"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command("searchForBlock", ["oak_log", 64])
+
+    assert result == "found oak_log"
+    assert ("search_for_block", "oak_log", 64) in bridge.calls
+
+
+async def test_torch_task_defers_log_charcoal_until_coal_searched() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [
+        {"name": "oak_log", "count": 8},
+        {"name": "stick", "count": 12},
+        {"name": "furnace", "count": 1},
+    ]
+    bridge.nearby_blocks = ["furnace", "coal_ore"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_message = "做32个火把"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command("smeltItem", ["oak_log", 8])
+
+    assert result is not None
+    assert result.startswith("FAILED: Do not smelt logs into charcoal")
+    assert not any(call[0] == "smelt_item" for call in bridge.calls)
+
+
+async def test_torch_task_allows_charcoal_after_failed_coal_search() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [
+        {"name": "oak_log", "count": 8},
+        {"name": "stick", "count": 12},
+        {"name": "furnace", "count": 1},
+    ]
+    bridge.nearby_blocks = ["furnace"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_message = "make 32 torches"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    agent._record_action("searchForBlock", ["coal_ore", 64], "FAILED: No coal_ore nearby.")
+
+    result = await agent._execute_agent_command("smeltItem", ["oak_log", 8])
+
+    assert result == "Smelted 8x oak_log."
+    assert ("smelt_item", "oak_log", 8) in bridge.calls
 
 
 async def test_breed_animals_command_dispatches() -> None:

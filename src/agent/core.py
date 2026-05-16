@@ -111,6 +111,39 @@ _DELIVERY_RESULT_RE = re.compile(r"\bGave\s+(?P<count>\d+)x\s+", re.IGNORECASE)
 _MAX_REPEATED_QUERY_PER_NAME = 3
 _MAX_CONSECUTIVE_QUERY_CALLS = 4
 _MAX_TOOL_CALLS_PER_TURN = 25
+_WOOD_TYPES: tuple[str, ...] = (
+    "oak",
+    "spruce",
+    "birch",
+    "jungle",
+    "acacia",
+    "dark_oak",
+    "mangrove",
+    "cherry",
+    "pale_oak",
+    "crimson",
+    "warped",
+)
+_WOOD_LOG_BLOCKS: frozenset[str] = frozenset({
+    *(f"{wood}_log" for wood in _WOOD_TYPES if wood not in {"crimson", "warped"}),
+    *(f"stripped_{wood}_log" for wood in _WOOD_TYPES if wood not in {"crimson", "warped"}),
+    "crimson_stem",
+    "warped_stem",
+    "stripped_crimson_stem",
+    "stripped_warped_stem",
+})
+_WOOD_PLANK_ITEMS: frozenset[str] = frozenset({
+    *(f"{wood}_planks" for wood in _WOOD_TYPES),
+    "bamboo_planks",
+})
+_GENERIC_WOOD_BLOCK_ALIASES: frozenset[str] = frozenset({
+    "wood",
+    "log",
+    "logs",
+    "any_log",
+    "tree",
+})
+_COAL_ORE_BLOCKS: frozenset[str] = frozenset({"coal_ore", "deepslate_coal_ore"})
 _COMMAND_COMPLETION_KINDS: dict[str, str] = {
     # Control / meta
     "stop": "control",
@@ -197,6 +230,23 @@ _CONDITIONAL_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
     "breakNearbyBlocks",
     "clearFurnace",
 })
+_NAVIGATION_ONLY_ALLOWED_COMMANDS: frozenset[str] = frozenset({
+    "stats",
+    "inventory",
+    "goal",
+    "entities",
+    "countEntities",
+    "nearbyBlocks",
+    "moveTo",
+    "goToPlayer",
+    "followPlayer",
+    "goToCoordinates",
+    "moveAway",
+    "stay",
+    "goToSurface",
+    "lookAtPlayer",
+    "lookAtPosition",
+})
 
 
 @dataclass
@@ -236,6 +286,7 @@ class ActiveTask:
     planning_strategy: PlanningStrategy = PlanningStrategy.REACT
     timeout_s: float | None = None  # task-level timeout (seconds), None = no limit
     started_at: float = 0.0
+    history_start_index: int = 0
 
     def __post_init__(self) -> None:
         if self.events is None:
@@ -389,8 +440,128 @@ def _delivery_succeeded(result: Any) -> bool:
     return int(match.group("count")) > 0
 
 
+def _wood_family_from_log(block_name: str) -> str | None:
+    name = block_name.strip().lower()
+    if name.startswith("stripped_"):
+        name = name.removeprefix("stripped_")
+    if name.endswith("_log"):
+        return name.removesuffix("_log")
+    if name.endswith("_stem"):
+        return name.removesuffix("_stem")
+    return None
+
+
+def _log_for_wood_family(family: str) -> str:
+    if family in {"crimson", "warped"}:
+        return f"{family}_stem"
+    return f"{family}_log"
+
+
+def _planks_for_wood_family(family: str) -> str:
+    return f"{family}_planks"
+
+
+def _is_explicit_oak_request(message: str) -> bool:
+    text = (message or "").lower()
+    return bool(re.search(r"\boak\b|橡木", text))
+
+
+def _is_generic_wood_request(message: str) -> bool:
+    text = (message or "").lower()
+    if _is_explicit_oak_request(text):
+        return False
+    return bool(re.search(r"\b(wood|log|logs|plank|planks)\b|木头|木材|原木|木板", text))
+
+
+def _is_explicit_charcoal_request(message: str) -> bool:
+    text = (message or "").lower()
+    return bool(re.search(r"\bcharcoal\b|木炭", text))
+
+
+def _is_torch_or_light_request(message: str) -> bool:
+    text = (message or "").lower()
+    return bool(re.search(r"\b(torch|torches|light|lighting)\b|火把|照明|点亮", text))
+
+
+def _is_navigation_only_request(message: str) -> bool:
+    """Return True when the request is just movement/following guidance."""
+    text = (message or "").strip().lower()
+    if not text:
+        return False
+    if re.search(
+        r"\b(craft|make|build|collect|gather|mine|dig|break|destroy|attack|kill|"
+        r"cook|smelt|give|plant|sow|farm|breed|trade|place)\b|"
+        r"制作|合成|造|收集|采集|挖|破坏|攻击|杀|烤|熔炼|给我|种|播种|耕|繁殖|交易|放置",
+        text,
+    ):
+        return False
+    return bool(re.search(
+        r"\b(come\s+to\s+me|come\s+here|follow\s+me|follow\s+\w+|"
+        r"go\s+to\s+\w+|go\s+to\s+player|move\s+to|stay|wait)\b|"
+        r"跟我来|跟着我|跟随我|过来|来我这里|到我这里|到我这|跟随|不动|停在这|等一下|"
+        r"带我去|去重生点|回重生点",
+        text,
+    ))
+
+
+def _memory_record_matches_task(record: MemoryRecord, message: str) -> bool:
+    if not _is_navigation_only_request(message):
+        return True
+    haystack = " ".join((
+        record.name,
+        record.description or "",
+        " ".join(record.tags or []),
+        record.body[:500] if record.body else "",
+    )).lower()
+    if "active_task" not in haystack and not record.name.startswith("task_"):
+        return True
+    return bool(re.search(
+        r"\b(come|follow|go\s+to|move|spawn|home|base|coordinate|location|place)\b|"
+        r"跟|过来|重生点|坐标|位置|地点|基地|家",
+        haystack,
+    ))
+
+
+def _inventory_log_count_from_state(state: BotState) -> int:
+    return sum(item.count for item in state.inventory if _wood_family_from_log(item.name))
+
+
+def _best_inventory_log_item(state: BotState) -> tuple[str, int] | None:
+    logs = [
+        (item.name, item.count)
+        for item in state.inventory
+        if item.count > 0 and _wood_family_from_log(item.name)
+    ]
+    if not logs:
+        return None
+    return max(logs, key=lambda item: item[1])
+
+
 def _command_completion_kind(command_name: str) -> str:
     return _COMMAND_COMPLETION_KINDS.get(command_name.lstrip("!"), "none")
+
+
+def _task_boundary_block_reason(task: ActiveTask | None, command_name: str) -> str | None:
+    if task is None or task.status != "running":
+        return None
+    name = command_name.lstrip("!")
+    if _is_navigation_only_request(task.original_message):
+        if name in _NAVIGATION_ONLY_ALLOWED_COMMANDS:
+            return None
+        return (
+            f"Ignored {name} because the current task is only "
+            f"{task.original_message!r}. Use a movement/follow command instead."
+        )
+    return None
+
+
+def _completion_kind_matches_task(task: ActiveTask, command_name: str, kind: str) -> bool:
+    if _is_navigation_only_request(task.original_message):
+        return (
+            kind == "navigation"
+            and command_name.lstrip("!") in _NAVIGATION_ONLY_ALLOWED_COMMANDS
+        )
+    return True
 
 
 def _world_change_command_can_complete_task(command_name: str, task: ActiveTask) -> bool:
@@ -1246,8 +1417,9 @@ class Agent:
             memory=memory,
         )
 
+        prompt_history = self._history_for_active_task_prompt()
         messages = self._msg_builder.build_messages(
-            history=self._history,
+            history=prompt_history,
             system_prompt=system_prompt,
         )
         logger.info(
@@ -1255,7 +1427,7 @@ class Agent:
             "command_docs_chars=%d examples_chars=%d",
             len(system_prompt),
             len(messages),
-            len(self._history),
+            len(prompt_history),
             len(command_docs),
             len(examples),
         )
@@ -1872,6 +2044,26 @@ class Agent:
                     )
                     any_blocked = True
                     continue
+                task_boundary_noop = _task_boundary_block_reason(
+                    self._active_task,
+                    normalized_name,
+                )
+                if task_boundary_noop is not None:
+                    logger.warning(
+                        "Blocked command outside active task boundary: %s result=%s",
+                        normalized_name,
+                        task_boundary_noop,
+                    )
+                    self._history.append(
+                        ConversationTurn(role="system", content=task_boundary_noop)
+                    )
+                    self._active_task_add_event(
+                        "blocked_command",
+                        f"{normalized_name}: {task_boundary_noop}",
+                        ok=False,
+                    )
+                    any_blocked = True
+                    continue
                 action_desc = _describe_action(
                     cmd.name,
                     cmd_args if cmd_args else list((cmd_kwargs or {}).values()),
@@ -2069,6 +2261,17 @@ class Agent:
         if evidence is None:
             return False
 
+        if not _completion_kind_matches_task(task, command_name, kind):
+            logger.info(
+                "Command completion evidence ignored outside task boundary: "
+                "task=%s command=%s kind=%s request=%r",
+                task.id,
+                command_name,
+                kind,
+                task.original_message,
+            )
+            return False
+
         expects_delivery = self._active_task_expects_delivery(task)
         if kind in _TERMINAL_COMPLETION_KINDS and expects_delivery:
             return False
@@ -2157,6 +2360,16 @@ class Agent:
                 return None
             if "inventory:" in lower or re.search(
                 r"\b(collected|crafted|smelted|picked up)\b",
+                lower,
+            ):
+                return first_line
+            return None
+
+        if completion_kind == "navigation":
+            lower = text.lower()
+            if re.search(
+                r"\b(arrived|reached|following|followed|moved|went to|found)\b|"
+                r"goal reached",
                 lower,
             ):
                 return first_line
@@ -2619,11 +2832,29 @@ class Agent:
             request.source_block,
             request.quantity,
         )
+        generic_wood_request = _is_generic_wood_request(self._last_message) and (
+            request.item_name == "oak_log"
+            or request.source_block == "oak_log"
+            or _wood_family_from_log(request.item_name) is not None
+        )
+        effective_source_block = request.source_block
+        if generic_wood_request:
+            best_initial_log = _best_inventory_log_item(bot_state)
+            if best_initial_log is not None and best_initial_log[1] >= request.quantity:
+                effective_source_block = best_initial_log[0]
+            else:
+                nearby_log = self._preferred_nearby_log_block(bot_state)
+                if nearby_log is not None:
+                    effective_source_block = nearby_log
         await self._send_chat(
             f"I'll get {request.quantity} {request.item_name} and bring it to you."
         )
 
-        have = _inventory_count_from_state(bot_state, request.item_name)
+        have = (
+            _inventory_log_count_from_state(bot_state)
+            if generic_wood_request
+            else _inventory_count_from_state(bot_state, request.item_name)
+        )
         self._active_task_add_event(
             "inventory_check",
             f"Have {have} {request.item_name}; need {request.quantity}.",
@@ -2631,7 +2862,7 @@ class Agent:
         )
         if have < request.quantity:
             missing = request.quantity - have
-            if request.source_block is None:
+            if effective_source_block is None:
                 await self._send_chat(
                     f"I don't know a direct block source for {request.item_name} yet."
                 )
@@ -2642,7 +2873,7 @@ class Agent:
                 return True
 
             for command, kwargs in [
-                *self._gather_steps_for_item_request(request.source_block, missing),
+                *self._gather_steps_for_item_request(effective_source_block, missing),
             ]:
                 result = await self._execute_agent_command(command, [], kwargs)
                 self._record_action(command, [], result)
@@ -2664,6 +2895,20 @@ class Agent:
                     await self._finish_active_task("failed", reason=str(result or ""))
                     return True
 
+        delivery_item_name = request.item_name
+        delivery_quantity = request.quantity
+        if generic_wood_request:
+            latest_state = await self.observe()
+            best_log = _best_inventory_log_item(latest_state)
+            if best_log is not None:
+                delivery_item_name = best_log[0]
+                delivery_quantity = min(request.quantity, best_log[1])
+            elif (
+                effective_source_block is not None
+                and _wood_family_from_log(effective_source_block)
+            ):
+                delivery_item_name = effective_source_block
+
         final_ok = True
         for command, kwargs in [
             ("goToPlayer", {"player_name": self._last_sender, "closeness": 3}),
@@ -2671,8 +2916,8 @@ class Agent:
                 "givePlayer",
                 {
                     "player_name": self._last_sender,
-                    "item_name": request.item_name,
-                    "num": request.quantity,
+                    "item_name": delivery_item_name,
+                    "num": delivery_quantity,
                 },
             ),
         ]:
@@ -3028,6 +3273,7 @@ class Agent:
             )
             return await self._execute_dynamic_action(prompt)
         args, kwargs = self._normalize_player_command_args(name, args, kwargs)
+        args, kwargs = await self._normalise_wood_resource_args(name, args, kwargs)
         if name == "getCraftingPlan":
             target = str((kwargs or {}).get("target_item", values[0] if values else ""))
             quantity = int((kwargs or {}).get("quantity", values[1] if len(values) > 1 else 1) or 1)
@@ -3096,6 +3342,130 @@ class Agent:
                     "Use the existing furnace instead of crafting another one."
                 )
 
+        if command_name == "smeltItem":
+            item_name = str((kwargs or {}).get("item_name", args[0] if args else "")).strip()
+            if self._should_defer_log_charcoal_smelt(item_name, state):
+                return (
+                    "FAILED: Do not smelt logs into charcoal for this task yet. "
+                    "HINT: For torches or generic crafting, use existing coal/charcoal "
+                    "or searchForBlock(\"coal_ore\", 64) then collectBlocks(\"coal_ore\", n). "
+                    "Only smelt logs if the player explicitly asked for charcoal or coal "
+                    "has already been searched for and is unavailable."
+                )
+
+        return None
+
+    def _should_defer_log_charcoal_smelt(self, item_name: str, state: BotState) -> bool:
+        family = _wood_family_from_log(item_name)
+        if family is None:
+            return False
+        if _is_explicit_charcoal_request(self._last_message):
+            return False
+        if not _is_torch_or_light_request(self._last_message):
+            return False
+        if self._recent_failed_coal_search():
+            return False
+        inventory = {item.name: item.count for item in state.inventory}
+        if inventory.get("coal", 0) > 0 or inventory.get("charcoal", 0) > 0:
+            return True
+        nearby = set(state.nearby_block_types)
+        if nearby.intersection(_COAL_ORE_BLOCKS):
+            return True
+        return True
+
+    def _recent_failed_coal_search(self) -> bool:
+        for action in reversed(self._recent_actions[-8:]):
+            if action.get("name") != "searchForBlock":
+                continue
+            args = list(action.get("args") or [])
+            target = str(args[0] if args else "").lower()
+            if target not in _COAL_ORE_BLOCKS:
+                continue
+            result = str(action.get("result") or "").lower()
+            if "failed:" in result or "no " in result or "not found" in result:
+                return True
+        return False
+
+    async def _normalise_wood_resource_args(
+        self,
+        command_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any] | None,
+    ) -> tuple[list[Any], dict[str, Any] | None]:
+        """Use any compatible wood type unless the player explicitly requested oak."""
+        if _is_explicit_oak_request(self._last_message):
+            return args, kwargs
+        if command_name not in {"searchForBlock", "collectBlocks", "craftRecipe"}:
+            return args, kwargs
+
+        kw = dict(kwargs or {})
+        values = args if args else list(kw.values())
+
+        if command_name in {"searchForBlock", "collectBlocks"}:
+            param = "block_type"
+            raw_block = str(kw.get(param, values[0] if values else "")).strip().lower()
+            if raw_block not in _GENERIC_WOOD_BLOCK_ALIASES and raw_block not in _WOOD_LOG_BLOCKS:
+                return args, kwargs
+
+            state = await self.observe()
+            if not self._running:
+                return args, kwargs
+            preferred = self._preferred_nearby_log_block(state)
+            if preferred is None or preferred == raw_block:
+                return args, kwargs
+            logger.info(
+                "Normalizing wood block target: command=%s requested=%s preferred=%s",
+                command_name,
+                raw_block,
+                preferred,
+            )
+            if args:
+                new_args = list(args)
+                new_args[0] = preferred
+                return new_args, kwargs
+            kw[param] = preferred
+            return args, kw
+
+        recipe_name = str(kw.get("recipe_name", values[0] if values else "")).strip().lower()
+        if recipe_name not in _WOOD_PLANK_ITEMS:
+            return args, kwargs
+
+        state = await self.observe()
+        if not self._running:
+            return args, kwargs
+        preferred_planks = self._preferred_planks_item(state)
+        if preferred_planks is None or preferred_planks == recipe_name:
+            return args, kwargs
+        logger.info(
+            "Normalizing planks craft target: requested=%s preferred=%s",
+            recipe_name,
+            preferred_planks,
+        )
+        if args:
+            new_args = list(args)
+            new_args[0] = preferred_planks
+            return new_args, kwargs
+        kw["recipe_name"] = preferred_planks
+        return args, kw
+
+    @staticmethod
+    def _preferred_nearby_log_block(state: BotState) -> str | None:
+        for block_name in state.nearby_block_types:
+            name = str(block_name).strip().lower()
+            if name in _WOOD_LOG_BLOCKS:
+                return name
+        return None
+
+    @staticmethod
+    def _preferred_planks_item(state: BotState) -> str | None:
+        for item in state.inventory:
+            name = item.name.strip().lower()
+            if name in _WOOD_PLANK_ITEMS and item.count > 0:
+                return name
+        for item in state.inventory:
+            family = _wood_family_from_log(item.name)
+            if family is not None and item.count > 0:
+                return _planks_for_wood_family(family)
         return None
 
     def _blocked_model_control_command(self, command_name: str) -> str | None:
@@ -3671,6 +4041,17 @@ class Agent:
 
         parts: list[str] = []
         injection = await self._memory.plan_injection(token_budget=1200)
+        injection.full = [
+            r for r in injection.full if _memory_record_matches_task(r, message)
+        ]
+        injection.summary = [
+            r for r in injection.summary if _memory_record_matches_task(r, message)
+        ]
+        injection.index = [
+            name for name in injection.index if not _is_navigation_only_request(message)
+            or not name.startswith("task_")
+            or re.search(r"跟|过来|重生点|坐标|位置|come|follow|spawn|place", name, re.I)
+        ]
         if injection.full or injection.summary or injection.index:
             parts.append("Memory index:")
             full_records = sorted(injection.full, key=_memory_record_is_failed_task)
@@ -3704,6 +4085,9 @@ class Agent:
         results = await self._memory.recall(MemoryQuery(
             keywords=keywords, limit=5, min_confidence=0.5,
         ))
+        results = [
+            r for r in results if _memory_record_matches_task(r.record, message)
+        ]
         if results:
             parts.append("Matched memory details:")
             normal_results = [
@@ -3762,6 +4146,7 @@ class Agent:
             planning_strategy=planning_strategy,
             timeout_s=300.0,  # 5 min default, mirrors Minecollab benchmark
             started_at=time.time(),
+            history_start_index=max(0, len(self._history) - 1),
         )
         self._active_task.events.append(ActiveTaskEvent(
             kind="start",
@@ -3998,6 +4383,13 @@ class Agent:
             "pending objectives. Use recent task events to avoid repeating "
             "completed or failed steps."
         )
+
+    def _history_for_active_task_prompt(self) -> list[ConversationTurn]:
+        task = self._active_task
+        if task is None or task.status != "running":
+            return self._history
+        start = max(0, min(task.history_start_index, len(self._history)))
+        return self._history[start:]
 
     @staticmethod
     def _planning_strategy_prompt(task: ActiveTask) -> str:
@@ -4323,7 +4715,13 @@ def _command_defs() -> dict[str, CommandDef]:
             name="searchForBlock",
             description="Find and navigate to the nearest block of the given type.",
             params={
-                "block_type": {"type": "string", "description": "Block type, e.g. oak_log"},
+                "block_type": {
+                    "type": "string",
+                    "description": (
+                        "Concrete block type. For generic wood, prefer whichever log type "
+                        "is visible nearby, e.g. spruce_log or oak_log; do not force oak."
+                    ),
+                },
                 "search_range": {"type": "float", "description": "Search radius (default 64)"},
             },
         ),
@@ -4448,7 +4846,13 @@ def _command_defs() -> dict[str, CommandDef]:
             name="collectBlocks",
             description="Mine and collect blocks of the specified type.",
             params={
-                "block_type": {"type": "string", "description": "Block type, e.g. oak_log"},
+                "block_type": {
+                    "type": "string",
+                    "description": (
+                        "Concrete block type. For generic wood, use the nearest/available "
+                        "log type such as spruce_log, birch_log, or oak_log."
+                    ),
+                },
                 "count": {"type": "int", "description": "Number to collect (default 8)"},
             },
         ),
@@ -4536,8 +4940,11 @@ def _command_defs() -> dict[str, CommandDef]:
         ),
         "smeltItem": CommandDef(
             name="smeltItem",
-            description="Smelt items in a furnace. Requires a furnace nearby and fuel + "
-            "input items in inventory.",
+            description=(
+                "Smelt items in a furnace. Requires a furnace nearby and fuel + "
+                "input items in inventory. For torches, prefer mining coal_ore over "
+                "smelting logs into charcoal unless charcoal was explicitly requested."
+            ),
             params={
                 "item_name": {"type": "string", "description": "Item to smelt, e.g. raw_iron"},
                 "num": {"type": "int", "description": "Number to smelt (default 1)"},

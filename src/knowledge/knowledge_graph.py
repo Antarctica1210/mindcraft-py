@@ -59,6 +59,8 @@ WOOL_COLORS: tuple[str, ...] = (
     "brown", "green", "red", "black",
 )
 
+_TOOL_TYPE_PRIORITY: tuple[str, ...] = ("pickaxe", "axe", "shovel", "hoe")
+
 
 class KnowledgeGraph:
     """Read-only structured queries over minecraft-data JSON."""
@@ -577,6 +579,49 @@ class KnowledgeGraph:
 
         return sorted(recipes, key=score)
 
+    def _sort_recipes_for_quantity(
+        self,
+        recipes: list[dict[str, Any]],
+        inventory: dict[str, int],
+        quantity: int,
+    ) -> list[dict[str, Any]]:
+        """Prefer recipes that satisfy the requested output quantity."""
+        quantity = max(int(quantity or 1), 1)
+
+        def score(recipe: dict[str, Any]) -> tuple[int, int, int, int, int, int]:
+            result = recipe.get("result", {}) or {}
+            output_count = max(int(result.get("count", 1) or 1), 1)
+            crafts_needed = math.ceil(quantity / output_count)
+            counts = recipe.get("ingredient_counts", {}) or {}
+            missing_total = 0
+            matched_kinds = 0
+            exact_hits = 0
+            exact_available = 0
+            derived_available = 0
+            for item, per_craft in counts.items():
+                needed = int(per_craft) * crafts_needed
+                available = self._available_count(inventory, item)
+                exact = inventory.get(item, 0)
+                derived = self._derived_available_count(inventory, item)
+                exact_available += min(exact, needed)
+                derived_available += min(derived, needed)
+                if available >= needed:
+                    matched_kinds += 1
+                else:
+                    missing_total += needed - available
+                if exact >= needed:
+                    exact_hits += 1
+            return (
+                self._recipe_preference_penalty(recipe),
+                missing_total,
+                -matched_kinds,
+                -exact_hits,
+                -exact_available,
+                -derived_available,
+            )
+
+        return sorted(recipes, key=score)
+
     def _recipe_preference_penalty(self, recipe: dict[str, Any]) -> int:
         """Prefer semantically direct recipes over conversion/recolor recipes."""
         result = recipe.get("result", {}) or {}
@@ -624,41 +669,130 @@ class KnowledgeGraph:
         block = self._blocks.get(block_id) if block_id is not None else None
         if block is None:
             return {"tool_type": "hand", "min_tier": None,
-                    "tool_ids": [], "can_harvest": True}
+                    "tool_ids": [], "can_harvest": True, "requires_tool": False}
 
+        material = str(block.get("material", "") or "")
+        material_tool_type = self._tool_type_from_material(material)
         harvest_tools = block.get("harvestTools", {})
-        if not isinstance(harvest_tools, dict) or not harvest_tools:
-            return {"tool_type": "hand", "min_tier": None,
-                    "tool_ids": [], "can_harvest": True}
+        requires_tool = isinstance(harvest_tools, dict) and bool(harvest_tools)
 
-        # Map tool item IDs → names and extract tiers
         tool_entries: list[dict[str, Any]] = []
-        for tid_str, can_harvest in harvest_tools.items():
-            if not can_harvest:
-                continue
-            tid = int(tid_str)
-            item = self._items.get(tid, {})
-            tool_name = item.get("name", f"unknown_{tid}")
-            tier = self._extract_tool_tier(tool_name)
-            tool_entries.append({
-                "id": tid, "name": tool_name, "tier": tier,
-                "tier_level": TOOL_TIERS.get(tier, 0),
-            })
+        if requires_tool:
+            # Map tool item IDs → names and extract tiers. harvestTools marks
+            # hard requirements, e.g. ores that need a pickaxe tier.
+            for tid_str, can_harvest in harvest_tools.items():
+                if not can_harvest:
+                    continue
+                try:
+                    tid = int(tid_str)
+                except (TypeError, ValueError):
+                    continue
+                tool_name = self.get_item_name(tid) or f"unknown_{tid}"
+                tier = self._extract_tool_tier(tool_name)
+                tool_entries.append({
+                    "id": tid, "name": tool_name, "tier": tier,
+                    "tier_level": TOOL_TIERS.get(tier, 0),
+                })
+        elif material_tool_type:
+            # Many axe/shovel/hoe blocks are harvestable by hand, so they have
+            # no harvestTools requirement. Use material speeds to expose the
+            # preferred tool family for planning.
+            tool_entries = self._tool_entries_for_type(material_tool_type)
 
         if not tool_entries:
-            return {"tool_type": "hand", "min_tier": None,
-                    "tool_ids": [], "can_harvest": True}
+            return {
+                "tool_type": material_tool_type or "hand",
+                "min_tier": None,
+                "tool_ids": [],
+                "can_harvest": True,
+                "requires_tool": False,
+                "material": material,
+            }
 
-        # Find minimum tier required
+        tool_type = material_tool_type or self._tool_type_from_entries(tool_entries) or "hand"
+
+        # Find minimum tier required / preferred.
         tool_entries.sort(key=lambda t: t["tier_level"])
         lowest = tool_entries[0]
 
         return {
-            "tool_type": "pickaxe",  # heuristic — refined by block material
+            "tool_type": tool_type,
             "min_tier": lowest["tier"],
             "min_tool": lowest["name"],
             "tool_ids": [t["id"] for t in tool_entries],
+            "tool_names": [str(t["name"]) for t in tool_entries],
+            "tool_options": [
+                {
+                    "id": t["id"],
+                    "name": t["name"],
+                    "tier": t["tier"],
+                    "speed": self._tool_speed_for_block_material(material, int(t["id"])),
+                }
+                for t in tool_entries
+            ],
             "can_harvest": True,
+            "requires_tool": requires_tool,
+            "material": material,
+        }
+
+    def select_tool_for_block(
+        self,
+        block_name: str,
+        inventory: Any = None,
+    ) -> dict[str, Any]:
+        """Choose the best available tool for mining *block_name*.
+
+        Returns a small dict with ``tool`` (or None), ``tool_type``,
+        ``requires_tool``, ``can_mine``, and ``reason``.  For blocks that are
+        mineable by hand but benefit from a tool, this still returns a better
+        owned tool when one exists.
+        """
+        req = self.get_tool_requirements(block_name)
+        inv_counts = self._normalise_inventory(inventory)
+        tool_options = list(req.get("tool_options", []) or [])
+        owned_options = [
+            opt for opt in tool_options
+            if inv_counts.get(str(opt.get("name", "")), 0) > 0
+        ]
+        owned_options.sort(
+            key=lambda opt: (
+                float(opt.get("speed", 0.0) or 0.0),
+                TOOL_TIERS.get(str(opt.get("tier", "")), 0),
+            ),
+            reverse=True,
+        )
+
+        if owned_options:
+            chosen = owned_options[0]
+            return {
+                "tool": chosen.get("name"),
+                "tool_type": req.get("tool_type"),
+                "requires_tool": bool(req.get("requires_tool", False)),
+                "can_mine": True,
+                "reason": "inventory_tool",
+                "min_tool": req.get("min_tool"),
+                "available_tools": [opt.get("name") for opt in owned_options],
+            }
+
+        if req.get("requires_tool", False):
+            return {
+                "tool": None,
+                "tool_type": req.get("tool_type"),
+                "requires_tool": True,
+                "can_mine": False,
+                "reason": "missing_required_tool",
+                "min_tool": req.get("min_tool"),
+                "available_tools": [],
+            }
+
+        return {
+            "tool": None,
+            "tool_type": req.get("tool_type"),
+            "requires_tool": False,
+            "can_mine": True,
+            "reason": "hand_ok",
+            "min_tool": req.get("min_tool"),
+            "available_tools": [],
         }
 
     def can_mine(self, block_name: str, tool_name: str | None = None) -> bool:
@@ -667,6 +801,8 @@ class KnowledgeGraph:
         If *tool_name* is None, checks if the block can be mined by hand.
         """
         req = self.get_tool_requirements(block_name)
+        if not req.get("requires_tool", False):
+            return True
         if tool_name is None:
             # No harvestTools entry means it can be mined by hand
             return len(req.get("tool_ids", [])) == 0
@@ -687,6 +823,68 @@ class KnowledgeGraph:
             if name_lower.startswith(suffix):
                 return tier
         return "unknown"
+
+    @staticmethod
+    def _tool_type_from_tool_name(tool_name: str) -> str | None:
+        for tool_type in _TOOL_TYPE_PRIORITY:
+            if tool_name.endswith(f"_{tool_type}"):
+                return tool_type
+        return None
+
+    @staticmethod
+    def _tool_type_from_material(material: str) -> str | None:
+        tokens = [token.strip() for token in material.split(";") if token.strip()]
+        for token in tokens:
+            if token.startswith("mineable/"):
+                tool_type = token.split("/", 1)[1]
+                if tool_type in _TOOL_TYPE_PRIORITY:
+                    return tool_type
+        return None
+
+    def _tool_entries_for_type(self, tool_type: str) -> list[dict[str, Any]]:
+        material = self._materials.get(f"mineable/{tool_type}", {})
+        entries: list[dict[str, Any]] = []
+        for tid_raw in material:
+            try:
+                tid = int(tid_raw)
+            except (TypeError, ValueError):
+                continue
+            tool_name = self.get_item_name(tid)
+            if not tool_name or self._tool_type_from_tool_name(tool_name) != tool_type:
+                continue
+            tier = self._extract_tool_tier(tool_name)
+            entries.append({
+                "id": tid,
+                "name": tool_name,
+                "tier": tier,
+                "tier_level": TOOL_TIERS.get(tier, 0),
+            })
+        entries.sort(key=lambda t: t["tier_level"])
+        return entries
+
+    def _tool_type_from_entries(self, tool_entries: list[dict[str, Any]]) -> str | None:
+        counts: dict[str, int] = {}
+        for entry in tool_entries:
+            tool_type = self._tool_type_from_tool_name(str(entry.get("name", "")))
+            if tool_type:
+                counts[tool_type] = counts.get(tool_type, 0) + 1
+        if not counts:
+            return None
+        return max(
+            counts,
+            key=lambda tool_type: (counts[tool_type], -_TOOL_TYPE_PRIORITY.index(tool_type)),
+        )
+
+    def _tool_speed_for_block_material(self, block_material: str, tool_id: int) -> float:
+        speeds: list[float] = []
+        for token in [part.strip() for part in block_material.split(";") if part.strip()]:
+            material = self._materials.get(token, {})
+            if str(tool_id) in material:
+                try:
+                    speeds.append(float(material[str(tool_id)]))
+                except (TypeError, ValueError):
+                    continue
+        return max(speeds, default=0.0)
 
     # ═══════════════════════════════════════════════════════════════
     #  Query: Materials
@@ -720,7 +918,7 @@ class KnowledgeGraph:
                 "target": resolved_target,
             }
 
-        recipe = recipes[0]
+        recipe = self._sort_recipes_for_quantity(recipes, inv_counts, quantity)[0]
         result = recipe.get("result", {}) or {}
         output_count = max(int(result.get("count", 1) or 1), 1)
         crafts_needed = math.ceil(quantity / output_count)
@@ -811,7 +1009,7 @@ class KnowledgeGraph:
     #  Query: Collection path
     # ═══════════════════════════════════════════════════════════════
 
-    def get_collection_path(self, target_item: str) -> dict[str, Any]:
+    def get_collection_path(self, target_item: str, inventory: Any = None) -> dict[str, Any]:
         """Compute the shortest path to obtain *target_item* from raw resources.
 
         Returns a dict with:
@@ -834,10 +1032,13 @@ class KnowledgeGraph:
                 ing_name = self._resolve_item_name(ing)
                 if ing_name in self._blocks_by_name:
                     tool_req = self.get_tool_requirements(ing)
+                    tool_choice = self.select_tool_for_block(ing, inventory)
                     path.append({
                         "action": "mine",
                         "item": ing,
-                        "tool": tool_req.get("min_tool"),
+                        "tool": tool_choice.get("tool") or tool_req.get("min_tool"),
+                        "tool_type": tool_req.get("tool_type"),
+                        "requires_tool": tool_req.get("requires_tool", False),
                     })
                 else:
                     path.append({"action": "craft", "item": ing})
@@ -853,12 +1054,15 @@ class KnowledgeGraph:
         # Not craftable — check if directly mineable
         if name in self._blocks_by_name:
             tool_req = self.get_tool_requirements(target_item)
+            tool_choice = self.select_tool_for_block(target_item, inventory)
             return {
                 "direct": True,
                 "path": [{
                     "action": "mine",
                     "item": target_item,
-                    "tool": tool_req.get("min_tool"),
+                    "tool": tool_choice.get("tool") or tool_req.get("min_tool"),
+                    "tool_type": tool_req.get("tool_type"),
+                    "requires_tool": tool_req.get("requires_tool", False),
                 }],
                 "total_steps": 1,
             }

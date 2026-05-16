@@ -6,9 +6,9 @@
       {"role": "user", "content": "bobby: Craft a plank"},
       {"role": "assistant", "content": "Sure, let me check what I can make. !craftable"},
       {"role": "system", "content": "CRAFTABLE_ITEMS\n- oak_planks\n- spruce_planks\n- crafting_table\n- stick"},
-      {"role": "assistant", "content": "I have logs, so I'll craft oak planks. !craftRecipe(\"oak_planks\", 1)"},
-      {"role": "system", "content": "Action output:\nSuccessfully crafted oak_planks, you now have 4 oak_planks."},
-      {"role": "assistant", "content": "I've crafted 4 oak planks!"}
+      {"role": "assistant", "content": "I can use any matching wood here, and spruce planks are craftable. !craftRecipe(\"spruce_planks\", 1)"},
+      {"role": "system", "content": "Action output:\nSuccessfully crafted spruce_planks, you now have 4 spruce_planks."},
+      {"role": "assistant", "content": "I've crafted 4 spruce planks!"}
     ]
   },
   {
@@ -47,9 +47,9 @@
     "turns": [
       {"role": "user", "content": "Wilson: make a torch"},
       {"role": "assistant", "content": "Torches need a stick and coal. !inventory"},
-      {"role": "system", "content": "INVENTORY\n- oak_log: 2"},
-      {"role": "assistant", "content": "I need planks first to get sticks. !craftRecipe(\"oak_planks\", 1)"},
-      {"role": "system", "content": "Action output:\nSuccessfully crafted oak_planks, you now have 4 oak_planks."},
+      {"role": "system", "content": "INVENTORY\n- spruce_log: 2"},
+      {"role": "assistant", "content": "I need planks first to get sticks; spruce works fine. !craftRecipe(\"spruce_planks\", 1)"},
+      {"role": "system", "content": "Action output:\nSuccessfully crafted spruce_planks, you now have 4 spruce_planks."},
       {"role": "assistant", "content": "!craftRecipe(\"stick\", 1)"},
       {"role": "system", "content": "Action output:\nSuccessfully crafted stick, you now have 4 stick."},
       {"role": "assistant", "content": "Got sticks, now coal. !searchForBlock(\"coal_ore\", 64)"},
