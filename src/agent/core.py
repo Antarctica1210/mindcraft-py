@@ -11,21 +11,18 @@ The central ``Agent`` class wires together:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any
 
 from llm import ExampleStore, InputIntent, InputRouter, PlanningStrategy, Prompter
 from llm.dispatch_gate import DispatchDecision, DispatchGate
 from llm.message_builder import CommandDef, ConversationTurn, MessageBuilder
 from llm.prompter import LLMInput, LLMOutput
-from llm.tool_parser import parse_response
 from memory.file_store import ScopedFileMemoryStore
 from memory.models import MemoryQuery, MemoryRecord, MemoryType, Scope
 from memory.service import MemoryService
@@ -33,11 +30,69 @@ from skills.loader import SkillStore
 from skills.matcher import SkillMatch, SkillMatcher
 from skills.registry import SkillRegistry
 
+from .action_result import ActionResult
+from .chat_presenter import compact_chat_text as _compact_chat_text
+from .command_registry import (
+    PRE_ACTION_OBSERVE_COMMANDS as _PRE_ACTION_OBSERVE_COMMANDS,
+)
+from .command_registry import (
+    TERMINAL_COMPLETION_KINDS as _TERMINAL_COMPLETION_KINDS,
+)
+from .command_registry import (
+    command_completion_kind as _command_completion_kind,
+)
+from .command_registry import (
+    command_defs,
+)
+from .command_registry import (
+    command_preflight_hooks as _command_preflight_hooks,
+)
+from .command_registry import (
+    shortcut_route_known as _shortcut_route_known,
+)
+from .command_registry import (
+    world_change_command_can_complete as _world_change_command_can_complete,
+)
+from .command_registry import (
+    world_change_command_has_intrinsic_effect as _world_change_command_has_intrinsic_effect,
+)
+from .command_runner import CommandRun, CommandRunner
+from .completion import (
+    CompletionEngine,
+    CompletionSpec,
+)
+from .completion import (
+    inventory_count_any_from_state as _inventory_count_any_from_state,
+)
+from .completion import (
+    inventory_count_from_state as _inventory_count_from_state,
+)
+from .completion import (
+    inventory_counts_from_state as _inventory_counts_from_state,
+)
+from .completion import (
+    inventory_delta_from_baseline as _inventory_delta_from_baseline,
+)
+from .completion import (
+    position_tuple_from_state as _position_tuple_from_state,
+)
 from .conversation import ConversationManager
+from .effects import action_effects_from_result as _action_effects_from_result
+from .effects import action_succeeded as _action_succeeded
 from .executor import ActionExecutor
+from .failures import classify_failure as _classify_failure
 from .models import AgentConfig, BotState, EntityInfo, InventoryItem, Position
 from .modes import BehaviorMode, ModeEvaluator
+from .planner_loop import PlannerLoop
+from .recovery import RecoveryManager
 from .safety_monitor import SafetyMonitor
+from .task_goal_parser import acceptable_items_for_target as _acceptable_items_for_target
+from .task_goal_parser import cook_request_is_compound as _cook_request_is_compound
+from .task_goal_parser import is_navigation_only_request as _is_navigation_only_request
+from .task_goal_parser import parse_cook_request as _parse_cook_request
+from .task_goal_parser import parse_craft_request as _parse_craft_request
+from .task_goal_parser import parse_item_request as _parse_item_request
+from .task_manager import ActiveTask, ActiveTaskEvent, ActiveTaskSnapshot, PendingTask, TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -48,39 +103,6 @@ _AFFIRMATIVE: frozenset[str] = frozenset({
 _NEGATIVE: frozenset[str] = frozenset({
     "no", "nope", "nah", "n", "no thanks", "not now",
 })
-_QUERY_COMMANDS: frozenset[str] = frozenset({
-    "stats",
-    "inventory",
-    "goal",
-    "entities",
-    "countEntities",
-    "nearbyBlocks",
-    "craftable",
-    "help",
-    "modes",
-    "getCraftingPlan",
-    "searchWiki",
-    "showVillagerTrades",
-})
-_PRE_ACTION_OBSERVE_COMMANDS: frozenset[str] = frozenset({
-    "attack",
-    "breakNearbyBlocks",
-    "breedAnimals",
-    "collectBlocks",
-    "consume",
-    "craftRecipe",
-    "discard",
-    "equip",
-    "givePlayer",
-    "goToCoordinates",
-    "goToPlayer",
-    "moveAway",
-    "moveTo",
-    "placeHere",
-    "searchForBlock",
-    "searchForEntity",
-    "smeltItem",
-})
 _REUSABLE_WORKSTATIONS: frozenset[str] = frozenset({
     "crafting_table",
     "furnace",
@@ -89,41 +111,12 @@ _REUSABLE_WORKSTATIONS: frozenset[str] = frozenset({
     "smoker",
 })
 _DELIVERY_RESULT_RE = re.compile(r"\bGave\s+(?P<count>\d+)x\s+", re.IGNORECASE)
-_MISSING_TOOL_RE = re.compile(
-    r"Need a (?P<tool>[A-Za-z0-9_]+) to mine (?P<target>[A-Za-z0-9_]+)",
-    re.IGNORECASE,
-)
-_MISSING_MATERIALS_RE = re.compile(
-    r"Missing materials for (?P<target>[A-Za-z0-9_]+): (?P<missing>.+?)(?:\.|\n|$)",
-    re.IGNORECASE,
-)
 
-# Loop guards for the plan loop (mitigations after the 2026-05-12 bed-craft
-# log where the model spammed searchWiki with paraphrased queries).
-#
-# _MAX_REPEATED_QUERY_PER_NAME: how many calls to the SAME query command (by
-# name, regardless of arguments) we tolerate inside one user turn before
-# injecting a "pivot to a concrete action" reminder. The pre-existing
-# exact-arg repeat check still runs first; this catches the paraphrased
-# case ("bed recipe" → "crafting bed" → "minecraft bed").
-#
-# _MAX_CONSECUTIVE_QUERY_CALLS: how many read-only queries the model may
-# emit IN A ROW before we bail. Resets on any non-query (action) command,
-# so legitimate alternating chains like searchForEntity → attack →
-# searchForEntity → attack (the JS bed-craft pattern, ~11 iterations) are
-# not penalised. This is the primary loop guard.
-#
-# _MAX_TOOL_CALLS_PER_TURN: absolute backstop on total tool-call attempts
-# within one user turn. Set generously above the JS empirical floor of 19
-# iterations so genuine multi-step crafting completes; this only fires
-# against truly runaway models.
-_MAX_REPEATED_QUERY_PER_NAME = 3
-_MAX_CONSECUTIVE_QUERY_CALLS = 4
-_MAX_TOOL_CALLS_PER_TURN = 25
 _MAX_RECOVERY_ATTEMPTS_PER_TASK = 3
 _DELIVERY_PRIMARY_WEIGHT = 0.70
 _DELIVERY_SMALL_MODEL_WEIGHT = 0.30
 _DELIVERY_DECISION_THRESHOLD = 0.50
+_SEED_GRASS_BLOCKS: frozenset[str] = frozenset({"grass", "short_grass", "tall_grass"})
 _WOOD_TYPES: tuple[str, ...] = (
     "oak",
     "spruce",
@@ -198,246 +191,7 @@ _COMMON_FUEL_SMELTS: dict[str, float] = {
     "blaze_rod": 12.0,
     "stick": 0.5,
 }
-_TOOL_FAMILY_MATERIAL_COUNTS: dict[str, int] = {
-    "axe": 3,
-    "hoe": 2,
-    "pickaxe": 3,
-    "shovel": 1,
-    "sword": 2,
-}
-_TOOL_FAMILY_STICK_COUNTS: dict[str, int] = {
-    "axe": 2,
-    "hoe": 2,
-    "pickaxe": 2,
-    "shovel": 2,
-    "sword": 1,
-}
-_TOOL_MATERIAL_ITEMS: dict[str, str] = {
-    "wooden": "oak_planks",
-    "stone": "cobblestone",
-    "iron": "iron_ingot",
-    "golden": "gold_ingot",
-    "gold": "gold_ingot",
-    "diamond": "diamond",
-}
-_CRAFTING_TABLE_TOOL_FAMILIES: frozenset[str] = frozenset({"axe", "hoe", "pickaxe"})
-_COMMAND_COMPLETION_KINDS: dict[str, str] = {
-    # Control / meta
-    "stop": "control",
-    "stfu": "control",
-    "unshut": "control",
-    "restart": "control",
-    "clearChat": "control",
-    "setMode": "control",
-    "setGoal": "control",
-    "endGoal": "control",
-    # Queries
-    "stats": "query",
-    "inventory": "query",
-    "goal": "query",
-    "entities": "query",
-    "countEntities": "query",
-    "nearbyBlocks": "query",
-    "craftable": "query",
-    "help": "query",
-    "modes": "query",
-    "getCraftingPlan": "query",
-    "searchWiki": "query",
-    "showVillagerTrades": "query",
-    # Navigation / locating
-    "moveTo": "navigation",
-    "goToPlayer": "navigation",
-    "followPlayer": "navigation",
-    "goToCoordinates": "navigation",
-    "searchForBlock": "navigation",
-    "searchForEntity": "navigation",
-    "moveAway": "navigation",
-    "goToBed": "world_change",
-    "goToSurface": "navigation",
-    "digDown": "world_change",
-    "stay": "navigation",
-    # Inventory and delivery
-    "equip": "inventory",
-    "consume": "inventory",
-    "discard": "inventory",
-    "givePlayer": "delivery",
-    "collectBlocks": "inventory",
-    "craftRecipe": "inventory",
-    "smeltItem": "inventory",
-    "pickupNearbyItems": "inventory",
-    # World changes
-    "attack": "world_change",
-    "attackPlayer": "world_change",
-    "placeHere": "world_change",
-    "activateBlock": "world_change",
-    "breakNearbyBlocks": "world_change",
-    "breedAnimals": "world_change",
-    "useOn": "world_change",
-    "clearFurnace": "world_change",
-    "tradeWithVillager": "world_change",
-    "lookAtPlayer": "navigation",
-    "lookAtPosition": "navigation",
-    "newAction": "custom_action",
-    "tillAndSow": "world_change",
-    "useDoor": "world_change",
-    "startConversation": "conversation",
-    "endConversation": "conversation",
-    "viewChest": "query",
-    "putInChest": "inventory",
-    "takeFromChest": "inventory",
-}
-_TERMINAL_COMPLETION_KINDS: frozenset[str] = frozenset({
-    "world_change",
-    "custom_action",
-})
-_ALWAYS_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
-    "activateBlock",
-    "breedAnimals",
-    "goToBed",
-    "placeHere",
-    "tillAndSow",
-    "tradeWithVillager",
-    "useDoor",
-    "useOn",
-})
-_CONDITIONAL_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
-    "attack",
-    "attackPlayer",
-    "breakNearbyBlocks",
-    "clearFurnace",
-    "digDown",
-})
-_INVENTORY_PREP_COMMANDS: frozenset[str] = frozenset({
-    "craftRecipe",
-    "getCraftingPlan",
-    "equip",
-    "searchWiki",
-    "inventory",
-    "craftable",
-})
-_NAVIGATION_ONLY_ALLOWED_COMMANDS: frozenset[str] = frozenset({
-    "stats",
-    "inventory",
-    "goal",
-    "entities",
-    "countEntities",
-    "nearbyBlocks",
-    "moveTo",
-    "goToPlayer",
-    "followPlayer",
-    "goToCoordinates",
-    "moveAway",
-    "stay",
-    "goToSurface",
-    "lookAtPlayer",
-    "lookAtPosition",
-})
-
-
-@dataclass
-class PendingTask:
-    """Tracks a failed command so the bot can resume with player guidance."""
-
-    command_name: str
-    command_args: list[Any]
-    command_kwargs: dict[str, Any] | None
-    goal: str          # what the player originally asked for
-    player_name: str   # who to follow for guidance
-    failed_reason: str  # why the command failed
-
-
-@dataclass
-class ActiveTaskEvent:
-    """One state transition or command result inside an active task."""
-
-    kind: str
-    message: str
-    ok: bool | None = None
-
-
-@dataclass
-class ActiveTaskSnapshot:
-    """Compact immutable observation attached to one active task frame."""
-
-    seq: int
-    note: str
-    inventory: dict[str, int]
-    position: tuple[float, float, float] | None = None
-
-
-@dataclass
-class CompletionSpec:
-    """Deterministic success boundary for one player task."""
-
-    kind: str
-    target_items: tuple[str, ...] = ()
-    acceptable_items: tuple[str, ...] = ()
-    quantity: int | None = None
-    terminal_commands: frozenset[str] = frozenset()
-    intermediate_commands: frozenset[str] = frozenset()
-    requires_delivery: bool = False
-    delivery_score: float = 0.0
-    delivery_reason: str = ""
-
-
-@dataclass
-class ActiveTask:
-    """Lightweight single-task tracker for one player request."""
-
-    id: str
-    requester: str
-    original_message: str
-    status: str = "running"
-    attempts: int = 0
-    failures: int = 0
-    events: list[ActiveTaskEvent] | None = None
-    summary: str = ""
-    requires_ctable: bool = False
-    planning_strategy: PlanningStrategy = PlanningStrategy.REACT
-    timeout_s: float | None = None  # task-level timeout (seconds), None = no limit
-    started_at: float = 0.0
-    history_start_index: int = 0
-    completion_spec: CompletionSpec | None = None
-    recovery_attempts: int = 0
-    baseline_inventory: dict[str, int] | None = None
-    baseline_position: tuple[float, float, float] | None = None
-    snapshots: list[ActiveTaskSnapshot] | None = None
-
-    def __post_init__(self) -> None:
-        if self.events is None:
-            self.events = []
-        if self.snapshots is None:
-            self.snapshots = []
-        if self.baseline_inventory is None:
-            self.baseline_inventory = {}
-
-
 # ── Helpers ──────────────────────────────────────────────────────────
-
-
-def _looks_like_crafting_request(message: str) -> bool:
-    """Heuristic: does this message ask to craft an item that likely needs a table?"""
-    text = message.strip().lower()
-    return bool(re.search(r"\b(craft|make|build|制作|合成|建造|做)\b", text))
-
-
-def _is_hard_failure(result: str) -> bool:
-    """Return True for failures the LLM cannot recover from by retrying.
-
-    Soft failures ("no oak_log nearby", "player not found") are fed back
-    to the LLM so it can replan with a different approach.  Hard failures
-    (command does not exist, bridge error) require player intervention.
-    """
-    hard_patterns = [
-        "does not exist",
-        "BridgeError",
-        "Cannot read properties of undefined",
-        "offhand",
-        "not supported",
-        "not available",
-    ]
-    result_lower = result.lower()
-    return any(p.lower() in result_lower for p in hard_patterns)
 
 
 def _describe_action(name: str, args: list[Any]) -> str:
@@ -462,23 +216,6 @@ def _describe_action(name: str, args: list[Any]) -> str:
         parts.append(f"{label}={arg}")
 
     return f"{name}({', '.join(parts)})"
-
-
-def _tool_call_required_reminder() -> str:
-    """Prompt nudge when the model produces reasoning-only output.
-
-    Worded to cover both modes: tool-calling endpoints read this as
-    "emit a function call", plain-text endpoints read it as "use the
-    !commandName(args) syntax".
-    """
-    return (
-        "You must use a command to respond to this request — either emit "
-        "a tool call/function call OR use the !commandName(args) syntax in your "
-        "text reply (e.g. !craftRecipe(\"oak_planks\", 1) or "
-        "!searchForEntity(\"sheep\", 64)). Do NOT respond with plain text "
-        "alone. If you are unsure which command fits, call !help or !stats "
-        "first."
-    )
 
 
 def _strip_memory_verbs(message: str) -> str:
@@ -541,15 +278,6 @@ def _log_preview(value: Any, *, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
-def _action_succeeded(result: Any) -> bool:
-    if result is None:
-        return False
-    text = str(result).strip()
-    if not text:
-        return False
-    return not (text.startswith("FAILED:") or text.startswith("SKIPPED:"))
-
-
 def _delivery_succeeded(result: Any) -> bool:
     if not _action_succeeded(result):
         return False
@@ -602,23 +330,11 @@ def _is_torch_or_light_request(message: str) -> bool:
     return bool(re.search(r"\b(torch|torches|light|lighting)\b|火把|照明|点亮", text))
 
 
-def _is_navigation_only_request(message: str) -> bool:
-    """Return True when the request is just movement/following guidance."""
-    text = (message or "").strip().lower()
-    if not text:
-        return False
-    if re.search(
-        r"\b(craft|make|build|collect|gather|mine|dig|break|destroy|attack|kill|"
-        r"cook|smelt|give|plant|sow|farm|breed|trade|place)\b|"
-        r"制作|合成|造|收集|采集|挖|破坏|攻击|杀|烤|熔炼|给我|种|播种|耕|繁殖|交易|放置",
-        text,
-    ):
-        return False
+def _is_seed_source_request(message: str) -> bool:
+    text = (message or "").lower()
     return bool(re.search(
-        r"\b(come\s+to\s+me|come\s+here|follow\s+me|follow\s+\w+|"
-        r"go\s+to\s+\w+|go\s+to\s+player|move\s+to|stay|wait)\b|"
-        r"跟我来|跟着我|跟随我|过来|来我这里|到我这里|到我这|跟随|不动|停在这|等一下|"
-        r"带我去|去重生点|回重生点",
+        r"\b(seed|seeds|wheat|plant|farm|sow|crop|breed\s+chicken|chicken)\b|"
+        r"种子|小麦|种田|种地|播种|农场|耕|繁殖.*鸡|鸡.*繁殖",
         text,
     ))
 
@@ -654,27 +370,6 @@ def _best_inventory_log_item(state: BotState) -> tuple[str, int] | None:
     if not logs:
         return None
     return max(logs, key=lambda item: item[1])
-
-
-def _tool_parts(tool_name: str) -> tuple[str, str] | None:
-    """Return (material, family) for a vanilla tool name."""
-    name = tool_name.strip().lower()
-    for family in _TOOL_FAMILY_MATERIAL_COUNTS:
-        suffix = f"_{family}"
-        if not name.endswith(suffix):
-            continue
-        material = name[:-len(suffix)]
-        if material:
-            return material, family
-    return None
-
-
-def _parse_missing_counts(text: str) -> dict[str, int]:
-    """Parse snippets like 'stick x2, cobblestone x3' into a count map."""
-    counts: dict[str, int] = {}
-    for item, count in re.findall(r"([A-Za-z0-9_]+)\s+x\s*(\d+)", text):
-        counts[item.lower()] = counts.get(item.lower(), 0) + int(count)
-    return counts
 
 
 def _normalise_smelt_input(item_name: str) -> str:
@@ -725,526 +420,6 @@ def _summary_contradicts_task_status(summary: str, status: str) -> bool:
     return False
 
 
-def _command_completion_kind(command_name: str) -> str:
-    return _COMMAND_COMPLETION_KINDS.get(command_name.lstrip("!"), "none")
-
-
-def _acceptable_items_for_target(item_name: str) -> tuple[str, ...]:
-    if item_name == "raw_iron":
-        return ("raw_iron", "iron_ore", "deepslate_iron_ore")
-    if item_name == "coal":
-        return ("coal", "coal_ore", "deepslate_coal_ore")
-    return (item_name,)
-
-
-def _message_sounds_like_delivery_request(message: str) -> bool:
-    text = (message or "").lower()
-    return bool(re.search(
-        r"\b(give|bring|fetch|get|collect|gather|mine|make|craft|cook)\b|"
-        r"给我|拿给我|带给我|获取|采集|收集|挖|做|制作|合成|烧|烤",
-        text,
-    ))
-
-
-def _completion_spec_from_message(message: str) -> CompletionSpec:
-    """Infer the task's success boundary before the first action runs."""
-    if _is_navigation_only_request(message):
-        return CompletionSpec(
-            kind="navigation",
-            terminal_commands=frozenset({
-                "moveTo",
-                "goToPlayer",
-                "followPlayer",
-                "goToCoordinates",
-                "moveAway",
-                "stay",
-                "goToSurface",
-                "lookAtPlayer",
-                "lookAtPosition",
-            }),
-            requires_delivery=False,
-            delivery_score=0.05,
-            delivery_reason="navigation task",
-        )
-
-    cook_request = _parse_cook_request(message)
-    if cook_request is not None:
-        return CompletionSpec(
-            kind="cook_item",
-            target_items=(cook_request.cooked_item,),
-            acceptable_items=(cook_request.cooked_item,),
-            quantity=cook_request.quantity,
-            terminal_commands=frozenset({"smeltItem", "givePlayer"}),
-            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
-                "collectBlocks",
-                "searchForBlock",
-                "searchForEntity",
-                "attack",
-                "clearFurnace",
-            }),
-            requires_delivery=True,
-            delivery_score=0.90,
-            delivery_reason="cooked item requested",
-        )
-
-    craft_request = _parse_craft_request(message)
-    if craft_request is not None:
-        return CompletionSpec(
-            kind="craft_item",
-            target_items=(craft_request.item_name,),
-            acceptable_items=(craft_request.item_name,),
-            quantity=craft_request.quantity,
-            terminal_commands=frozenset({"craftRecipe", "givePlayer"}),
-            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
-                "collectBlocks",
-                "searchForBlock",
-                "searchForEntity",
-                "attack",
-                "smeltItem",
-                "clearFurnace",
-            }),
-            requires_delivery=True,
-            delivery_score=0.90,
-            delivery_reason="crafted item requested",
-        )
-
-    item_request = _parse_item_request(message)
-    if item_request is not None:
-        acceptable = _acceptable_items_for_target(item_request.item_name)
-        return CompletionSpec(
-            kind="collect_item",
-            target_items=(item_request.item_name,),
-            acceptable_items=acceptable,
-            quantity=item_request.quantity,
-            terminal_commands=frozenset({
-                "collectBlocks",
-                "breakNearbyBlocks",
-                "pickupNearbyItems",
-                "givePlayer",
-            }),
-            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
-                "searchForBlock",
-                "searchForEntity",
-                "attack",
-                "smeltItem",
-                "clearFurnace",
-            }),
-            requires_delivery=_message_sounds_like_delivery_request(message),
-            delivery_score=0.85 if _message_sounds_like_delivery_request(message) else 0.20,
-            delivery_reason="collectable item requested",
-        )
-
-    planting_quantity = _planting_request_quantity(message)
-    if planting_quantity is not None:
-        return CompletionSpec(
-            kind="planting",
-            quantity=planting_quantity,
-            terminal_commands=frozenset({"tillAndSow"}),
-            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
-                "breakNearbyBlocks",
-                "collectBlocks",
-                "searchForBlock",
-            }),
-            requires_delivery=False,
-            delivery_score=0.05,
-            delivery_reason="world planting task",
-        )
-
-    if re.search(r"\b(breed|feed)\b|繁殖|喂|养", (message or "").lower()):
-        return CompletionSpec(
-            kind="breeding",
-            terminal_commands=frozenset({"breedAnimals"}),
-            intermediate_commands=_INVENTORY_PREP_COMMANDS | frozenset({
-                "collectBlocks",
-                "searchForBlock",
-                "searchForEntity",
-            }),
-            requires_delivery=False,
-            delivery_score=0.05,
-            delivery_reason="world animal task",
-        )
-
-    return CompletionSpec(
-        kind="unknown",
-        requires_delivery=False,
-        delivery_score=0.25,
-        delivery_reason="no structured target inferred",
-    )
-
-
-def _task_boundary_block_reason(task: ActiveTask | None, command_name: str) -> str | None:
-    if task is None or task.status != "running":
-        return None
-    name = command_name.lstrip("!")
-    if _is_navigation_only_request(task.original_message):
-        if name in _NAVIGATION_ONLY_ALLOWED_COMMANDS:
-            return None
-        return (
-            f"Ignored {name} because the current task is only "
-            f"{task.original_message!r}. Use a movement/follow command instead."
-        )
-    return None
-
-
-def _completion_kind_matches_task(task: ActiveTask, command_name: str, kind: str) -> bool:
-    if _is_navigation_only_request(task.original_message):
-        return (
-            kind == "navigation"
-            and command_name.lstrip("!") in _NAVIGATION_ONLY_ALLOWED_COMMANDS
-        )
-    return True
-
-
-def _inventory_count_any_from_state(state: BotState, item_names: tuple[str, ...]) -> int:
-    wanted = set(item_names)
-    return sum(item.count for item in state.inventory if item.name in wanted)
-
-
-def _completion_spec_allows_command_completion(
-    task: ActiveTask,
-    command_name: str,
-    kind: str,
-    bot_state: BotState,
-) -> bool:
-    spec = task.completion_spec
-    if spec is None or spec.kind == "unknown":
-        return _completion_kind_matches_task(task, command_name, kind)
-
-    name = command_name.lstrip("!")
-    if name in spec.intermediate_commands and name not in spec.terminal_commands:
-        logger.info(
-            "Command treated as intermediate by completion spec: "
-            "task=%s spec=%s command=%s request=%r",
-            task.id,
-            spec.kind,
-            name,
-            task.original_message,
-        )
-        return False
-
-    if spec.kind == "navigation":
-        return kind == "navigation" and name in spec.terminal_commands
-
-    if spec.kind in {"collect_item", "craft_item", "cook_item"}:
-        if name not in spec.terminal_commands:
-            return False
-        if name == "givePlayer":
-            return True
-        if not spec.acceptable_items:
-            return True
-        have = _inventory_count_any_from_state(bot_state, spec.acceptable_items)
-        requested = spec.quantity or 1
-        delta = _inventory_delta_from_baseline(task, bot_state, spec.acceptable_items)
-        if delta >= requested:
-            return True
-        if spec.kind == "cook_item" and have >= requested:
-            return True
-        logger.info(
-            "Inventory command is partial progress by completion spec: "
-            "task=%s spec=%s command=%s have=%d delta=%d requested=%d acceptable=%s",
-            task.id,
-            spec.kind,
-            name,
-            have,
-            delta,
-            requested,
-            spec.acceptable_items,
-        )
-        return False
-
-    if spec.kind == "planting":
-        return name == "tillAndSow"
-
-    if spec.kind == "breeding":
-        return name == "breedAnimals"
-
-    return _completion_kind_matches_task(task, command_name, kind)
-
-
-def _world_change_command_can_complete_task(command_name: str, task: ActiveTask) -> bool:
-    """Return whether a world mutation is specific enough to close this task.
-
-    Some world-changing commands are often intermediate steps in a larger
-    workflow.  Breaking tall grass while planting wheat, attacking sheep while
-    crafting a bed, or clearing a furnace while cooking should not by itself
-    mark the player request as complete.
-    """
-    name = command_name.lstrip("!")
-    if name in _ALWAYS_TERMINAL_WORLD_CHANGE_COMMANDS:
-        return True
-    if name not in _CONDITIONAL_TERMINAL_WORLD_CHANGE_COMMANDS:
-        return False
-
-    message = (task.original_message or "").lower()
-    if name in {"attack", "attackPlayer"}:
-        return bool(re.search(
-            r"\b(attack|kill|fight|hunt)\b|攻击|打死|杀|猎杀",
-            message,
-        ))
-    if name == "breakNearbyBlocks":
-        if re.search(r"\b(plant|farm|sow|seed|wheat)\b|种|播种|耕|小麦|种子|田", message):
-            return False
-        return bool(re.search(
-            r"\b(break|destroy|clear|remove|mine|dig)\b|破坏|打掉|清理|挖|采",
-            message,
-        ))
-    if name == "clearFurnace":
-        return bool(re.search(r"\bclear\s+(the\s+)?furnace\b|清空.*熔炉|清理.*熔炉", message))
-    if name == "digDown":
-        return bool(re.search(
-            r"\b(dig\s+down|mine\s+down|tunnel\s+down)\b|向下挖|往下挖|挖下去|垂直挖",
-            message,
-        ))
-    return False
-
-
-def _planting_request_quantity(message: str) -> int | None:
-    """Return requested plot/seed count for planting workflows, if explicit."""
-    text = (message or "").strip().lower()
-    if not re.search(
-        r"\b(plant|farm|sow|seed|wheat|field|crop)\b|种|播种|耕|小麦|种子|田",
-        text,
-    ):
-        return None
-    digit = re.search(r"(?<!\d)(\d{1,2})(?!\d)", text)
-    if digit:
-        return max(1, min(int(digit.group(1)), 64))
-    for word, value in _CHINESE_NUMBERS.items():
-        if word in text:
-            return value
-    return None
-
-
-def _successful_till_and_sow_count(task: ActiveTask, current_result: Any) -> int:
-    """Count successful single-plot tillAndSow actions in this active task."""
-    result_text = str(current_result or "").strip()
-    count = 0
-    current_result_already_recorded = False
-
-    for event in task.events or []:
-        if event.kind != "action_result" or event.ok is not True:
-            continue
-        message = event.message
-        if "tillAndSow" not in message:
-            continue
-        lower = message.lower()
-        if "failed:" in lower:
-            continue
-        if "tilled" not in lower and "planted" not in lower:
-            continue
-        count += 1
-        if result_text and result_text in message:
-            current_result_already_recorded = True
-
-    lower_result = result_text.lower()
-    if (
-        result_text
-        and not current_result_already_recorded
-        and "failed:" not in lower_result
-        and ("tilled" in lower_result or "planted" in lower_result)
-    ):
-        count += 1
-    return count
-
-
-def _world_change_completion_has_required_progress(
-    command_name: str,
-    task: ActiveTask,
-    result: Any,
-) -> bool:
-    """Return whether a terminal world-change command satisfies explicit quantity."""
-    name = command_name.lstrip("!")
-    if name != "tillAndSow":
-        return True
-
-    requested = _planting_request_quantity(task.original_message)
-    if requested is None or requested <= 1:
-        return True
-
-    completed = _successful_till_and_sow_count(task, result)
-    if completed >= requested:
-        return True
-
-    logger.info(
-        "Planting command treated as partial progress: task=%s command=%s "
-        "completed=%d requested=%d request=%r",
-        task.id,
-        command_name,
-        completed,
-        requested,
-        task.original_message,
-    )
-    return False
-
-
-_NEARBY_MISS_RE = re.compile(
-    r"No\s+(?P<target>[A-Za-z0-9_]+)\s+nearby\s+\((?P<range>\d+)\s+block radius\)",
-    re.IGNORECASE,
-)
-
-_ITEM_REQUEST_RE = re.compile(
-    r"\b(?:get|collect|gather|fetch|bring|give|find|search|mine|eat|consume)\b|"
-    r"\b(?:want|need|would\s+like)\s+(?:to\s+)?(?:eat|get|have|consume)\b|"
-    r"(?:给我|拿|获取|采集|收集|找|寻找|挖|挖一点|采一点)",
-    re.IGNORECASE,
-)
-_ITEM_ALIAS_SOURCES: dict[str, tuple[str, str | None]] = {
-    "iron pickaxe": ("iron_pickaxe", None),
-    "iron_pickaxes": ("iron_pickaxe", None),
-    "iron_pickaxe": ("iron_pickaxe", None),
-    "wood": ("oak_log", "oak_log"),
-    "log": ("oak_log", "oak_log"),
-    "logs": ("oak_log", "oak_log"),
-    "oak": ("oak_log", "oak_log"),
-    "oak_log": ("oak_log", "oak_log"),
-    "coal": ("coal", "coal_ore"),
-    "coal_ore": ("coal", "coal_ore"),
-    "iron": ("raw_iron", "iron_ore"),
-    "iron ore": ("raw_iron", "iron_ore"),
-    "iron_ore": ("raw_iron", "iron_ore"),
-    "raw iron": ("raw_iron", "iron_ore"),
-    "raw_iron": ("raw_iron", "iron_ore"),
-    "stone": ("cobblestone", "stone"),
-    "cobblestone": ("cobblestone", "cobblestone"),
-    "dirt": ("dirt", "dirt"),
-    "torch": ("torch", None),
-    "torches": ("torch", None),
-    "apple": ("apple", None),
-    "apples": ("apple", None),
-    "pork": ("porkchop", "pig"),
-    "porkchop": ("porkchop", "pig"),
-    "porkchops": ("porkchop", "pig"),
-    "raw_porkchop": ("porkchop", "pig"),
-    "cooked_porkchop": ("cooked_porkchop", "pig"),
-    "beef": ("beef", "cow"),
-    "steak": ("cooked_beef", "cow"),
-    "mutton": ("mutton", "sheep"),
-    "chicken": ("chicken", "chicken"),
-    "木头": ("oak_log", "oak_log"),
-    "木": ("oak_log", "oak_log"),
-    "原木": ("oak_log", "oak_log"),
-    "橡木": ("oak_log", "oak_log"),
-    "煤": ("coal", "coal_ore"),
-    "煤炭": ("coal", "coal_ore"),
-    "煤矿": ("coal", "coal_ore"),
-    "铁": ("raw_iron", "iron_ore"),
-    "铁镐": ("iron_pickaxe", None),
-    "铁矿": ("raw_iron", "iron_ore"),
-    "粗铁": ("raw_iron", "iron_ore"),
-    "石头": ("cobblestone", "stone"),
-    "圆石": ("cobblestone", "cobblestone"),
-    "泥土": ("dirt", "dirt"),
-    "土": ("dirt", "dirt"),
-    "火把": ("torch", None),
-    "苹果": ("apple", None),
-    "猪肉": ("porkchop", "pig"),
-    "熟猪肉": ("cooked_porkchop", "pig"),
-    "牛肉": ("beef", "cow"),
-    "羊肉": ("mutton", "sheep"),
-    "鸡肉": ("chicken", "chicken"),
-}
-_CHINESE_NUMBERS: dict[str, int] = {
-    "一": 1,
-    "二": 2,
-    "两": 2,
-    "三": 3,
-    "四": 4,
-    "五": 5,
-    "六": 6,
-    "七": 7,
-    "八": 8,
-    "九": 9,
-    "十": 10,
-}
-_CRAFT_ALIASES: dict[str, str] = {
-    "torch": "torch",
-    "torches": "torch",
-    "stick": "stick",
-    "sticks": "stick",
-    "iron pickaxe": "iron_pickaxe",
-    "iron_pickaxes": "iron_pickaxe",
-    "iron_pickaxe": "iron_pickaxe",
-    "wooden shovel": "wooden_shovel",
-    "wooden_shovel": "wooden_shovel",
-    "wooden axe": "wooden_axe",
-    "wooden_axe": "wooden_axe",
-    "wooden pickaxe": "wooden_pickaxe",
-    "wooden_pickaxe": "wooden_pickaxe",
-    "crafting table": "crafting_table",
-    "crafting_table": "crafting_table",
-    "木铲子": "wooden_shovel",
-    "木斧头": "wooden_axe",
-    "木镐": "wooden_pickaxe",
-    "铁镐": "iron_pickaxe",
-    "火把": "torch",
-    "工作台": "crafting_table",
-}
-_COOK_ALIASES: dict[str, tuple[str, str]] = {
-    "pork": ("porkchop", "cooked_porkchop"),
-    "porkchop": ("porkchop", "cooked_porkchop"),
-    "porkchops": ("porkchop", "cooked_porkchop"),
-    "raw_porkchop": ("porkchop", "cooked_porkchop"),
-    "猪肉": ("porkchop", "cooked_porkchop"),
-    "beef": ("beef", "cooked_beef"),
-    "steak": ("beef", "cooked_beef"),
-    "牛肉": ("beef", "cooked_beef"),
-    "mutton": ("mutton", "cooked_mutton"),
-    "羊肉": ("mutton", "cooked_mutton"),
-    "chicken": ("chicken", "cooked_chicken"),
-    "鸡肉": ("chicken", "cooked_chicken"),
-    "rabbit": ("rabbit", "cooked_rabbit"),
-    "cod": ("cod", "cooked_cod"),
-    "salmon": ("salmon", "cooked_salmon"),
-}
-
-
-@dataclass(frozen=True)
-class ItemRequest:
-    item_name: str
-    source_block: str | None
-    quantity: int = 8
-
-
-@dataclass(frozen=True)
-class CraftRequest:
-    item_name: str
-    quantity: int = 1
-    additive: bool = False
-
-
-@dataclass(frozen=True)
-class CookRequest:
-    raw_item: str
-    cooked_item: str
-    quantity: int | None = None
-
-
-def _command_call_key(
-    name: str,
-    args: list[Any],
-    kwargs: dict[str, Any] | None = None,
-) -> str:
-    """Stable key for detecting repeated calls with the same arguments."""
-    payload = {
-        "name": name.lstrip("!"),
-        "args": args,
-        "kwargs": kwargs or {},
-    }
-    return json.dumps(payload, sort_keys=True, default=str)
-
-
-def _query_repeat_reminder(name: str, result: str) -> str:
-    """Prompt nudge when a model repeats the same read-only query."""
-    return (
-        f"You already called {name} with the same arguments and got this result:\n"
-        f"{result[:1200]}\n\n"
-        "Do NOT call the same query again. Use this information to take the next "
-        "concrete action toward the player's request. For crafting tasks, choose "
-        "an action such as craftRecipe for craftable items, collectBlocks/search "
-        "for missing materials, or ask the player if the materials cannot be obtained."
-    )
-
-
 def _extract_js_code(text: str) -> str:
     """Extract the first JavaScript code block, or return stripped text."""
     match = re.search(r"```(?:js|javascript)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
@@ -1285,73 +460,6 @@ def _player_requested_stop(message: str) -> bool:
     return bool(re.search(r"\b(stop|cancel|halt|pause)\b|停下|停止|别动", text))
 
 
-def _parse_item_request(message: str) -> ItemRequest | None:
-    text = message.strip().lower()
-    if not _ITEM_REQUEST_RE.search(text):
-        return None
-    if re.search(r"\bcraft\b|制作|合成", text):
-        return None
-
-    quantity = _quantity_from_item_request(text)
-    for alias in sorted(_ITEM_ALIAS_SOURCES, key=len, reverse=True):
-        if (
-            re.search(r"[\u4e00-\u9fff]", alias) and alias in text
-            or re.search(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", text)
-        ):
-            item_name, source_block = _ITEM_ALIAS_SOURCES[alias]
-            return ItemRequest(item_name=item_name, source_block=source_block, quantity=quantity)
-    return None
-
-
-def _parse_craft_request(message: str) -> CraftRequest | None:
-    text = message.strip().lower()
-    if not re.search(r"\b(craft|make|build)\b|制作|合成|做", text):
-        return None
-
-    quantity = _quantity_from_craft_request(text)
-    additive = bool(re.search(r"\b(more|extra|additional|another)\b|再|额外|更多", text))
-    for alias in sorted(_CRAFT_ALIASES, key=len, reverse=True):
-        if (
-            re.search(r"[\u4e00-\u9fff]", alias) and alias in text
-            or re.search(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", text)
-        ):
-            return CraftRequest(
-                item_name=_CRAFT_ALIASES[alias],
-                quantity=quantity,
-                additive=additive,
-            )
-    return None
-
-
-def _parse_cook_request(message: str) -> CookRequest | None:
-    text = message.strip().lower()
-    if not re.search(r"\b(cook|smelt|roast|bake)\b|烤|煮|烧", text):
-        return None
-
-    quantity = _optional_quantity_from_request(text)
-    for alias in sorted(_COOK_ALIASES, key=len, reverse=True):
-        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", text):
-            raw_item, cooked_item = _COOK_ALIASES[alias]
-            return CookRequest(raw_item=raw_item, cooked_item=cooked_item, quantity=quantity)
-    return None
-
-
-def _cook_request_is_compound(message: str) -> bool:
-    """Return true when cooking is only one step of a larger gather/kill flow."""
-    if _parse_cook_request(message) is None:
-        return False
-    text = message.strip().lower()
-    return bool(
-        re.search(
-            r"\b("
-            r"pick\s*up|pickup|grab|take|get|collect|gather|fetch|find|search|"
-            r"hunt|kill|attack"
-            r")\b|捡|拾取|拿|找|寻找|收集|杀|打|猎|附近|旁边|nearby",
-            text,
-        )
-    )
-
-
 def _memory_record_is_failed_task(record: Any) -> bool:
     tags = {str(tag).lower() for tag in getattr(record, "tags", []) or []}
     if "task_failed" in tags:
@@ -1359,79 +467,6 @@ def _memory_record_is_failed_task(record: Any) -> bool:
     body = str(getattr(record, "body", "") or "").lower()
     description = str(getattr(record, "description", "") or "").lower()
     return "**status:** failed" in body or "status: failed" in body or "failed" in description
-
-
-def _optional_quantity_from_request(text: str) -> int | None:
-    digit = re.search(r"\b(\d{1,2})\b", text)
-    if digit:
-        return max(1, min(int(digit.group(1)), 64))
-    for word, value in _CHINESE_NUMBERS.items():
-        if word in text:
-            return value
-    if re.search(r"\b(a|an|one)\b|一个|一块|一根", text):
-        return 1
-    return None
-
-
-def _quantity_from_craft_request(text: str) -> int:
-    digit = re.search(r"\b(\d{1,2})\b", text)
-    if digit:
-        return max(1, min(int(digit.group(1)), 64))
-    for word, value in _CHINESE_NUMBERS.items():
-        if word in text:
-            return value
-    if re.search(r"\b(a|an|one)\b|一个|一块|一根", text):
-        return 1
-    return 1
-
-
-def _quantity_from_item_request(text: str) -> int:
-    digit = re.search(r"\b(\d{1,2})\b", text)
-    if digit:
-        return max(1, min(int(digit.group(1)), 64))
-    for word, value in _CHINESE_NUMBERS.items():
-        if word in text:
-            return value
-    if re.search(r"\b(a|an|one)\b|一个|一块|一根|一点", text):
-        return 1
-    return 8
-
-
-def _inventory_count_from_state(state: BotState, item_name: str) -> int:
-    return sum(item.count for item in state.inventory if item.name == item_name)
-
-
-def _inventory_counts_from_state(state: BotState) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for item in state.inventory:
-        counts[item.name] = counts.get(item.name, 0) + item.count
-    return counts
-
-
-def _position_tuple_from_state(state: BotState) -> tuple[float, float, float] | None:
-    pos = state.position
-    if pos is None:
-        return None
-    return (float(pos.x), float(pos.y), float(pos.z))
-
-
-def _inventory_count_any(
-    inventory: dict[str, int] | None,
-    item_names: tuple[str, ...],
-) -> int:
-    if not inventory:
-        return 0
-    return sum(int(inventory.get(item_name, 0)) for item_name in item_names)
-
-
-def _inventory_delta_from_baseline(
-    task: ActiveTask,
-    state: BotState,
-    item_names: tuple[str, ...],
-) -> int:
-    current = _inventory_count_any(_inventory_counts_from_state(state), item_names)
-    baseline = _inventory_count_any(task.baseline_inventory, item_names)
-    return current - baseline
 
 
 def _slugify_task_name(text: str, *, limit: int = 48) -> str:
@@ -1484,6 +519,11 @@ class Agent:
         # Phase 2 components
         self._executor = ActionExecutor()
         self._convo_mgr = ConversationManager()
+        self._completion_engine = CompletionEngine()
+        self._recovery_manager = RecoveryManager()
+        self._task_manager = TaskManager()
+        self._planner_loop = PlannerLoop(self)
+        self._command_runner = CommandRunner(self._execute_agent_command)
         self._modes = ModeEvaluator()
         self._safety: SafetyMonitor | None = None
 
@@ -1501,7 +541,7 @@ class Agent:
         # Error recovery — guided task resumption
         self._pending_task: PendingTask | None = None
         self._active_task: ActiveTask | None = None
-        self._active_task_stack: list[ActiveTask] = []
+        self._active_task_stack: list[ActiveTask] = self._task_manager.stack
         self._direct_shortcut_retry_reason: str | None = None
         self._guided_loop_task: asyncio.Task[None] | None = None
         self._self_prompt_goal: str | None = None
@@ -1931,6 +971,15 @@ class Agent:
         """Execute a parsed command and return feedback for the LLM history."""
         return await self._executor.execute(command_name, args, kwargs)
 
+    async def _run_agent_command(
+        self,
+        command_name: str,
+        args: list[Any] | None = None,
+        kwargs: dict[str, Any] | None = None,
+    ) -> CommandRun:
+        """Execute an agent command and return the structured runner result."""
+        return await self._command_runner.run(command_name, args or [], kwargs)
+
     # ── Message handling (mirrors agent.js handleMessage) ────────────
 
     async def handle_message(
@@ -2062,6 +1111,9 @@ class Agent:
         configured, shortcuts are allowed only for confident atomic decisions;
         everything else naturally falls through to the full planner.
         """
+        if not _shortcut_route_known(route):
+            logger.info("DispatchGate skipped unknown shortcut route=%s", route)
+            return False
         if decision is None:
             return True
         threshold = (
@@ -2128,645 +1180,30 @@ class Agent:
     async def _run_plan_loop(
         self, *, max_responses: int, use_tools: bool, turn_id: int | None = None,
     ) -> bool:
-        """Drive plan → parse → execute repeats for tool-capable intents.
+        """Run the planner loop through the PlannerLoop facade."""
+        return await self._planner_loop.run(
+            max_responses=max_responses,
+            use_tools=use_tools,
+            turn_id=turn_id,
+        )
 
-        For ``use_tools=False`` (question/chitchat) the LLM is called with
-        ``tool_choice="none"`` and the reply is spoken once, no commands.
-
-        For ``use_tools=True`` (action_command) we use ``tool_choice="auto"``
-        so the model can both reason in plain text AND emit tool calls in the
-        same response — this matches the JS original's "I need wool. !attack
-        ..." pattern, which is what carried weaker models through the bed-craft
-        trace. The F2 retry path catches the case where a model produces text
-        only without a tool call, re-prompting once with a reminder.
-        """
-        used_command = False
-        if turn_id is None:
-            turn_id = self._turn_id
-        bot_state = await self.observe()
-        if not self._running:
-            return False
-        if turn_id != self._turn_id:
-            logger.info(
-                "Plan loop superseded before start: turn=%s current=%s",
-                turn_id,
-                self._turn_id,
-            )
-            return False
-        dispatch_decision: DispatchDecision | None = None
-        if use_tools and self._dispatch_gate is not None:
-            dispatch_decision = await self._dispatch_gate.classify(self._last_message, bot_state)
-            self._apply_delivery_joint_judgement(dispatch_decision)
-        if use_tools:
-            if await self._maybe_complete_satisfied_craft(bot_state):
-                return True
-            if self._dispatch_allows_shortcut(dispatch_decision, "direct_action"):
-                direct_result = await self._try_direct_action_command()
-                if direct_result is not None:
-                    return direct_result
-            if self._dispatch_allows_shortcut(dispatch_decision, "direct_cook"):
-                cook_result = await self._try_direct_cook_request(bot_state)
-                if cook_result is not None:
-                    return cook_result
-            if self._direct_shortcut_retry_reason is None:
-                if self._dispatch_allows_shortcut(dispatch_decision, "direct_item"):
-                    block_reason = self._direct_shortcut_block_reason(
-                        "direct_item",
-                        bot_state,
-                    )
-                    if block_reason is None:
-                        item_result = await self._try_direct_item_request(bot_state)
-                        if item_result is not None:
-                            return item_result
-                    else:
-                        logger.info(
-                            "Direct shortcut skipped route=direct_item reason=%s",
-                            block_reason,
-                        )
-            if self._direct_shortcut_retry_reason is None:
-                if self._dispatch_allows_shortcut(dispatch_decision, "skill"):
-                    skill_used = await self._try_phase5a_skill(self._last_message, bot_state)
-                    if skill_used:
-                        return True
-            if self._direct_shortcut_retry_reason is not None:
-                logger.info(
-                    "Limiting LLM recovery after direct shortcut failure to one response: %s",
-                    self._direct_shortcut_retry_reason,
-                )
-                max_responses = min(max_responses, 1)
-                self._direct_shortcut_retry_reason = None
-        tool_choice = "auto" if use_tools else "none"
-        consecutive_failures = 0
-        last_failed: tuple[str, str] | None = None  # (command, args_str)
-        no_tool_retries = 0  # F2: track re-prompts when LLM omits tool calls
-        seen_query_results: dict[str, str] = {}
-        warned_repeated_queries: set[str] = set()
-        # F1: count calls to each query command by name, regardless of args
-        # — catches the paraphrased-query loop case (searchWiki "bed recipe"
-        # → "crafting bed" → "minecraft bed") that the exact-arg check above
-        # misses.
-        query_command_counts: dict[str, int] = {}
-        warned_query_command_loops: set[str] = set()
-        nearby_miss_recoveries: set[tuple[str, str]] = set()
-        # F3a: consecutive read-only query calls — the *primary* loop guard.
-        # Resets on any non-query (action) command, so legitimate chains
-        # like searchForEntity → attack → searchForEntity → attack are
-        # never penalised.  Targets the actual failure mode (query spam).
-        consecutive_query_calls = 0
-        # F3b: absolute backstop on total tool-call attempts per user turn.
-        # Set high (matches JS empirical iteration count + headroom) so
-        # genuine multi-step crafting (~19 iterations on bed-craft) is not
-        # cut off; only truly runaway models hit this.
-        total_tool_calls = 0
-
-        for _ in range(max_responses):
-            if turn_id != self._turn_id:
-                logger.info("Plan loop superseded: turn=%s current=%s", turn_id, self._turn_id)
-                return used_command
-            if self._shut_up or not self._running:
-                break
-            if self._safety and self._safety.state.interrupted:
-                logger.warning("Plan loop halted: safety interrupt active")
-                break
-            if self._active_task and self._active_task.timeout_s is not None:
-                elapsed = time.time() - self._active_task.started_at
-                if elapsed > self._active_task.timeout_s:
-                    logger.warning(
-                        "Task %s timed out after %.0fs (limit %.0fs)",
-                        self._active_task.id,
-                        elapsed,
-                        self._active_task.timeout_s,
-                    )
-                    await self._send_chat(
-                        f"I've been working on this for {int(elapsed)}s — "
-                        "that's too long. What should I do differently?"
-                    )
-                    await self._finish_active_task(
-                        "failed",
-                        reason=f"Task timed out after {elapsed:.0f}s",
-                    )
-                    return False
-            if use_tools and await self._maybe_complete_satisfied_craft(bot_state):
-                return True
-
-            # Flush behavior log so the LLM sees what modes have been doing
-            # (mirrors JS behavior_log flush before each promptConvo call).
-            b_log = self._modes.flush_behavior_log()
-            if b_log:
-                self._history.append(
-                    ConversationTurn(role="system", content=f"Recent behaviors:\n{b_log}"),
-                )
-
-            llm_response = await self.plan(bot_state, tool_choice=tool_choice)
-            if turn_id != self._turn_id:
-                logger.info(
-                    "Dropping stale LLM response: turn=%s current=%s",
-                    turn_id,
-                    self._turn_id,
-                )
-                return used_command
-
-            # Concise action summary: tool calls first, then truncated reply
-            if llm_response.tool_calls:
-                tc_names = [tc.function.name for tc in llm_response.tool_calls]
-                logger.info("<<< tools=%s", ", ".join(tc_names))
-            elif llm_response.content.strip():
-                preview = llm_response.content.strip()[:80]
-                logger.info("<<< %s", preview)
-            else:
-                logger.info("<<< (empty)")
-
-            # Action path + tool_choice="required": some reasoning models can
-            # spend tokens internally, return finish_reason="stop", and expose
-            # neither content nor tool calls. Give them the same one-shot
-            # correction we use for plain text without tool calls.
-            if use_tools and not llm_response.tool_calls and not llm_response.content.strip():
-                if no_tool_retries < 1:
-                    no_tool_retries += 1
-                    logger.warning(
-                        "LLM produced empty response on action_command intent — "
-                        "injecting tool-call reminder (retry %d/1)", no_tool_retries,
-                    )
-                    self._history.append(ConversationTurn(
-                        role="system",
-                        content=_tool_call_required_reminder(),
-                    ))
-                    continue
-                logger.debug("Empty LLM response with no tool calls after retry — ending turn")
-                break
-
-            parsed = parse_response(
-                llm_response.content,
-                tool_calls=llm_response.tool_calls,
-            )
-
-            # Question / chitchat path: just remember and speak the reply,
-            # no commands.
-            if not use_tools:
-                self._history.append(
-                    ConversationTurn(
-                        role="assistant",
-                        content=llm_response.content,
-                        tool_calls=llm_response.tool_calls,
-                    ),
-                )
-                await self._send_chat(llm_response.content.strip())
-                break
-
-            # Non-action paths can still produce neither tool calls nor text.
-            if not parsed.has_command and not llm_response.content.strip():
-                logger.debug("Empty LLM response with no tool calls — ending turn")
-                break
-
-            if not parsed.has_command:
-                # F2: Action path but model produced plain text with no tool
-                # calls.  If we haven't retried yet, inject a reminder and
-                # re-prompt once — the LLM may have forgotten it must produce
-                # a tool call.  If it still refuses, speak the text so the
-                # player at least sees the model's reasoning.
-                if use_tools and no_tool_retries < 1:
-                    no_tool_retries += 1
-                    logger.warning(
-                        "LLM produced no tool call on action_command intent — "
-                        "injecting reminder (retry %d/1)", no_tool_retries,
-                    )
-                    self._history.append(ConversationTurn(
-                        role="system",
-                        content=_tool_call_required_reminder(),
-                    ))
-                    continue  # re-call plan() with tool_choice="required"
-
-                # Speak plain text (question/chitchat path, or retry exhausted)
-                await self._send_chat(llm_response.content.strip())
-                break
-
-            if (
-                use_tools
-                and self._active_task is not None
-                and self._active_task.planning_strategy == PlanningStrategy.ROLLING_PLAN
-                and len(parsed.commands) > 1
-            ):
-                dropped = [cmd.name for cmd in parsed.commands[1:]]
-                logger.info(
-                    "Rolling plan produced multiple commands; executing only first=%s "
-                    "dropped=%s",
-                    parsed.commands[0].name,
-                    dropped,
-                )
-                self._history.append(ConversationTurn(
-                    role="system",
-                    content=(
-                        "Rolling-plan mode executes only one command per turn. "
-                        f"Ignored later commands from the previous response: {', '.join(dropped)}. "
-                        "Keep future plan steps as plain text with no !command syntax."
-                    ),
-                ))
-                if llm_response.tool_calls:
-                    llm_response = llm_response.model_copy(
-                        update={"tool_calls": llm_response.tool_calls[:1]}
-                    )
-                parsed.commands = parsed.commands[:1]
-                parsed.has_command = True
-
-            repeated_query: tuple[str, str] | None = None
-            if use_tools:
-                for cmd in parsed.commands:
-                    cmd_key = _command_call_key(
-                        cmd.name,
-                        cmd.args,
-                        getattr(cmd, "kwargs", None) or None,
-                    )
-                    normalized_name = cmd.name.lstrip("!")
-                    if normalized_name in _QUERY_COMMANDS and cmd_key in seen_query_results:
-                        repeated_query = (normalized_name, cmd_key)
-                        break
-
-            if repeated_query is not None:
-                normalized_name, cmd_key = repeated_query
-                if cmd_key not in warned_repeated_queries:
-                    warned_repeated_queries.add(cmd_key)
-                    logger.warning(
-                        "LLM repeated query command %s with same arguments — "
-                        "injecting next-step reminder",
-                        normalized_name,
-                    )
-                    self._history.append(ConversationTurn(
-                        role="system",
-                        content=_query_repeat_reminder(
-                            normalized_name,
-                            seen_query_results[cmd_key],
-                        ),
-                    ))
-                    continue
-                logger.warning(
-                    "LLM repeated query command %s after reminder — attempting fallback",
-                    normalized_name,
-                )
-                fallback_result = await self._fallback_after_repeated_query(
-                    normalized_name,
-                    bot_state,
-                    seen_query_results.get(cmd_key, ""),
-                )
-                if fallback_result is not None:
-                    return fallback_result or used_command
-                await self._send_chat(
-                    "I'm stuck repeating the same check instead of taking the next step."
-                )
-                return used_command
-
-            # F1: count by command name only — catches paraphrased-arg loops
-            # that the exact-arg check above doesn't catch.
-            query_loop_name: str | None = None
-            if use_tools:
-                for cmd in parsed.commands:
-                    normalized = cmd.name.lstrip("!")
-                    if normalized in _QUERY_COMMANDS:
-                        query_command_counts[normalized] = (
-                            query_command_counts.get(normalized, 0) + 1
-                        )
-                        if (
-                            query_command_counts[normalized]
-                            >= _MAX_REPEATED_QUERY_PER_NAME
-                        ):
-                            query_loop_name = normalized
-                            break
-
-            if query_loop_name is not None:
-                count = query_command_counts[query_loop_name]
-                if query_loop_name not in warned_query_command_loops:
-                    warned_query_command_loops.add(query_loop_name)
-                    logger.warning(
-                        "LLM called %s %d times in this turn (different args) — "
-                        "forcing pivot to concrete action",
-                        query_loop_name, count,
-                    )
-                    self._history.append(ConversationTurn(
-                        role="system",
-                        content=(
-                            f"You have already called {query_loop_name} {count} "
-                            "times in this turn with different arguments. You "
-                            "have enough information. Choose a concrete next "
-                            "action NOW: craftRecipe, collectBlocks, "
-                            "searchForBlock, searchForEntity, or chat back to "
-                            "the player to ask for help. Do NOT call any "
-                            "read-only query command again this turn."
-                        ),
-                    ))
-                    continue
-                logger.warning(
-                    "LLM stuck on %s after pivot reminder — ending turn",
-                    query_loop_name,
-                )
-                await self._send_chat(
-                    f"I keep looking up '{query_loop_name}' instead of acting. "
-                    "Can you tell me what to do next?"
-                )
-                return used_command
-
-            # Append assistant turn — include tool_calls if present so
-            # models that expect the OpenAI tool-call protocol see them.
-            self._history.append(
-                ConversationTurn(
-                    role="assistant",
-                    content=llm_response.content,
-                    tool_calls=llm_response.tool_calls,
-                ),
-            )
-
-            # Speak the pre-command text so the player knows what the bot
-            # is doing (mirrors JS routeResponse before executeCommand).
-            if parsed.text.strip():
-                await self._send_chat(parsed.text.strip())
-
-            any_blocked = False
-            for cmd in parsed.commands:
-                if turn_id != self._turn_id:
-                    logger.info(
-                        "Command chain superseded: turn=%s current=%s",
-                        turn_id,
-                        self._turn_id,
-                    )
-                    return used_command
-                if self._shut_up:
-                    break
-                if self._safety and self._safety.state.interrupted:
-                    logger.warning("Command chain halted: safety interrupt")
-                    break
-
-                # F3a: track consecutive read-only queries. Resets to 0 on
-                # any non-query command, so the JS bed-craft pattern
-                # (search → attack → search → attack, ~11 iterations) is
-                # never penalised. Catches the real failure mode: pure
-                # query spam without any concrete action in between.
-                cmd_name_normalized = cmd.name.lstrip("!")
-                if cmd_name_normalized in _QUERY_COMMANDS:
-                    consecutive_query_calls += 1
-                    if consecutive_query_calls > _MAX_CONSECUTIVE_QUERY_CALLS:
-                        logger.warning(
-                            "Consecutive-query cap (%d) hit — bot is stuck "
-                            "in read-only loop; ending turn",
-                            _MAX_CONSECUTIVE_QUERY_CALLS,
-                        )
-                        await self._send_chat(
-                            f"I've looked things up {consecutive_query_calls} "
-                            "times in a row without doing anything. What "
-                            "should I actually do?"
-                        )
-                        return used_command
-                else:
-                    consecutive_query_calls = 0
-
-                # F3b: absolute total backstop. Counts everything; only
-                # fires against runaway models. Set above JS's 19-iter
-                # bed-craft floor so genuine long tasks complete.
-                total_tool_calls += 1
-                if total_tool_calls > _MAX_TOOL_CALLS_PER_TURN:
-                    logger.warning(
-                        "Total tool-call backstop (%d) reached — ending turn",
-                        _MAX_TOOL_CALLS_PER_TURN,
-                    )
-                    recent_names = [a["name"] for a in self._recent_actions]
-                    await self._send_chat(
-                        f"I've tried {_MAX_TOOL_CALLS_PER_TURN} steps without "
-                        f"finishing — most recently {', '.join(recent_names[-3:]) or cmd.name}. "
-                        "Could you tell me what to try next?"
-                    )
-                    return used_command
-
-                # Announce each step before executing
-                cmd_args = cmd.args
-                cmd_kwargs = getattr(cmd, "kwargs", None) or None
-                cmd_key = _command_call_key(cmd.name, cmd_args, cmd_kwargs)
-                normalized_name = cmd.name.lstrip("!")
-                blocked_noop = self._blocked_model_control_command(normalized_name)
-                if blocked_noop is not None:
-                    logger.warning(
-                        "Blocked model-generated control command: %s result=%s",
-                        normalized_name,
-                        blocked_noop,
-                    )
-                    self._history.append(ConversationTurn(role="system", content=blocked_noop))
-                    self._active_task_add_event(
-                        "blocked_command",
-                        f"{normalized_name}: {blocked_noop}",
-                        ok=False,
-                    )
-                    any_blocked = True
-                    continue
-                task_boundary_noop = _task_boundary_block_reason(
-                    self._active_task,
-                    normalized_name,
-                )
-                if task_boundary_noop is not None:
-                    logger.warning(
-                        "Blocked command outside active task boundary: %s result=%s",
-                        normalized_name,
-                        task_boundary_noop,
-                    )
-                    self._history.append(
-                        ConversationTurn(role="system", content=task_boundary_noop)
-                    )
-                    self._active_task_add_event(
-                        "blocked_command",
-                        f"{normalized_name}: {task_boundary_noop}",
-                        ok=False,
-                    )
-                    any_blocked = True
-                    continue
-                action_desc = _describe_action(
-                    cmd.name,
-                    cmd_args if cmd_args else list((cmd_kwargs or {}).values()),
-                )
-                logger.info(
-                    "Bot action step start: command=%s args=%s kwargs=%s desc=%s",
-                    cmd.name,
-                    cmd_args,
-                    cmd_kwargs or {},
-                    action_desc,
-                )
-                await self._send_chat(action_desc)
-
-                action_started = time.perf_counter()
-                result = await self._execute_agent_command(cmd.name, cmd_args, cmd_kwargs)
-                action_elapsed_ms = (time.perf_counter() - action_started) * 1000
-                logger.info(
-                    "Bot action step result: command=%s elapsed_ms=%.1f result=%s",
-                    cmd.name,
-                    action_elapsed_ms,
-                    _log_preview(result),
-                )
-                used_command = True
-                self._record_action(cmd.name, cmd_args, result)
-                self._active_task_add_event(
-                    "action_result",
-                    f"{cmd.name} args={cmd_args} kwargs={cmd_kwargs or {}} -> {result}",
-                    ok=_action_succeeded(result),
-                )
-                await self._record_event("action_result", {
-                    "command": cmd.name,
-                    "args": cmd_args,
-                    "kwargs": cmd_kwargs,
-                    "result": result,
-                })
-
-                if result is None:
-                    await self._send_chat(f"{action_desc} — no response")
-                    break  # no feedback = stop chaining
-
-                # Use role="tool" with tool_call_id when responding to an
-                # OpenAI-format tool call; the provider rejects role="system"
-                # after an assistant message that contains tool_calls.
-                result_role: str = "system"
-                result_tc_id: str | None = None
-                for tc in llm_response.tool_calls:
-                    tc_name = tc.function.name
-                    if tc_name.startswith("action:"):
-                        tc_name = tc_name[7:]
-                    if tc_name == cmd.name:
-                        result_role = "tool"
-                        result_tc_id = tc.id
-                        break
-
-                self._history.append(
-                    ConversationTurn(
-                        role=result_role,
-                        content=result,
-                        tool_call_id=result_tc_id,
-                    ),
-                )
-
-                # ── Failure classification ───────────────────────────
-                is_fail = result and "FAILED:" in result
-                args_str = ",".join(str(a) for a in cmd_args)
-                if not args_str and cmd_kwargs:
-                    args_str = ",".join(f"{k}={v}" for k, v in cmd_kwargs.items())
-                this_fail_key = (cmd.name, args_str) if is_fail else None
-
-                if _is_hard_failure(result):
-                    logger.warning("Hard command failure — asking player: %s", result)
-                    await self._send_chat(f"Failed: {result}")
-                    self._pending_task = PendingTask(
-                        command_name=cmd.name,
-                        command_args=list(cmd_args),
-                        command_kwargs=dict(cmd_kwargs or {}),
-                        goal=self._last_message,
-                        player_name=self._last_sender or "player",
-                        failed_reason=result,
-                    )
-                    await self._finish_active_task("failed", reason=result)
-                    return used_command
-
-                if is_fail:
-                    if await self._recover_missing_dependency(
-                        normalized_name,
-                        cmd_args,
-                        cmd_kwargs,
-                        result,
-                    ):
-                        consecutive_failures = 0
-                        last_failed = None
-                        bot_state = await self.observe()
-                        if not self._running:
-                            return used_command
-                        if self._active_task is None:
-                            return True
-                        continue
-
-                    if await self._recover_nearby_miss(
-                        normalized_name,
-                        cmd_args,
-                        cmd_kwargs,
-                        result,
-                        nearby_miss_recoveries,
-                    ):
-                        consecutive_failures = 0
-                        last_failed = None
-                        bot_state = await self.observe()
-                        if not self._running:
-                            return used_command
-                        continue
-
-                    consecutive_failures += 1
-                    # Same command + args failed twice → inject hint
-                    if (
-                        last_failed is not None
-                        and this_fail_key is not None
-                        and this_fail_key == last_failed
-                    ):
-                        self._history.append(ConversationTurn(
-                            role="system",
-                            content=(
-                                f"You just tried {cmd.name}({args_str}) and it failed "
-                                f"again with the same error. Do NOT retry the same command "
-                                f"with the same arguments — try a completely different "
-                                f"approach instead. Check what went wrong and replan."
-                            ),
-                        ))
-                    last_failed = this_fail_key
-
-                    # 3 consecutive failures (any command) → stop and ask
-                    if consecutive_failures >= 3:
-                        logger.warning("3 consecutive failures — asking player to guide")
-                        await self._send_chat(
-                            "I'm stuck — I've tried several things but they're not working. "
-                            "What should I try next?"
-                        )
-                        await self._finish_active_task(
-                            "failed",
-                            reason="3 consecutive action failures.",
-                        )
-                        return used_command
-                else:
-                    consecutive_failures = 0
-                    last_failed = None
-                    if normalized_name in _QUERY_COMMANDS:
-                        seen_query_results[cmd_key] = result
-
-                # Report success to the player
-                await self._send_chat(f"Done: {result}")
-
-                # Refresh bot state so the next LLM call sees updated
-                # inventory, position, etc. (mirrors JS in-line !stats/!inventory).
-                bot_state = await self.observe()
-                if not self._running:
-                    return used_command
-                if await self._maybe_finish_after_command_completion(
-                    normalized_name,
-                    result,
-                    bot_state,
-                ):
-                    return True
-                if use_tools and await self._maybe_complete_satisfied_craft(bot_state):
-                    return True
-
-            # If the only command(s) this turn were blocked (e.g. model
-            # proposed !stop without the player asking), give the LLM another
-            # chance instead of immediately failing the task.
-            if any_blocked and not used_command:
-                continue
-
-        self._history = self._convo_mgr.compress_history(self._history)
-        if use_tools and self._active_task is not None:
-            recovered_after_clear = await self._maybe_retry_cook_after_furnace_clear()
-            if recovered_after_clear:
-                return True
-            if self._active_task_has_completion_evidence(self._active_task):
-                await self._finish_active_task(
-                    "succeeded",
-                    reason="Plan loop ended after verified non-delivery completion.",
-                )
-                return True
-            await self._finish_active_task(
-                "succeeded" if used_command else "failed",
-                reason="Plan loop ended.",
-            )
-        return used_command
+    async def _run_plan_loop_impl(
+        self, *, max_responses: int, use_tools: bool, turn_id: int | None = None,
+    ) -> bool:
+        """Compatibility wrapper for callers that still target the old loop hook."""
+        return await self._planner_loop.run(
+            max_responses=max_responses,
+            use_tools=use_tools,
+            turn_id=turn_id,
+        )
 
     async def _maybe_finish_after_command_completion(
         self,
         command_name: str,
         result: Any,
         bot_state: BotState,
+        *,
+        effects_already_recorded: bool = False,
     ) -> bool:
         """Finish non-delivery tasks when a terminal command has evidence."""
         task = self._active_task
@@ -2774,6 +1211,9 @@ class Agent:
             return False
         if not _action_succeeded(result):
             return False
+        action_result = ActionResult.from_legacy(command_name, result)
+        if not effects_already_recorded:
+            self._active_task_add_effects(command_name, action_result)
         self._active_task_add_snapshot(bot_state, note=f"after {command_name}")
 
         kind = _command_completion_kind(command_name)
@@ -2786,30 +1226,39 @@ class Agent:
         if evidence is None:
             return False
 
-        if not _completion_spec_allows_command_completion(
-            task,
-            command_name,
-            kind,
-            bot_state,
-        ):
-            logger.info(
-                "Command completion evidence ignored outside task boundary: "
-                "task=%s command=%s kind=%s request=%r",
-                task.id,
-                command_name,
-                kind,
-                task.original_message,
-            )
+        expects_delivery = self._active_task_expects_delivery(task)
+        if expects_delivery and await self._maybe_deliver_satisfied_task(task, bot_state):
+            return True
+        if expects_delivery:
             return False
 
-        expects_delivery = self._active_task_expects_delivery(task)
-        if kind in _TERMINAL_COMPLETION_KINDS and expects_delivery:
-            return False
-        if kind == "inventory" and expects_delivery:
-            return False
-        if kind == "world_change" and not _world_change_command_can_complete_task(
-            command_name,
+        decision = self._completion_engine.should_finish_after_action(
             task,
+            action_result,
+            bot_state,
+        )
+        if task.completion_spec is not None and task.completion_spec.kind != "unknown":
+            if not decision.should_finish:
+                logger.info(
+                    "Command completion treated as partial progress: "
+                    "task=%s command=%s kind=%s progress=%d/%d evidence=%s",
+                    task.id,
+                    command_name,
+                    kind,
+                    decision.progress.current,
+                    decision.progress.required,
+                    decision.progress.evidence,
+                )
+                return False
+        elif kind not in _TERMINAL_COMPLETION_KINDS and kind != "inventory":
+            return False
+
+        if (
+            task.completion_spec is None
+            or task.completion_spec.kind == "unknown"
+        ) and kind == "world_change" and not _world_change_command_can_complete(
+            command_name,
+            task.original_message,
         ):
             logger.info(
                 "World-change command treated as intermediate progress: "
@@ -2818,12 +1267,6 @@ class Agent:
                 command_name,
                 task.original_message,
             )
-            return False
-        if kind == "world_change" and not _world_change_completion_has_required_progress(
-            command_name,
-            task,
-            result,
-        ):
             return False
 
         self._active_task_add_event(
@@ -2861,6 +1304,46 @@ class Agent:
             return True
 
         return False
+
+    async def _maybe_deliver_satisfied_task(self, task: ActiveTask, bot_state: BotState) -> bool:
+        spec = task.completion_spec
+        if spec is None or not spec.requires_delivery or not spec.acceptable_items:
+            return False
+        requested = spec.quantity or 1
+        delta = _inventory_delta_from_baseline(task, bot_state, spec.acceptable_items)
+        have_cooked = (
+            spec.kind == "cook_item"
+            and _inventory_count_any_from_state(bot_state, spec.acceptable_items) >= requested
+        )
+        if delta < requested and not have_cooked:
+            return False
+        item_name = next(
+            (
+                item.name
+                for item in bot_state.inventory
+                if item.name in spec.acceptable_items and item.count >= requested
+            ),
+            spec.target_items[0] if spec.target_items else spec.acceptable_items[0],
+        )
+        logger.info(
+            "Completion inventory satisfied; delivering before finishing: task=%s item=%s qty=%d",
+            task.id,
+            item_name,
+            requested,
+        )
+        delivered = await self._deliver_item_to_player(
+            item_name,
+            requested,
+            reason="completion_delivery",
+        )
+        await self._finish_active_task(
+            "succeeded" if delivered else "failed",
+            reason=(
+                "Delivered requested items after completion evidence."
+                if delivered else "Could not deliver requested items after completion evidence."
+            ),
+        )
+        return True
 
     def _completion_evidence_for_command(
         self,
@@ -2933,7 +1416,7 @@ class Agent:
         # A few bridge actions report success mostly through a position or
         # inventory summary. Treat that as evidence only for commands whose
         # purpose is intrinsically a world mutation.
-        if command_name in {"breedAnimals", "tillAndSow", "placeHere", "breakNearbyBlocks"}:
+        if _world_change_command_has_intrinsic_effect(command_name):
             return first_line
         return None
 
@@ -3003,25 +1486,29 @@ class Agent:
                 },
             ),
         ]:
-            result = await self._execute_agent_command(command, [], kwargs)
+            command_run = await self._run_agent_command(command, [], kwargs)
+            result = command_run.raw
+            action_result = command_run.result
             self._record_action(command, [], result)
             ok = (
                 _delivery_succeeded(result)
-                if command == "givePlayer" else _action_succeeded(result)
+                if command == "givePlayer" else action_result.ok
             )
             self._active_task_add_event(
                 "action_result",
                 f"{command} kwargs={kwargs} -> {result}",
                 ok=ok,
             )
+            self._active_task_add_effects(command, action_result)
             await self._record_event("action_result", {
                 "command": command,
                 "args": [],
                 "kwargs": kwargs,
                 "result": result,
+                "summary": action_result.summary,
                 "direct": reason,
             })
-            await self._send_chat(f"Done: {result}")
+            await self._send_chat(action_result.summary)
             if not ok:
                 final_ok = False
                 break
@@ -3065,9 +1552,10 @@ class Agent:
         # for direct actions — the executor logs already record the call.
         if preface:
             await self._send_chat(preface)
-        result = await self._execute_agent_command(command, [], kwargs)
+        command_run = await self._run_agent_command(command, [], kwargs)
+        result = command_run.raw
         self._record_action(command, [], result)
-        ok = _action_succeeded(result)
+        ok = command_run.result.ok
         self._active_task_add_event(
             "action_result",
             f"{command} kwargs={kwargs} -> {result}",
@@ -3176,13 +1664,14 @@ class Agent:
                 )
                 return None
 
-            smelt_result = await self._execute_agent_command(
+            smelt_run = await self._run_agent_command(
                 "smeltItem",
                 [],
                 {"item_name": request.raw_item, "num": remaining_to_cook},
             )
+            smelt_result = smelt_run.raw
             self._record_action("smeltItem", [], smelt_result)
-            smelt_ok = _action_succeeded(smelt_result)
+            smelt_ok = smelt_run.result.ok
             self._active_task_add_event(
                 "action_result",
                 (
@@ -3265,13 +1754,14 @@ class Agent:
 
     async def _ensure_furnace_for_cooking(self, bot_state: BotState) -> bool:
         """Prefer an existing nearby furnace; only create one if none is found."""
-        search_result = await self._execute_agent_command(
+        search_run = await self._run_agent_command(
             "searchForBlock",
             [],
             {"block_type": "furnace", "search_range": 64},
         )
+        search_result = search_run.raw
         self._record_action("searchForBlock", [], search_result)
-        search_ok = _action_succeeded(search_result)
+        search_ok = search_run.result.ok
         self._active_task_add_event(
             "action_result",
             "searchForBlock kwargs={'block_type': 'furnace', 'search_range': 64} "
@@ -3291,13 +1781,14 @@ class Agent:
         if _inventory_count_from_state(bot_state, "furnace") <= 0:
             if _inventory_count_from_state(bot_state, "cobblestone") < 8:
                 return False
-            craft_result = await self._execute_agent_command(
+            craft_run = await self._run_agent_command(
                 "craftRecipe",
                 [],
                 {"recipe_name": "furnace", "num": 1},
             )
+            craft_result = craft_run.raw
             self._record_action("craftRecipe", [], craft_result)
-            craft_ok = _action_succeeded(craft_result)
+            craft_ok = craft_run.result.ok
             self._active_task_add_event(
                 "action_result",
                 "craftRecipe kwargs={'recipe_name': 'furnace', 'num': 1} "
@@ -3315,13 +1806,14 @@ class Agent:
             if not craft_ok:
                 return False
 
-        place_result = await self._execute_agent_command(
+        place_run = await self._run_agent_command(
             "placeHere",
             [],
             {"block_type": "furnace"},
         )
+        place_result = place_run.raw
         self._record_action("placeHere", [], place_result)
-        place_ok = _action_succeeded(place_result)
+        place_ok = place_run.result.ok
         self._active_task_add_event(
             "action_result",
             "placeHere kwargs={'block_type': 'furnace'} -> " f"{place_result}",
@@ -3406,9 +1898,10 @@ class Agent:
             for command, kwargs in [
                 *self._gather_steps_for_item_request(effective_source_block, missing),
             ]:
-                result = await self._execute_agent_command(command, [], kwargs)
+                command_run = await self._run_agent_command(command, [], kwargs)
+                result = command_run.raw
                 self._record_action(command, [], result)
-                ok = _action_succeeded(result)
+                ok = command_run.result.ok
                 self._active_task_add_event(
                     "action_result",
                     f"{command} kwargs={kwargs} -> {result}",
@@ -3469,11 +1962,12 @@ class Agent:
                 },
             ),
         ]:
-            result = await self._execute_agent_command(command, [], kwargs)
+            command_run = await self._run_agent_command(command, [], kwargs)
+            result = command_run.raw
             self._record_action(command, [], result)
             ok = (
                 _delivery_succeeded(result)
-                if command == "givePlayer" else _action_succeeded(result)
+                if command == "givePlayer" else command_run.result.ok
             )
             self._active_task_add_event(
                 "action_result",
@@ -3525,32 +2019,39 @@ class Agent:
         """Return to the player, then search around them after a local miss."""
         if not self._last_sender:
             return False
-        match = _NEARBY_MISS_RE.search(result)
-        if match is None:
+        cause = _classify_failure(result)
+        if cause is None or cause.kind != "nearby_miss":
             return False
 
         target = self._target_from_failed_search(command_name, args, kwargs)
         if not target:
-            target = match.group("target")
+            target = cause.target or ""
+        if not target:
+            return False
         key = (command_name, target)
         if key in seen:
             return False
         seen.add(key)
 
-        if command_name in {"collectBlocks", "searchForBlock"}:
-            search_command = "searchForBlock"
-            search_kwargs = {"block_type": target, "search_range": 64}
-        elif command_name == "searchForEntity":
-            search_command = "searchForEntity"
-            search_kwargs = {"entity_type": target, "search_range": 64}
-        else:
+        state = await self.observe()
+        if not self._running:
+            return False
+        plan = self._recovery_manager.plan(
+            command_name=command_name,
+            cause=cause,
+            state=state,
+            requester=self._last_sender,
+            target_hint=target,
+        )
+        if plan is None:
             return False
 
         logger.info(
-            "Nearby miss recovery: command=%s target=%s player=%s",
+            "Nearby miss recovery: command=%s target=%s player=%s steps=%s",
             command_name,
             target,
             self._last_sender,
+            [step.command for step in plan.steps],
         )
         self._history.append(ConversationTurn(
             role="system",
@@ -3562,39 +2063,42 @@ class Agent:
             ),
         ))
 
-        recovery_steps = [
-            ("goToPlayer", [], {"player_name": self._last_sender, "closeness": 3}),
-            (search_command, [], search_kwargs),
-        ]
-        for recover_command, recover_args, recover_kwargs in recovery_steps:
+        for step in plan.steps:
+            recover_command = step.command
+            recover_args = list(step.args)
+            recover_kwargs = step.kwargs_dict()
             action_desc = _describe_action(
                 recover_command,
                 recover_args if recover_args else list(recover_kwargs.values()),
             )
             await self._send_chat(action_desc)
-            recover_result = await self._execute_agent_command(
+            command_run = await self._run_agent_command(
                 recover_command,
                 recover_args,
                 recover_kwargs,
             )
+            recover_result = command_run.raw
+            action_result = command_run.result
             self._record_action(recover_command, recover_args, recover_result)
-            recover_ok = _action_succeeded(recover_result)
+            recover_ok = action_result.ok
             self._active_task_add_event(
                 "action_result",
                 f"{recover_command} kwargs={recover_kwargs} -> {recover_result}",
                 ok=recover_ok,
             )
+            self._active_task_add_effects(recover_command, action_result)
             await self._record_event("action_result", {
                 "command": recover_command,
                 "args": recover_args,
                 "kwargs": recover_kwargs,
                 "result": recover_result,
+                "summary": action_result.summary,
                 "recovery": "nearby_miss_return_to_player",
             })
-            await self._send_chat(f"Done: {recover_result}")
+            await self._send_chat(action_result.summary)
             self._history.append(ConversationTurn(
                 role="system",
-                content=str(recover_result or ""),
+                content=action_result.history_content,
             ))
             if not recover_ok:
                 break
@@ -3621,69 +2125,79 @@ class Agent:
             )
             return False
 
-        cause = ""
         retry_command = command_name
         retry_args = list(args)
         retry_kwargs = dict(kwargs or {})
-        recovery_steps: list[tuple[str, list[Any], dict[str, Any]]] = []
-
-        tool_match = _MISSING_TOOL_RE.search(text)
-        if command_name == "collectBlocks" and tool_match is not None:
-            tool_name = tool_match.group("tool").lower()
-            target = tool_match.group("target").lower()
-            cause = f"Missing {tool_name} for {target}"
-            recovery_steps = await self._tool_recovery_steps(tool_name)
-
-        material_match = _MISSING_MATERIALS_RE.search(text)
-        if not recovery_steps and material_match is not None:
-            target = material_match.group("target").lower()
-            missing_counts = _parse_missing_counts(material_match.group("missing"))
-            if missing_counts:
-                cause = f"Missing materials for {target}: {missing_counts}"
-                recovery_steps = await self._missing_material_recovery_steps(missing_counts)
-
-        if not recovery_steps:
+        cause = _classify_failure(result)
+        if cause is None:
+            return False
+        if cause.kind == "nearby_miss":
+            return False
+        state = await self.observe()
+        if not self._running:
+            return False
+        plan = self._recovery_manager.plan(
+            command_name=command_name,
+            cause=cause,
+            state=state,
+            requester=self._last_sender,
+            target_hint=self._target_from_failed_search(command_name, args, kwargs),
+        )
+        if plan is None:
             return False
 
         task.recovery_attempts += 1
         logger.info(
-            "Recovering missing dependency: task=%s attempt=%d command=%s cause=%s steps=%s",
+            "Recovering command failure: task=%s attempt=%d command=%s cause=%s steps=%s retry=%s",
             task.id,
             task.recovery_attempts,
             command_name,
-            cause,
-            [step[0] for step in recovery_steps],
+            plan.reason,
+            [step.command for step in plan.steps],
+            plan.retry_original,
         )
+        if plan.steps or plan.retry_original:
+            recovery_instruction = (
+                f"The previous command failed because {plan.reason}. "
+                f"Run the recovery plan, then retry {command_name} if needed."
+            )
+            recovery_event = f"{plan.reason}; executing recovery plan."
+        else:
+            recovery_instruction = (
+                f"The previous command failed because {plan.reason}. "
+                "Do not retry the same command with the same arguments. "
+                "Use the next observation to choose a different route, target, or approach."
+            )
+            recovery_event = f"{plan.reason}; returning to planner for a fresh approach."
         self._active_task_add_event(
             "recovery",
-            f"{cause}; recovering dependencies before retry.",
+            recovery_event,
         )
         self._history.append(ConversationTurn(
             role="system",
-            content=(
-                f"The previous command failed because {cause}. "
-                f"Recover the dependency, then retry {command_name}."
-            ),
+            content=recovery_instruction,
         ))
 
-        for recover_command, recover_args, recover_kwargs in recovery_steps:
+        for step in plan.steps:
             recover_result = await self._run_recovery_action(
-                recover_command,
-                recover_args,
-                recover_kwargs,
+                step.command,
+                list(step.args),
+                step.kwargs_dict(),
                 recovery_kind="missing_dependency",
             )
             if not _action_succeeded(recover_result):
                 return False
 
-        retry_result = await self._run_recovery_action(
-            retry_command,
-            retry_args,
-            retry_kwargs,
-            recovery_kind="retry_after_missing_dependency",
-        )
-        if not _action_succeeded(retry_result):
-            return False
+        retry_result = result
+        if plan.retry_original:
+            retry_result = await self._run_recovery_action(
+                retry_command,
+                retry_args,
+                retry_kwargs,
+                recovery_kind="retry_after_missing_dependency",
+            )
+            if not _action_succeeded(retry_result):
+                return False
 
         retry_state = await self.observe()
         if not self._running:
@@ -3705,222 +2219,28 @@ class Agent:
     ) -> Any:
         action_desc = _describe_action(command, args if args else list(kwargs.values()))
         await self._send_chat(action_desc)
-        result = await self._execute_agent_command(command, args, kwargs)
+        command_run = await self._run_agent_command(command, args, kwargs)
+        result = command_run.raw
+        action_result = command_run.result
         self._record_action(command, args, result)
-        ok = _action_succeeded(result)
+        ok = action_result.ok
         self._active_task_add_event(
             "action_result",
             f"{command} args={args} kwargs={kwargs} -> {result}",
             ok=ok,
         )
+        self._active_task_add_effects(command, action_result)
         await self._record_event("action_result", {
             "command": command,
             "args": args,
             "kwargs": kwargs,
             "result": result,
+            "summary": action_result.summary,
             "recovery": recovery_kind,
         })
-        self._history.append(ConversationTurn(role="system", content=str(result or "")))
-        await self._send_chat(f"Done: {result}")
+        self._history.append(ConversationTurn(role="system", content=action_result.history_content))
+        await self._send_chat(action_result.summary)
         return result
-
-    async def _tool_recovery_steps(
-        self,
-        tool_name: str,
-    ) -> list[tuple[str, list[Any], dict[str, Any]]]:
-        state = await self.observe()
-        if not self._running:
-            return []
-        inventory = {item.name: item.count for item in state.inventory}
-        steps: list[tuple[str, list[Any], dict[str, Any]]] = []
-
-        def have(item: str, count: int = 1) -> bool:
-            return inventory.get(item, 0) >= count
-
-        def add_craft(item: str, count: int = 1) -> None:
-            steps.append(("craftRecipe", [], {"recipe_name": item, "num": count}))
-
-        def ensure_planks(count: int) -> bool:
-            current = sum(inventory.get(planks, 0) for planks in _WOOD_PLANK_ITEMS)
-            if current >= count:
-                return True
-            best_log = _best_inventory_log_item(state)
-            family = _wood_family_from_log(best_log[0]) if best_log else None
-            if family is None:
-                return False
-            planks = _planks_for_wood_family(family)
-            crafts = max(1, math.ceil((count - current) / 4))
-            add_craft(planks, crafts)
-            inventory[planks] = inventory.get(planks, 0) + crafts * 4
-            return True
-
-        def consume_planks(count: int) -> None:
-            remaining = count
-            for planks in sorted(_WOOD_PLANK_ITEMS):
-                if remaining <= 0:
-                    return
-                take = min(inventory.get(planks, 0), remaining)
-                if take > 0:
-                    inventory[planks] -= take
-                    remaining -= take
-
-        def ensure_sticks(count: int) -> bool:
-            if have("stick", count):
-                return True
-            missing = count - inventory.get("stick", 0)
-            crafts = max(1, math.ceil(missing / 4))
-            if not ensure_planks(crafts * 2):
-                return False
-            consume_planks(crafts * 2)
-            add_craft("stick", crafts)
-            inventory["stick"] = inventory.get("stick", 0) + crafts * 4
-            return True
-
-        parts = _tool_parts(tool_name)
-        if parts is not None:
-            material, family = parts
-            material_item = _TOOL_MATERIAL_ITEMS.get(material)
-            material_count = _TOOL_FAMILY_MATERIAL_COUNTS[family]
-            stick_count = _TOOL_FAMILY_STICK_COUNTS[family]
-            if family in _CRAFTING_TABLE_TOOL_FAMILIES and not (
-                have("crafting_table", 1) or "crafting_table" in state.nearby_block_types
-            ):
-                if not ensure_planks(4):
-                    return []
-                consume_planks(4)
-                add_craft("crafting_table", 1)
-                inventory["crafting_table"] = inventory.get("crafting_table", 0) + 1
-            if not ensure_sticks(stick_count):
-                return []
-            if material in {"wooden", "wood"}:
-                if not ensure_planks(material_count):
-                    return []
-                consume_planks(material_count)
-            elif material_item is not None:
-                if material_item == "cobblestone" and not have("cobblestone", material_count):
-                    missing = material_count - inventory.get("cobblestone", 0)
-                    steps.append((
-                        "collectBlocks",
-                        [],
-                        {"block_type": "cobblestone", "count": missing},
-                    ))
-                    inventory["cobblestone"] = inventory.get("cobblestone", 0) + missing
-                elif not have(material_item, material_count):
-                    return []
-            else:
-                return []
-            add_craft(tool_name, 1)
-            return steps
-
-        add_craft(tool_name, 1)
-        return steps
-
-    async def _missing_material_recovery_steps(
-        self,
-        missing_counts: dict[str, int],
-    ) -> list[tuple[str, list[Any], dict[str, Any]]]:
-        """Build deterministic recovery steps for common missing recipe materials."""
-        state = await self.observe()
-        if not self._running:
-            return []
-        inventory = {item.name: item.count for item in state.inventory}
-        steps: list[tuple[str, list[Any], dict[str, Any]]] = []
-
-        def have(item: str, count: int = 1) -> bool:
-            return inventory.get(item, 0) >= count
-
-        def craft(item: str, count: int = 1) -> None:
-            steps.append(("craftRecipe", [], {"recipe_name": item, "num": count}))
-
-        def ensure_planks(count: int) -> bool:
-            current = sum(inventory.get(planks, 0) for planks in _WOOD_PLANK_ITEMS)
-            if current >= count:
-                return True
-            best_log = _best_inventory_log_item(state)
-            family = _wood_family_from_log(best_log[0]) if best_log else None
-            if family is None:
-                return False
-            planks = _planks_for_wood_family(family)
-            crafts = max(1, math.ceil((count - current) / 4))
-            craft(planks, crafts)
-            inventory[planks] = inventory.get(planks, 0) + crafts * 4
-            return True
-
-        def consume_planks(count: int) -> None:
-            remaining = count
-            for planks in sorted(_WOOD_PLANK_ITEMS):
-                if remaining <= 0:
-                    return
-                take = min(inventory.get(planks, 0), remaining)
-                if take > 0:
-                    inventory[planks] -= take
-                    remaining -= take
-
-        for item, count in sorted(missing_counts.items()):
-            if have(item, count):
-                continue
-            if item == "stick":
-                crafts = max(1, math.ceil((count - inventory.get("stick", 0)) / 4))
-                if not ensure_planks(crafts * 2):
-                    return []
-                consume_planks(crafts * 2)
-                craft("stick", crafts)
-                inventory["stick"] = inventory.get("stick", 0) + crafts * 4
-                continue
-            if item in _WOOD_PLANK_ITEMS:
-                if not ensure_planks(count):
-                    return []
-                continue
-            if item == "crafting_table":
-                if "crafting_table" in state.nearby_block_types:
-                    continue
-                if not ensure_planks(4):
-                    return []
-                consume_planks(4)
-                craft("crafting_table", 1)
-                inventory["crafting_table"] = inventory.get("crafting_table", 0) + 1
-                continue
-            if item == "furnace":
-                if "furnace" in state.nearby_block_types:
-                    continue
-                if not have("furnace", 1):
-                    missing_cobble = max(0, 8 - inventory.get("cobblestone", 0))
-                    if missing_cobble > 0:
-                        steps.append((
-                            "collectBlocks",
-                            [],
-                            {"block_type": "cobblestone", "count": missing_cobble},
-                        ))
-                        inventory["cobblestone"] = (
-                            inventory.get("cobblestone", 0) + missing_cobble
-                        )
-                    craft("furnace", 1)
-                    inventory["furnace"] = inventory.get("furnace", 0) + 1
-                steps.append(("placeHere", [], {"block_type": "furnace"}))
-                continue
-            if item == "cobblestone":
-                missing = count - inventory.get("cobblestone", 0)
-                if missing > 0:
-                    steps.append((
-                        "collectBlocks",
-                        [],
-                        {"block_type": "cobblestone", "count": missing},
-                    ))
-                    inventory["cobblestone"] = inventory.get("cobblestone", 0) + missing
-                continue
-            if item == "coal":
-                missing = count - inventory.get("coal", 0)
-                if missing > 0:
-                    steps.append((
-                        "collectBlocks",
-                        [],
-                        {"block_type": "coal_ore", "count": missing},
-                    ))
-                    inventory["coal"] = inventory.get("coal", 0) + missing
-                continue
-            return []
-
-        return steps
 
     @staticmethod
     def _target_from_failed_search(
@@ -3953,11 +2273,12 @@ class Agent:
             target,
             _log_preview(last_result),
         )
-        plan = await self._execute_agent_command(
+        plan_run = await self._run_agent_command(
             "getCraftingPlan",
             [],
             {"target_item": target, "quantity": 1},
         )
+        plan = plan_run.raw
         self._record_action("getCraftingPlan", [target, 1], plan)
         await self._record_event("action_result", {
             "command": "getCraftingPlan",
@@ -3977,7 +2298,8 @@ class Agent:
         for command, args, kwargs in next_actions:
             action_desc = _describe_action(command, args if args else list(kwargs.values()))
             await self._send_chat(action_desc)
-            result = await self._execute_agent_command(command, args, kwargs)
+            command_run = await self._run_agent_command(command, args, kwargs)
+            result = command_run.raw
             self._record_action(command, args, result)
             await self._record_event("action_result", {
                 "command": command,
@@ -4082,16 +2404,18 @@ class Agent:
                 step.args if step.args else list(step.kwargs.values()),
             )
             await self._send_chat(action_desc)
-            result = await self._execute_agent_command(step.command, step.args, step.kwargs)
+            command_run = await self._run_agent_command(step.command, step.args, step.kwargs)
+            result = command_run.raw
             self._record_action(step.command, step.args, result)
             await self._record_event("action_result", {
                 "command": step.command,
                 "args": step.args,
                 "kwargs": step.kwargs,
                 "result": result,
+                "summary": command_run.result.summary,
                 "skill": skill.name,
             })
-            if not _action_succeeded(result):
+            if not command_run.result.ok:
                 success = False
                 fallback = self._skill_failure_hint(match, result or "")
                 if fallback:
@@ -4144,7 +2468,9 @@ class Agent:
             return await self._execute_dynamic_action(prompt)
         args, kwargs = self._normalize_player_command_args(name, args, kwargs)
         args, kwargs = await self._normalise_wood_resource_args(name, args, kwargs)
-        if name == "givePlayer":
+        args, kwargs = await self._normalise_seed_grass_args(name, args, kwargs)
+        hooks = _command_preflight_hooks(name)
+        if "delivery_preposition" in hooks:
             kwargs = dict(kwargs or {})
             prepositioned = bool(kwargs.pop("_delivery_prepositioned", False))
             if not prepositioned:
@@ -4190,14 +2516,15 @@ class Agent:
         preflight_result = await self._preflight_action_with_observation(name, args, kwargs)
         if preflight_result is not None:
             return preflight_result
-        if name in {"goToCoordinates", "moveTo"}:
+        if "coordinate_validation" in hooks:
             coord_error = self._validate_coordinates_before_move(args, kwargs)
             if coord_error:
                 return f"FAILED: {coord_error}"
-        if name == "craftRecipe":
+        if "bed_dye_misconception" in hooks:
             dye_hint = await self._bed_dye_misconception_hint(args, kwargs)
             if dye_hint:
                 return dye_hint
+        if "missing_materials" in hooks:
             args, kwargs = await self._normalise_craft_recipe_args(args, kwargs)
             missing_hint = await self._craft_recipe_missing_materials_hint(args, kwargs)
             if missing_hint:
@@ -4224,7 +2551,8 @@ class Agent:
         kwargs: dict[str, Any] | None,
     ) -> str | None:
         """Refresh state before world-changing actions and skip wasteful tool setup."""
-        if command_name not in _PRE_ACTION_OBSERVE_COMMANDS:
+        hooks = _command_preflight_hooks(command_name)
+        if not hooks or command_name not in _PRE_ACTION_OBSERVE_COMMANDS:
             return None
 
         was_running = self._running
@@ -4233,7 +2561,7 @@ class Agent:
             return "FAILED: observe() failed before action."
 
         nearby = set(state.nearby_block_types)
-        if command_name == "placeHere":
+        if "skip_reusable_workstation" in hooks:
             block_type = str((kwargs or {}).get("block_type", args[0] if args else "")).strip()
             if block_type in _REUSABLE_WORKSTATIONS and block_type in nearby:
                 return (
@@ -4241,7 +2569,7 @@ class Agent:
                     f"Use the existing {block_type} instead of placing another one."
                 )
 
-        if command_name == "craftRecipe":
+        if "skip_nearby_furnace" in hooks:
             recipe_name = str((kwargs or {}).get("recipe_name", args[0] if args else "")).strip()
             if recipe_name == "furnace" and "furnace" in nearby:
                 return (
@@ -4249,7 +2577,7 @@ class Agent:
                     "Use the existing furnace instead of crafting another one."
                 )
 
-        if command_name == "collectBlocks" and self._knowledge is not None:
+        if "knowledge_tool_requirement" in hooks and self._knowledge is not None:
             block_type = str((kwargs or {}).get("block_type", args[0] if args else "")).strip()
             if block_type:
                 inventory = [
@@ -4272,13 +2600,17 @@ class Agent:
                             f"You have: {inv_text}. Craft a {min_tool} first, then retry."
                         )
 
-        if command_name == "smeltItem":
+        if "smelt_dependencies" in hooks or "defer_log_charcoal" in hooks:
             item_name = str((kwargs or {}).get("item_name", args[0] if args else "")).strip()
             count = int((kwargs or {}).get("num", args[1] if len(args) > 1 else 1) or 1)
-            smelt_preflight = self._smelt_item_preflight_hint(item_name, count, state)
-            if smelt_preflight is not None:
-                return smelt_preflight
-            if self._should_defer_log_charcoal_smelt(item_name, state):
+            if "smelt_dependencies" in hooks:
+                smelt_preflight = self._smelt_item_preflight_hint(item_name, count, state)
+                if smelt_preflight is not None:
+                    return smelt_preflight
+            if "defer_log_charcoal" in hooks and self._should_defer_log_charcoal_smelt(
+                item_name,
+                state,
+            ):
                 return (
                     "FAILED: Do not smelt logs into charcoal for this task yet. "
                     "HINT: For torches or generic crafting, use existing coal/charcoal "
@@ -4436,6 +2768,69 @@ class Agent:
             new_args[0] = preferred_planks
             return new_args, kwargs
         kw["recipe_name"] = preferred_planks
+        return args, kw
+
+    async def _normalise_seed_grass_args(
+        self,
+        command_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any] | None,
+    ) -> tuple[list[Any], dict[str, Any] | None]:
+        """Prefer nearby seed-dropping grass before searching for taller grass."""
+        if command_name not in {"searchForBlock", "breakNearbyBlocks", "collectBlocks"}:
+            return args, kwargs
+
+        task_message = (
+            self._active_task.original_message
+            if self._active_task is not None else self._last_message
+        )
+        if not _is_seed_source_request(task_message or self._last_message):
+            return args, kwargs
+
+        kw = dict(kwargs or {})
+        values = args if args else list(kw.values())
+        raw_block = str(kw.get("block_type", values[0] if values else "")).strip().lower()
+        if raw_block not in _SEED_GRASS_BLOCKS:
+            return args, kwargs
+
+        state = await self.observe()
+        if not self._running:
+            return args, kwargs
+        nearby = {str(block).strip().lower() for block in state.nearby_block_types}
+        preferred = raw_block
+        if "short_grass" in nearby:
+            preferred = "short_grass"
+        elif "tall_grass" in nearby:
+            preferred = "tall_grass"
+        elif raw_block == "grass":
+            preferred = "short_grass"
+        if preferred == raw_block:
+            return args, kwargs
+
+        logger.info(
+            "Normalizing seed grass target: command=%s requested=%s preferred=%s nearby=%s",
+            command_name,
+            raw_block,
+            preferred,
+            sorted(nearby),
+        )
+        self._history.append(ConversationTurn(
+            role="system",
+            content=(
+                f"For seed gathering, {preferred} can drop wheat_seeds. "
+                f"Use {preferred} instead of {raw_block} because it is nearby."
+            ),
+        ))
+        self._active_task_add_event(
+            "normalized_command",
+            f"{command_name}: {raw_block} -> {preferred} for seed gathering",
+            ok=None,
+        )
+        if args:
+            new_args = list(args)
+            new_args[0] = preferred
+            return new_args, kwargs
+        kw["block_type"] = preferred
         return args, kw
 
     @staticmethod
@@ -4915,8 +3310,17 @@ class Agent:
         """Speak ``text`` through the bridge; quiet on failure."""
         if self._bridge is None or not text:
             return
+        chat_text = _compact_chat_text(text)
+        if not chat_text:
+            return
+        if chat_text != text.strip():
+            logger.info(
+                "Compacted in-game chat: shown=%s full=%s",
+                chat_text,
+                _log_preview(text, limit=1000),
+            )
         try:
-            await self._bridge.chat(text)
+            await self._bridge.chat(chat_text)
         except Exception:
             logger.debug("Failed to send chat", exc_info=True)
 
@@ -5132,27 +3536,17 @@ class Agent:
             if self._running and self._bridge is not None
             else BotState()
         )
-        task_id = f"{int(time.time())}_{_slugify_task_name(message)}"
-        task = ActiveTask(
-            id=task_id,
+        task = self._task_manager.start(
             requester=requester,
-            original_message=message,
-            requires_ctable=_looks_like_crafting_request(message),
+            message=message,
+            baseline_state=baseline_state,
+            history_len=len(self._history),
             planning_strategy=planning_strategy,
-            timeout_s=300.0,  # 5 min default, mirrors Minecollab benchmark
-            started_at=time.time(),
-            history_start_index=max(0, len(self._history) - 1),
-            completion_spec=_completion_spec_from_message(message),
-            baseline_inventory=_inventory_counts_from_state(baseline_state),
-            baseline_position=_position_tuple_from_state(baseline_state),
+            timeout_s=300.0,
         )
-        self._active_task_stack = [task]
+        task_id = task.id
+        self._active_task_stack = self._task_manager.stack
         self._active_task = task
-        self._active_task.events.append(ActiveTaskEvent(
-            kind="start",
-            message=f"{requester}: {message}",
-        ))
-        self._active_task_add_snapshot(baseline_state, note="baseline")
         spec = self._active_task.completion_spec
         if spec is not None:
             self._active_task.events.append(ActiveTaskEvent(
@@ -5211,6 +3605,32 @@ class Agent:
             task.attempts += 1
             if ok is False:
                 task.failures += 1
+
+    def _active_task_add_effects(self, command_name: str, result: Any) -> None:
+        task = self._active_task
+        if task is None or task.status != "running":
+            return
+        if isinstance(result, ActionResult):
+            effects = list(result.effects)
+        else:
+            effects = _action_effects_from_result(command_name, result)
+        if not effects:
+            return
+        task.effects.extend(effects)
+        logger.info(
+            "ActiveTask effects: task=%s command=%s effects=%s",
+            task.id,
+            command_name,
+            [
+                {
+                    "type": effect.type,
+                    "name": effect.name,
+                    "count": effect.count,
+                    "item": effect.item,
+                }
+                for effect in effects
+            ],
+        )
 
     def _apply_delivery_joint_judgement(
         self,
@@ -5286,6 +3706,56 @@ class Agent:
             return 0.10
         return 0.40
 
+    async def _report_failed_task_to_player(
+        self,
+        task: ActiveTask,
+        *,
+        reason: str = "",
+    ) -> None:
+        """Move near the requester before giving a concise failure report."""
+        requester = task.requester or self._last_sender
+        moved = False
+        move_result: Any = None
+        if requester:
+            try:
+                command_run = await self._run_agent_command(
+                    "goToPlayer",
+                    [],
+                    {"player_name": requester, "closeness": 3},
+                )
+                move_result = command_run.raw
+                moved = command_run.result.ok
+                self._record_action("goToPlayer", [], move_result)
+                task.events.append(ActiveTaskEvent(
+                    kind="failure_report_move",
+                    message=f"goToPlayer({requester}, 3) -> {move_result}",
+                    ok=moved,
+                ))
+                await self._record_event("action_result", {
+                    "command": "goToPlayer",
+                    "args": [],
+                    "kwargs": {"player_name": requester, "closeness": 3},
+                    "result": move_result,
+                    "summary": command_run.result.summary,
+                    "failure_report": True,
+                })
+            except Exception as exc:
+                logger.debug(
+                    "Failed to move to player before task failure report",
+                    exc_info=True,
+                )
+                task.events.append(ActiveTaskEvent(
+                    kind="failure_report_move",
+                    message=f"Could not move to {requester}: {exc}",
+                    ok=False,
+                ))
+
+        detail = reason.strip() or task.summary or f"Task failed: {task.original_message}"
+        prefix = "Task failed"
+        if requester and not moved:
+            prefix = "Task failed; I could not reach you"
+        await self._send_chat(f"{prefix}: {detail}")
+
     async def _finish_active_task(self, status: str, *, reason: str = "") -> None:
         """Summarise, write memory, then clear the current active task."""
         task = self._active_task
@@ -5318,6 +3788,8 @@ class Agent:
         if reason:
             task.events.append(ActiveTaskEvent(kind="finish_reason", message=reason, ok=None))
         task.summary = await self._summarize_active_task(task)
+        if task.status == "failed":
+            await self._report_failed_task_to_player(task, reason=reason)
         logger.info(
             "ActiveTask finish: id=%s status=%s attempts=%d failures=%d summary=%s",
             task.id,
@@ -5336,7 +3808,8 @@ class Agent:
         })
         await self._remember_active_task(task)
         self._active_task = None
-        self._active_task_stack.clear()
+        self._task_manager.clear()
+        self._active_task_stack = self._task_manager.stack
 
     @staticmethod
     def _active_task_has_delivery(task: ActiveTask) -> bool:
@@ -5801,500 +4274,9 @@ class Agent:
 
 
 def _command_defs() -> dict[str, CommandDef]:
-    """Return the full set of bot command definitions for the LLM prompt.
+    """Compatibility wrapper for tests and callers importing from agent.core."""
+    return command_defs()
 
-    Mirrors the JS command list in ``src/agent/commands/``.
-    """
-    defs = {
-        # ── Control ─────────────────────────────────────────────────
-        "stop": CommandDef(
-            name="stop",
-            description="Stop all current actions (movement, mining, combat, following).",
-        ),
-        "stfu": CommandDef(
-            name="stfu",
-            description="Stop chatting and self-narration, but continue current actions.",
-        ),
-        "unshut": CommandDef(
-            name="unshut",
-            description="Resume chatting and self-narration after stfu.",
-        ),
-        "restart": CommandDef(
-            name="restart",
-            description="Restart the agent process (clean shutdown).",
-        ),
-        "clearChat": CommandDef(
-            name="clearChat",
-            description="Clear the conversation history.",
-        ),
-        # ── Observation ─────────────────────────────────────────────
-        "stats": CommandDef(
-            name="stats",
-            description="Report current health, food, position, gamemode, biome, time, "
-            "weather, and nearby players.",
-        ),
-        "inventory": CommandDef(
-            name="inventory",
-            description="List all items in the bot's inventory with counts.",
-        ),
-        "goal": CommandDef(
-            name="goal",
-            description="Report the current pathfinding goal, if any.",
-        ),
-        "entities": CommandDef(
-            name="entities",
-            description="List nearby players and entities with positions and types.",
-        ),
-        "countEntities": CommandDef(
-            name="countEntities",
-            description="Count nearby entities of a given type within a range.",
-            params={
-                "entity_type": {"type": "string", "description": "Entity type, e.g. chicken"},
-                "range": {"type": "int", "description": "Search range in blocks, max 64"},
-            },
-        ),
-        "nearbyBlocks": CommandDef(
-            name="nearbyBlocks",
-            description="List block types near the bot.",
-        ),
-        "craftable": CommandDef(
-            name="craftable",
-            description="List all items craftable with current inventory.",
-        ),
-        "help": CommandDef(
-            name="help",
-            description="List all available commands.",
-        ),
-        "modes": CommandDef(
-            name="modes",
-            description="Show all available behavior modes and their status.",
-        ),
-        # ── Movement ────────────────────────────────────────────────
-        "moveTo": CommandDef(
-            name="moveTo",
-            description="Move the bot to the given coordinates.",
-            params={
-                "x": {"type": "float", "description": "X coordinate"},
-                "y": {"type": "float", "description": "Y coordinate"},
-                "z": {"type": "float", "description": "Z coordinate"},
-            },
-        ),
-        "goToPlayer": CommandDef(
-            name="goToPlayer",
-            description="Navigate to the given player.",
-            params={
-                "player_name": {"type": "string", "description": "Player name to go to"},
-                "closeness": {"type": "float", "description": "How close to get (default 3)"},
-            },
-        ),
-        "followPlayer": CommandDef(
-            name="followPlayer",
-            description="Continuously follow a player.",
-            params={
-                "player_name": {"type": "string", "description": "Player name to follow"},
-                "follow_dist": {"type": "float", "description": "Following distance (default 4)"},
-            },
-        ),
-        "goToCoordinates": CommandDef(
-            name="goToCoordinates",
-            description="Move to specific x, y, z coordinates.",
-            params={
-                "x": {"type": "float", "description": "X coordinate"},
-                "y": {"type": "float", "description": "Y coordinate"},
-                "z": {"type": "float", "description": "Z coordinate"},
-                "closeness": {"type": "float", "description": "How close to get (default 2)"},
-            },
-        ),
-        "searchForBlock": CommandDef(
-            name="searchForBlock",
-            description="Find and navigate to the nearest block of the given type.",
-            params={
-                "block_type": {
-                    "type": "string",
-                    "description": (
-                        "Concrete block type. For generic wood, prefer whichever log type "
-                        "is visible nearby, e.g. spruce_log or oak_log; do not force oak."
-                    ),
-                },
-                "search_range": {"type": "float", "description": "Search radius (default 64)"},
-            },
-        ),
-        "searchForEntity": CommandDef(
-            name="searchForEntity",
-            description="Find and navigate to the nearest entity of the given type.",
-            params={
-                "entity_type": {"type": "string", "description": "Entity type, e.g. cow"},
-                "search_range": {"type": "float", "description": "Search radius (default 64)"},
-            },
-        ),
-        "moveAway": CommandDef(
-            name="moveAway",
-            description="Move in a random direction by the given distance.",
-            params={
-                "distance": {"type": "float", "description": "Distance to move (default 16)"},
-            },
-        ),
-        "goToBed": CommandDef(
-            name="goToBed",
-            description="Find the nearest bed and sleep in it.",
-        ),
-        "goToSurface": CommandDef(
-            name="goToSurface",
-            description="Navigate upward to the surface.",
-        ),
-        "digDown": CommandDef(
-            name="digDown",
-            description="Dig straight down, stopping at lava/water/bedrock.",
-            params={
-                "distance": {"type": "int", "description": "Max distance to dig (default 10)"},
-            },
-        ),
-        "stay": CommandDef(
-            name="stay",
-            description="Stay in place. Pauses all modes.",
-            params={
-                "seconds": {"type": "int", "description": "Seconds to stay (-1 = indefinite)"},
-            },
-        ),
-        # ── Combat ──────────────────────────────────────────────────
-        "attack": CommandDef(
-            name="attack",
-            description=(
-                "Attack and kill the nearest entity of the given type. "
-                "Works on hostile mobs (zombie, skeleton, creeper) AND on "
-                "passive mobs you need to harvest (sheep for wool, cow for "
-                "leather/beef, chicken for feathers/meat, pig for pork). "
-                "Use this whenever you need a resource that drops from a "
-                "mob — do NOT keep calling searchForEntity if the target is "
-                "already nearby. Default search radius is 64 blocks."
-            ),
-            params={
-                "entity_type": {
-                    "type": "string",
-                    "description": (
-                        "Entity type, e.g. zombie, sheep, cow, chicken, pig"
-                    ),
-                },
-                "range": {
-                    "type": "float",
-                    "description": "Search radius in blocks. Default: 64.",
-                    "default": 64,
-                },
-            },
-        ),
-        "attackPlayer": CommandDef(
-            name="attackPlayer",
-            description="Attack a specific player until they die or flee.",
-            params={
-                "player_name": {"type": "string", "description": "Player name to attack"},
-            },
-        ),
-        # ── Inventory ───────────────────────────────────────────────
-        "equip": CommandDef(
-            name="equip",
-            description="Equip an item to the given body slot.",
-            params={
-                "item_name": {"type": "string", "description": "Item to equip, e.g. diamond_sword"},
-            },
-        ),
-        "consume": CommandDef(
-            name="consume",
-            description="Eat or drink the given item.",
-            params={
-                "item_name": {"type": "string", "description": "Item to consume, e.g. cooked_beef"},
-            },
-        ),
-        "discard": CommandDef(
-            name="discard",
-            description="Discard items from inventory.",
-            params={
-                "item_name": {"type": "string", "description": "Item to discard"},
-                "num": {"type": "int", "description": "Number to discard (-1 = all)"},
-            },
-        ),
-        "givePlayer": CommandDef(
-            name="givePlayer",
-            description="Navigate to a player and give them items.",
-            params={
-                "player_name": {"type": "string", "description": "Player to give to"},
-                "item_name": {"type": "string", "description": "Item to give"},
-                "num": {"type": "int", "description": "Number to give (default 8)"},
-            },
-        ),
-        # ── Block Interaction ───────────────────────────────────────
-        "placeHere": CommandDef(
-            name="placeHere",
-            description="Place a block from inventory at the current position.",
-            params={
-                "block_type": {"type": "string", "description": "Block type to place"},
-            },
-        ),
-        "activateBlock": CommandDef(
-            name="activateBlock",
-            description="Right-click / activate the nearest block of the given type.",
-            params={
-                "block_type": {"type": "string", "description": "Block type, e.g. lever"},
-            },
-        ),
-        "collectBlocks": CommandDef(
-            name="collectBlocks",
-            description="Mine and collect blocks of the specified type.",
-            params={
-                "block_type": {
-                    "type": "string",
-                    "description": (
-                        "Concrete block type. For generic wood, use the nearest/available "
-                        "log type such as spruce_log, birch_log, or oak_log."
-                    ),
-                },
-                "count": {"type": "int", "description": "Number to collect (default 8)"},
-            },
-        ),
-        "breakNearbyBlocks": CommandDef(
-            name="breakNearbyBlocks",
-            description=(
-                "Directly break nearby reachable fragile blocks without long pathfinding, "
-                "then pick up drops. Prefer this over collectBlocks for tall_grass, "
-                "short_grass, flowers, and other thin nearby blocks."
-            ),
-            params={
-                "block_type": {"type": "string", "description": "Block type, e.g. tall_grass"},
-                "count": {"type": "int", "description": "Number to break (default 1)"},
-                "range": {
-                    "type": "float",
-                    "description": "Local search radius, max 16 (default 6)",
-                },
-            },
-        ),
-        "breedAnimals": CommandDef(
-            name="breedAnimals",
-            description=(
-                "Breed two nearby animals of the same type by feeding each the specified "
-                "breeding item. Prefer this over newAction for animal breeding."
-            ),
-            params={
-                "animal_type": {
-                    "type": "string",
-                    "description": "Animal type, e.g. chicken, cow, sheep, pig",
-                },
-                "breeding_item": {
-                    "type": "string",
-                    "description": "Food item to feed, e.g. wheat_seeds for chicken",
-                },
-                "range": {
-                    "type": "float",
-                    "description": "Search radius for two matching animals, max 64 (default 16)",
-                },
-            },
-        ),
-        "useOn": CommandDef(
-            name="useOn",
-            description="Use a tool on a target entity or block.",
-            params={
-                "tool_name": {"type": "string", "description": "Tool to use, e.g. bucket"},
-                "target": {
-                    "type": "string",
-                    "description": "Target entity/block or 'nothing'/'hand'",
-                },
-            },
-        ),
-        # ── Chest ───────────────────────────────────────────────────
-        "viewChest": CommandDef(
-            name="viewChest",
-            description="Show contents of the nearest chest.",
-        ),
-        "putInChest": CommandDef(
-            name="putInChest",
-            description="Store items in the nearest chest.",
-            params={
-                "item_name": {"type": "string", "description": "Item to store"},
-                "num": {"type": "int", "description": "Number to store (-1 = all)"},
-            },
-        ),
-        "takeFromChest": CommandDef(
-            name="takeFromChest",
-            description="Take items from the nearest chest.",
-            params={
-                "item_name": {"type": "string", "description": "Item to take"},
-                "num": {"type": "int", "description": "Number to take (-1 = all)"},
-            },
-        ),
-        # ── Crafting / Smelting ─────────────────────────────────────
-        "craftRecipe": CommandDef(
-            name="craftRecipe",
-            description="Craft a recipe using available materials. Automatically "
-            "detects nearby crafting tables and uses them. If no table is nearby "
-            "but one is in inventory, places it, crafts, then picks it back up. "
-            "Some recipes (beds, tools, armor) require a placed crafting table. "
-            "Always use getCraftingPlan before crafting complex items.",
-            params={
-                "recipe_name": {"type": "string", "description": "Item to craft, e.g. stick"},
-                "num": {"type": "int", "description": "Number to craft (default 1)"},
-            },
-        ),
-        "smeltItem": CommandDef(
-            name="smeltItem",
-            description=(
-                "Smelt items in a furnace. Requires a furnace nearby and fuel + "
-                "input items in inventory. For torches, prefer mining coal_ore over "
-                "smelting logs into charcoal unless charcoal was explicitly requested."
-            ),
-            params={
-                "item_name": {"type": "string", "description": "Item to smelt, e.g. raw_iron"},
-                "num": {"type": "int", "description": "Number to smelt (default 1)"},
-            },
-        ),
-        "clearFurnace": CommandDef(
-            name="clearFurnace",
-            description="Clear all items from the nearest furnace.",
-        ),
-        # ── Villager ────────────────────────────────────────────────
-        "showVillagerTrades": CommandDef(
-            name="showVillagerTrades",
-            description="Show trades for a villager by entity ID.",
-            params={
-                "villager_id": {"type": "int", "description": "Villager entity ID"},
-            },
-        ),
-        "tradeWithVillager": CommandDef(
-            name="tradeWithVillager",
-            description="Execute a trade with a villager.",
-            params={
-                "villager_id": {"type": "int", "description": "Villager entity ID"},
-                "trade_index": {"type": "int", "description": "Trade number (1-based)"},
-                "count": {"type": "int", "description": "Number of trades to execute"},
-            },
-        ),
-        # ── Look ────────────────────────────────────────────────────
-        "lookAtPlayer": CommandDef(
-            name="lookAtPlayer",
-            description="Look at a player or in the same direction as a player.",
-            params={
-                "player_name": {"type": "string", "description": "Player to look at"},
-            },
-        ),
-        "lookAtPosition": CommandDef(
-            name="lookAtPosition",
-            description="Look at specific coordinates.",
-            params={
-                "x": {"type": "float", "description": "X coordinate"},
-                "y": {"type": "float", "description": "Y coordinate"},
-                "z": {"type": "float", "description": "Z coordinate"},
-            },
-        ),
-        # ── Mode / Goal ─────────────────────────────────────────────
-        "setMode": CommandDef(
-            name="setMode",
-            description="Enable or disable a behavior mode.",
-            params={
-                "mode_name": {"type": "string", "description": "Mode name"},
-                "on": {"type": "bool", "description": "True to enable, False to disable"},
-            },
-        ),
-        "setGoal": CommandDef(
-            name="setGoal",
-            description="Set a goal message for persistent self-prompting.",
-            params={
-                "self_prompt": {"type": "string", "description": "Goal message for self-prompting"},
-            },
-        ),
-        "endGoal": CommandDef(
-            name="endGoal",
-            description="End the current goal and stop self-prompting.",
-        ),
-        "newAction": CommandDef(
-            name="newAction",
-            description=(
-                "Generate and run a one-off JavaScript Mineflayer action when "
-                "built-in commands are not expressive enough."
-            ),
-            params={
-                "code_prompt": {
-                    "type": "string",
-                    "description": "Natural language description of the custom action to code.",
-                },
-            },
-        ),
-        # ── Skills ──────────────────────────────────────────────────
-        "pickupNearbyItems": CommandDef(
-            name="pickupNearbyItems",
-            description="Pick up all nearby dropped items on the ground.",
-            params={
-                "distance": {"type": "float", "description": "Pickup radius (default 8)"},
-            },
-        ),
-        "tillAndSow": CommandDef(
-            name="tillAndSow",
-            description="Till the ground at coordinates and optionally plant seeds.",
-            params={
-                "x": {"type": "float", "description": "X coordinate to till"},
-                "y": {"type": "float", "description": "Y coordinate to till"},
-                "z": {"type": "float", "description": "Z coordinate to till"},
-                "seed_type": {
-                    "type": "string",
-                    "description": "Seed type to plant, e.g. wheat_seeds (optional)",
-                },
-            },
-        ),
-        "useDoor": CommandDef(
-            name="useDoor",
-            description="Open a door, walk through it, and close it.",
-            params={
-                "x": {
-                    "type": "float",
-                    "description": "X coordinate of door (optional, finds nearest)",
-                },
-                "y": {"type": "float", "description": "Y coordinate of door (optional)"},
-                "z": {"type": "float", "description": "Z coordinate of door (optional)"},
-            },
-        ),
-        "getCraftingPlan": CommandDef(
-            name="getCraftingPlan",
-            description="Get a comprehensive crafting plan for a target item. Shows "
-            "required ingredients with exact quantities, what you already have, "
-            "and what you still need to gather. Always use this before crafting "
-            "complex items to know which intermediate steps are needed.",
-            params={
-                "target_item": {
-                    "type": "string",
-                    "description": "The item to craft, e.g. diamond_sword",
-                },
-                "quantity": {
-                    "type": "int",
-                    "description": "Quantity to craft (default 1)",
-                },
-            },
-        ),
-        "searchWiki": CommandDef(
-            name="searchWiki",
-            description="Search the Minecraft Wiki for info about an item, block, or mechanic.",
-            params={
-                "query": {
-                    "type": "string",
-                    "description": "The search query, e.g. 'enchanting table'",
-                },
-            },
-        ),
-        # ── Conversation ────────────────────────────────────────────
-        "startConversation": CommandDef(
-            name="startConversation",
-            description="Start a conversation with another player.",
-            params={
-                "player_name": {"type": "string", "description": "Player to talk to"},
-                "message": {"type": "string", "description": "Message to send"},
-            },
-        ),
-        "endConversation": CommandDef(
-            name="endConversation",
-            description="End the current conversation.",
-            params={
-                "player_name": {"type": "string", "description": "Player to stop talking to"},
-            },
-        ),
-    }
-    for name, command in defs.items():
-        command.completion_kind = _command_completion_kind(name)
-    return defs
 
 
 def _build_tool_defs(handlers: dict[str, Callable[..., Any]]) -> list[dict[str, Any]] | None:

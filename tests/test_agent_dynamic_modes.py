@@ -5,7 +5,7 @@ from typing import Any
 
 from conftest import FakeBridge, SmartBridge
 
-from agent.core import Agent, _command_defs
+from agent.core import Agent, _command_defs, _compact_chat_text
 from agent.models import AgentConfig, BotState, EntityInfo, Position
 from agent.modes import BehaviorMode, ModeEvaluator
 from llm.dispatch_gate import DispatchDecision
@@ -50,6 +50,31 @@ def test_all_commands_have_completion_kind() -> None:
     assert all(cdef.completion_kind != "none" for cdef in defs.values())
     assert defs["breedAnimals"].completion_kind == "world_change"
     assert defs["givePlayer"].completion_kind == "delivery"
+
+
+def test_compact_chat_text_summarizes_verbose_done_result() -> None:
+    verbose = (
+        "Done: search_for_block tall_grass at (246, 63, 322): goal reached.\n"
+        "Position: (246.4, 63.0, 322.5) -> (246.4, 63.0, 322.5).\n"
+        "Inventory: no inventory change.\n"
+        "Output:\n"
+        "[2026-05-14T08:43:22.746Z] search_for_block tall_grass started"
+    )
+
+    assert _compact_chat_text(verbose) == (
+        "Done: search_for_block tall_grass at (246, 63, 322): goal reached."
+    )
+
+
+def test_compact_chat_text_summarizes_missing_dependency() -> None:
+    verbose = (
+        "Done: FAILED: Need a stone_pickaxe to mine iron_ore. "
+        "You have: oak_planks x4, cobblestone x12. "
+        "Craft a stone_pickaxe first, then retry.\n"
+        "HINT: Use getCraftingPlan to check requirements."
+    )
+
+    assert _compact_chat_text(verbose) == "Failed: need stone_pickaxe for iron_ore."
 
 
 async def test_set_goal_starts_and_end_goal_stops_self_prompt() -> None:
@@ -126,6 +151,26 @@ async def test_player_command_preserves_sender_casing() -> None:
 
     assert result == "went to Wilson"
     assert ("go_to_player", "Wilson", 3) in bridge.calls
+
+
+async def test_failed_active_task_reports_after_returning_to_player() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    await agent._replace_active_task("Wilson", "挖8铁矿")
+    await agent._finish_active_task("failed", reason="Need stone_pickaxe")
+
+    assert ("go_to_player", "Wilson", 3) in bridge.calls
+    assert any(
+        chat.startswith("Task failed:") and "Need stone_pickaxe" in chat
+        for chat in bridge.chats
+    )
+    assert agent._active_task is None
 
 
 async def test_active_task_prompt_history_starts_at_current_user_request() -> None:
@@ -335,7 +380,9 @@ async def test_missing_pickaxe_failure_recovers_and_retries_collect() -> None:
     assert ("craft_recipe", "stick", 1) in bridge.calls
     assert ("craft_recipe", "stone_pickaxe", 1) in bridge.calls
     assert bridge.calls.count(("collect_blocks", "iron_ore", 8)) == 1
-    assert any(item["name"] == "iron_ore" and item["count"] == 8 for item in bridge.inventory)
+    assert ("go_to_player", "Wilson", 3) in bridge.calls
+    assert ("give_to_player", "Wilson", "iron_ore", 8) in bridge.calls
+    assert agent._active_task is None
 
 
 async def test_missing_material_failure_recovers_common_materials_and_retries() -> None:
@@ -1169,6 +1216,27 @@ async def test_break_nearby_blocks_command_dispatches() -> None:
     assert ("break_nearby_blocks", "tall_grass", 3, 5) in bridge.calls
 
 
+async def test_seed_gathering_prefers_nearby_short_grass() -> None:
+    bridge = FakeBridge()
+    bridge.nearby_blocks = ["grass_block", "short_grass"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_message = "收集8个种子种植它们"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command(
+        "breakNearbyBlocks",
+        ["tall_grass", 8],
+        {"range": 16},
+    )
+
+    assert result == "broke 8 short_grass"
+    assert ("break_nearby_blocks", "short_grass", 8, 16) in bridge.calls
+    assert ("break_nearby_blocks", "tall_grass", 8, 16) not in bridge.calls
+
+
 async def test_generic_wood_search_prefers_nearby_non_oak_log() -> None:
     bridge = FakeBridge()
     bridge.nearby_blocks = ["grass_block", "spruce_log"]
@@ -1464,6 +1532,42 @@ async def test_till_and_sow_completion_finishes_when_requested_plots_are_done() 
 
     assert finished is True
     assert agent._active_task is None
+
+
+async def test_plan_loop_does_not_mark_partial_planting_as_success() -> None:
+    memory = FakeTaskMemory()
+    bridge = FakeBridge()
+
+    async def till_and_sow(
+        x: float, y: float, z: float, seed_type: str | None = None,
+    ) -> str:
+        bridge.calls.append(("till_and_sow", x, y, z, seed_type))
+        return f"Tilled and planted {seed_type or 'wheat_seeds'} at ({int(x)}, {int(y)}, {int(z)})."
+
+    bridge.till_and_sow = till_and_sow  # type: ignore[attr-defined]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._memory = memory  # type: ignore[assignment]
+    agent._last_sender = "Wilson"
+    agent._last_message = "种16块田"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "种16块田")
+
+    async def fake_plan(_state: BotState, *, tool_choice: str | None = None) -> LLMOutput:
+        assert tool_choice == "auto"
+        return LLMOutput(content='!tillAndSow(1, 63, 1, "wheat_seeds")', model="fake")
+
+    agent.plan = fake_plan  # type: ignore[method-assign]
+
+    used_command = await agent._run_plan_loop(max_responses=1, use_tools=True)
+
+    assert used_command is True
+    assert agent._active_task is None
+    finish_events = [payload for event, payload in memory.events if event == "task_finish"]
+    assert finish_events[-1]["status"] == "failed"
+    assert "before completion spec was satisfied" in finish_events[-1]["summary"]
 
 
 async def test_give_item_uses_inventory_and_defaults_to_8() -> None:

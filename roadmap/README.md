@@ -27,5 +27,6 @@
 | **P1** | [双层检索 + 持久化向量索引](./02-dual-retrieval.md) | 提升示例/技能检索质量，可复用现有 embedding 代码 |
 | **P2** | [树形任务记忆](./03-task-tree.md) | 复杂任务的分解和复用，需配合图结构 |
 | **P3** | [知识图谱](./04-knowledge-graph.md) | 世界知识的显式化，但维护成本高 |
+| **P0** | [Agent Loop 优化与解耦](./08-agent-loop-optimization-plan.md) | 把完成判定、恢复、命令元数据和 loop 主体拆成可维护协议 |
 
 P0 和 P1 可并行推进——图结构改的是 agent 的行为决策层，检索改的是 prompt 构建层，两者互不冲突。
