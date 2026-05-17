@@ -64,4 +64,19 @@ bot 每轮只看 `TaskStack[-1]`，也就是最新任务。任务完成、失败
 
 - 将 snapshot 写入独立 task archive 文件，避免只在内存中可见。
 - 对 delivery 也引入 baseline/delta，例如记录 `givePlayer` 前后的距离、物品减少量和 give result。
-- 支持真正的 subgoal stack：玩家任务仍是栈顶主任务，`做石镐` 这类依赖作为 task 内部 subgoal，而不是新用户任务。
+- 扩展 subgoal stack 的覆盖面，但保持玩家新指令替换整个 stack。
+
+## Phase 2 实现状态：简单内部依赖 Subgoal
+
+已落地最小版内部依赖 subgoal：
+
+- 玩家任务仍然是 root task，新玩家指令仍然取消旧任务并重建 stack。
+- `TaskManager` 支持 `push_subgoal()` 和 `pop_active()`，内部依赖会作为 `task_type=subgoal` 压到栈顶。
+- 当前只把 recovery 中的简单依赖压成 subgoal：
+  - `missing_tool`：缺 `pickaxe`、`axe`、`shovel`。
+  - `missing_materials`：缺 `stick`、任意 `*_planks`、`crafting_table`、`furnace`。
+- subgoal 会记录 `parent_id`、`reason`、`resume_command`、`resume_args`、`resume_kwargs`。
+- recovery 完成 subgoal 后会 pop 回父任务，然后重试原失败命令。
+- prompt 中如果当前栈顶是 subgoal，会显示 parent task 和 resume command，提醒 LLM 不要把 subgoal 当成新的玩家任务。
+
+暂时没有把开放式目标做成 subgoal，例如“探索矿洞”“找更多资源”“长期种田”。这些仍交给主 task 的 normal/recovery loop，否则 stack 很容易再次膨胀和串扰。

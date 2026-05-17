@@ -49,6 +49,13 @@ TOOL_MATERIAL_ITEMS: dict[str, str] = {
     "diamond": "diamond",
 }
 CRAFTING_TABLE_TOOL_FAMILIES: frozenset[str] = frozenset({"axe", "hoe", "pickaxe"})
+RECOVERABLE_TOOL_FAMILIES: frozenset[str] = frozenset({"axe", "pickaxe", "shovel"})
+RECOVERABLE_MATERIAL_ITEMS: frozenset[str] = frozenset({
+    "stick",
+    "crafting_table",
+    "furnace",
+    *WOOD_PLANK_ITEMS,
+})
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,8 @@ class RecoveryPlan:
     steps: tuple[RecoveryStep, ...]
     retry_original: bool = True
     reason: str = ""
+    subgoal_message: str = ""
+    subgoal_kind: str = "dependency"
 
 
 class RecoveryManager:
@@ -94,6 +103,9 @@ class RecoveryManager:
                 ),
             )
         if cause.kind == "missing_tool" and command_name == "collectBlocks" and cause.required:
+            parts = tool_parts(cause.required)
+            if parts is not None and parts[1] not in RECOVERABLE_TOOL_FAMILIES:
+                return None
             steps = self.tool_recovery_steps(cause.required, state)
             if steps:
                 return RecoveryPlan(
@@ -101,16 +113,31 @@ class RecoveryManager:
                     steps=tuple(steps),
                     retry_original=True,
                     reason=f"Missing {cause.required} for {cause.target or target_hint}",
+                    subgoal_message=(
+                        f"Craft {cause.required} for "
+                        f"{cause.target or target_hint or 'the failed command'}"
+                    ),
+                    subgoal_kind="missing_tool",
                 )
             return None
         if cause.kind == "missing_materials" and cause.missing:
+            if any(item not in RECOVERABLE_MATERIAL_ITEMS for item in cause.missing):
+                return None
             steps = self.missing_material_recovery_steps(cause.missing, state)
             if steps:
+                missing_text = ", ".join(
+                    f"{item} x{count}" for item, count in sorted(cause.missing.items())
+                )
                 return RecoveryPlan(
                     cause=cause,
                     steps=tuple(steps),
                     retry_original=True,
                     reason=f"Missing materials for {cause.target}: {cause.missing}",
+                    subgoal_message=(
+                        f"Prepare {missing_text} for "
+                        f"{cause.target or 'the failed command'}"
+                    ),
+                    subgoal_kind="missing_materials",
                 )
             return None
         if cause.kind == "nearby_miss" and requester:

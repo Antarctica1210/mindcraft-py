@@ -2104,6 +2104,109 @@ class Agent:
                 break
         return True
 
+    async def _push_dependency_subgoal(
+        self,
+        parent: ActiveTask,
+        plan: Any,
+        state: BotState,
+        *,
+        retry_command: str,
+        retry_args: list[Any],
+        retry_kwargs: dict[str, Any],
+    ) -> ActiveTask:
+        message = plan.subgoal_message or f"Resolve dependency: {plan.reason}"
+        resume_command = retry_command if plan.retry_original else None
+        subgoal = self._task_manager.push_subgoal(
+            requester=parent.requester,
+            message=message,
+            baseline_state=state,
+            history_len=len(self._history),
+            planning_strategy=parent.planning_strategy,
+            parent_id=parent.id,
+            reason=plan.reason,
+            resume_command=resume_command,
+            resume_args=retry_args if plan.retry_original else [],
+            resume_kwargs=retry_kwargs if plan.retry_original else {},
+        )
+        self._active_task_stack = self._task_manager.stack
+        self._active_task = subgoal
+        parent.events.append(ActiveTaskEvent(
+            kind="subgoal_start",
+            message=f"{subgoal.id}: {message}; reason={plan.reason}",
+            ok=None,
+        ))
+        logger.info(
+            "ActiveTask subgoal start: parent=%s subgoal=%s kind=%s reason=%s resume=%s",
+            parent.id,
+            subgoal.id,
+            getattr(plan, "subgoal_kind", "dependency"),
+            plan.reason,
+            resume_command,
+        )
+        await self._record_event("subgoal_start", {
+            "parent_task_id": parent.id,
+            "task_id": subgoal.id,
+            "message": message,
+            "reason": plan.reason,
+            "subgoal_kind": getattr(plan, "subgoal_kind", "dependency"),
+            "resume_command": resume_command,
+            "stack_depth": len(self._active_task_stack),
+        })
+        self._history.append(ConversationTurn(
+            role="system",
+            content=(
+                f"Internal dependency subgoal started: {message}. "
+                f"Parent task remains: {parent.original_message}. "
+                "Finish this subgoal, then resume the parent command."
+            ),
+        ))
+        return subgoal
+
+    async def _pop_dependency_subgoal(
+        self,
+        status: str,
+        *,
+        reason: str = "",
+    ) -> ActiveTask | None:
+        subgoal = self._active_task
+        if subgoal is None or subgoal.task_type != "subgoal":
+            return self._active_task
+        if reason:
+            subgoal.events.append(ActiveTaskEvent(kind="finish_reason", message=reason))
+        summary = self._deterministic_task_summary(subgoal)
+        popped = self._task_manager.pop_active(status=status, summary=summary)
+        parent = self._task_manager.active
+        self._active_task_stack = self._task_manager.stack
+        self._active_task = parent
+        if parent is not None and popped is not None:
+            parent.events.append(ActiveTaskEvent(
+                kind="subgoal_finish",
+                message=f"{popped.id} status={status}: {summary[:220]}",
+                ok=status == "succeeded",
+            ))
+        logger.info(
+            "ActiveTask subgoal finish: subgoal=%s status=%s parent=%s summary=%s",
+            popped.id if popped is not None else None,
+            status,
+            parent.id if parent is not None else None,
+            _log_preview(summary),
+        )
+        await self._record_event("subgoal_finish", {
+            "task_id": popped.id if popped is not None else None,
+            "parent_task_id": parent.id if parent is not None else None,
+            "status": status,
+            "summary": summary,
+            "stack_depth": len(self._active_task_stack),
+        })
+        self._history.append(ConversationTurn(
+            role="system",
+            content=(
+                f"Internal dependency subgoal {status}: {summary}. "
+                "Resume the parent task now."
+            ),
+        ))
+        return parent
+
     async def _recover_missing_dependency(
         self,
         command_name: str,
@@ -2146,11 +2249,12 @@ class Agent:
         if plan is None:
             return False
 
-        task.recovery_attempts += 1
+        parent_task = task
+        parent_task.recovery_attempts += 1
         logger.info(
             "Recovering command failure: task=%s attempt=%d command=%s cause=%s steps=%s retry=%s",
-            task.id,
-            task.recovery_attempts,
+            parent_task.id,
+            parent_task.recovery_attempts,
             command_name,
             plan.reason,
             [step.command for step in plan.steps],
@@ -2178,6 +2282,15 @@ class Agent:
             content=recovery_instruction,
         ))
 
+        await self._push_dependency_subgoal(
+            parent_task,
+            plan,
+            state,
+            retry_command=retry_command,
+            retry_args=retry_args,
+            retry_kwargs=retry_kwargs,
+        )
+
         for step in plan.steps:
             recover_result = await self._run_recovery_action(
                 step.command,
@@ -2186,7 +2299,15 @@ class Agent:
                 recovery_kind="missing_dependency",
             )
             if not _action_succeeded(recover_result):
+                await self._pop_dependency_subgoal(
+                    "failed",
+                    reason=f"Recovery step {step.command} failed: {recover_result}",
+                )
                 return False
+
+        await self._pop_dependency_subgoal("succeeded", reason=plan.reason)
+        if self._active_task is None:
+            return True
 
         retry_result = result
         if plan.retry_original:
@@ -3983,16 +4104,31 @@ class Agent:
             }
             if baseline_subset:
                 baseline_items = f"baseline_inventory: {baseline_subset}\n"
+        parent_context = ""
+        if task.task_type == "subgoal" and len(self._active_task_stack) > 1:
+            parent = self._active_task_stack[-2]
+            parent_context = (
+                "PARENT TASK\n"
+                f"- id: {parent.id}\n"
+                f"- request: {parent.original_message}\n"
+                f"- resume_command: {task.resume_command}\n"
+                "Rule: finish this internal dependency subgoal first, then "
+                "resume the parent task. Do not treat the subgoal as a new "
+                "player request.\n"
+            )
         return (
             "ACTIVE TASK\n"
             f"id: {task.id}\n"
+            f"type: {task.task_type}\n"
             f"stack_depth: {len(self._active_task_stack)} (only top task is active)\n"
             f"requester: {task.requester}\n"
             f"request: {task.original_message}\n"
+            f"reason: {task.reason}\n"
             f"planning_strategy: {task.planning_strategy.value}\n"
             f"attempts: {task.attempts}\n"
             f"failures: {task.failures}\n"
             f"snapshots: {len(task.snapshots or [])}\n"
+            f"{parent_context}"
             f"{baseline_items}"
             f"{spec_lines}"
             "recent task events:\n"

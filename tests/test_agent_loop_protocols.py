@@ -243,6 +243,8 @@ def test_recovery_manager_plans_tool_and_material_repairs() -> None:
     )
 
     assert tool_plan is not None
+    assert tool_plan.subgoal_kind == "missing_tool"
+    assert tool_plan.subgoal_message == "Craft stone_pickaxe for iron_ore"
     assert [(step.command, step.kwargs_dict()) for step in tool_plan.steps] == [
         ("craftRecipe", {"recipe_name": "oak_planks", "num": 1}),
         ("craftRecipe", {"recipe_name": "crafting_table", "num": 1}),
@@ -251,10 +253,35 @@ def test_recovery_manager_plans_tool_and_material_repairs() -> None:
         ("craftRecipe", {"recipe_name": "stone_pickaxe", "num": 1}),
     ]
     assert material_plan is not None
+    assert material_plan.subgoal_kind == "missing_materials"
+    assert material_plan.subgoal_message == "Prepare stick x2 for torch"
     assert [(step.command, step.kwargs_dict()) for step in material_plan.steps] == [
         ("craftRecipe", {"recipe_name": "oak_planks", "num": 1}),
         ("craftRecipe", {"recipe_name": "stick", "num": 1}),
     ]
+
+
+def test_recovery_manager_limits_dependency_subgoals_to_simple_repairs() -> None:
+    manager = RecoveryManager()
+    state = BotState(
+        inventory=[
+            InventoryItem(name="oak_log", count=1),
+            InventoryItem(name="cobblestone", count=12),
+        ],
+        nearby_block_types=[],
+    )
+    hoe_cause = classify_failure("FAILED: Need a stone_hoe to mine farmland.")
+    coal_cause = classify_failure("FAILED: Missing materials for torch: coal x1.")
+    furnace_cause = classify_failure("FAILED: Missing materials for smeltItem: furnace x1.")
+
+    assert manager.plan(command_name="collectBlocks", cause=hoe_cause, state=state) is None
+    assert manager.plan(command_name="craftRecipe", cause=coal_cause, state=state) is None
+
+    furnace_plan = manager.plan(command_name="smeltItem", cause=furnace_cause, state=state)
+
+    assert furnace_plan is not None
+    assert furnace_plan.subgoal_kind == "missing_materials"
+    assert furnace_plan.subgoal_message == "Prepare furnace x1 for smeltitem"
 
 
 def test_recovery_manager_plans_timeout_as_replan_without_retry() -> None:
@@ -300,6 +327,47 @@ def test_task_manager_records_baseline_and_completion_spec() -> None:
     assert manager.active is task
     manager.clear()
     assert manager.active is None
+
+
+def test_task_manager_pushes_and_pops_internal_subgoal() -> None:
+    manager = TaskManager()
+    state = BotState(
+        inventory=[InventoryItem(name="oak_log", count=1)],
+        nearby_block_types=[],
+    )
+    parent = manager.start(
+        requester="Wilson",
+        message="挖8铁矿",
+        baseline_state=state,
+        history_len=1,
+        planning_strategy="react",
+    )
+
+    subgoal = manager.push_subgoal(
+        requester="Wilson",
+        message="Craft stone_pickaxe for iron_ore",
+        baseline_state=state,
+        history_len=2,
+        planning_strategy="react",
+        parent_id=parent.id,
+        reason="Missing stone_pickaxe for iron_ore",
+        resume_command="collectBlocks",
+        resume_args=["iron_ore", 8],
+    )
+
+    assert manager.root is parent
+    assert manager.active is subgoal
+    assert len(manager.stack) == 2
+    assert subgoal.task_type == "subgoal"
+    assert subgoal.parent_id == parent.id
+    assert subgoal.resume_command == "collectBlocks"
+    assert subgoal.resume_args == ["iron_ore", 8]
+
+    popped = manager.pop_active(status="succeeded", summary="crafted stone_pickaxe")
+
+    assert popped is subgoal
+    assert manager.active is parent
+    assert len(manager.stack) == 1
 
 
 async def test_planner_loop_runs_no_tool_turn_on_host_runtime() -> None:

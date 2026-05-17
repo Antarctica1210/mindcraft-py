@@ -50,6 +50,12 @@ class ActiveTask:
     id: str
     requester: str
     original_message: str
+    task_type: str = "player_task"
+    parent_id: str | None = None
+    reason: str = ""
+    resume_command: str | None = None
+    resume_args: list[Any] | None = None
+    resume_kwargs: dict[str, Any] | None = None
     status: str = "running"
     attempts: int = 0
     failures: int = 0
@@ -119,6 +125,65 @@ class TaskManager:
             position=position_tuple_from_state(baseline_state),
         ))
         self.stack = [task]
+        return task
+
+    @property
+    def root(self) -> ActiveTask | None:
+        return self.stack[0] if self.stack else None
+
+    def push_subgoal(
+        self,
+        *,
+        requester: str,
+        message: str,
+        baseline_state: BotState,
+        history_len: int,
+        planning_strategy: Any,
+        parent_id: str,
+        reason: str,
+        resume_command: str | None = None,
+        resume_args: list[Any] | None = None,
+        resume_kwargs: dict[str, Any] | None = None,
+        timeout_s: float = 120.0,
+    ) -> ActiveTask:
+        task = ActiveTask(
+            id=f"{int(time.time())}_{slugify_task_name(message)}",
+            requester=requester,
+            original_message=message,
+            task_type="subgoal",
+            parent_id=parent_id,
+            reason=reason,
+            resume_command=resume_command,
+            resume_args=list(resume_args or []),
+            resume_kwargs=dict(resume_kwargs or {}),
+            requires_ctable=looks_like_crafting_request(message),
+            planning_strategy=planning_strategy,
+            timeout_s=timeout_s,
+            started_at=time.time(),
+            history_start_index=max(0, history_len - 1),
+            completion_spec=completion_spec_from_message(message),
+            baseline_inventory=inventory_counts_from_state(baseline_state),
+            baseline_position=position_tuple_from_state(baseline_state),
+        )
+        task.events.append(ActiveTaskEvent(
+            kind="start",
+            message=f"internal subgoal: {message}; reason={reason}",
+        ))
+        task.snapshots.append(ActiveTaskSnapshot(
+            seq=0,
+            note="subgoal_baseline",
+            inventory=inventory_counts_from_state(baseline_state),
+            position=position_tuple_from_state(baseline_state),
+        ))
+        self.stack.append(task)
+        return task
+
+    def pop_active(self, *, status: str, summary: str = "") -> ActiveTask | None:
+        if not self.stack:
+            return None
+        task = self.stack.pop()
+        task.status = status
+        task.summary = summary
         return task
 
     def clear(self) -> None:
