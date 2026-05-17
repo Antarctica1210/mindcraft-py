@@ -11,14 +11,19 @@ from agent.command_registry import (
     world_change_command_has_intrinsic_effect,
 )
 from agent.command_runner import CommandRunner
-from agent.completion import CompletionEngine, CompletionSpec, completion_spec_satisfied
+from agent.completion import (
+    CompletionEngine,
+    CompletionSpec,
+    completion_spec_satisfied,
+    task_effect_count,
+)
 from agent.effects import ActionEffect, action_effects_from_result
 from agent.failures import classify_failure, is_hard_failure, parse_missing_counts
 from agent.models import BotState, InventoryItem
 from agent.planner_loop import PlannerLoop
 from agent.recovery import RecoveryManager
 from agent.task_goal_parser import completion_spec_from_message, parse_craft_request
-from agent.task_manager import TaskManager
+from agent.task_manager import ActiveTaskEvent, TaskManager
 
 
 def test_action_result_wraps_legacy_success_with_effects() -> None:
@@ -107,6 +112,57 @@ def test_effect_extractor_counts_planting_without_task_specific_code() -> None:
     state = BotState(inventory=[])
 
     assert completion_spec_satisfied(task, state) is True
+
+
+def test_task_effect_count_prefers_structured_effects_over_legacy_events() -> None:
+    task = SimpleNamespace(
+        effects=[
+            ActionEffect(type="world_change", name="planted_crop", count=1),
+            ActionEffect(type="world_change", name="planted_crop", count=1),
+        ],
+        events=[
+            ActiveTaskEvent(
+                kind="action_result",
+                message="tillAndSow args=[0, 62, 335] -> Tilled and planted wheat_seeds.",
+                ok=True,
+            ),
+            ActiveTaskEvent(
+                kind="action_result",
+                message="tillAndSow args=[1, 62, 335] -> Tilled and planted wheat_seeds.",
+                ok=True,
+            ),
+        ],
+    )
+
+    assert task_effect_count(
+        task,
+        effect_type="world_change",
+        names=("planted_crop",),
+    ) == 2
+
+
+def test_task_effect_count_keeps_legacy_planting_event_fallback() -> None:
+    task = SimpleNamespace(
+        effects=[],
+        events=[
+            ActiveTaskEvent(
+                kind="action_result",
+                message="tillAndSow args=[0, 62, 335] -> Tilled and planted wheat_seeds.",
+                ok=True,
+            ),
+            ActiveTaskEvent(
+                kind="action_result",
+                message="tillAndSow args=[1, 62, 335] -> Tilled and planted wheat_seeds.",
+                ok=True,
+            ),
+        ],
+    )
+
+    assert task_effect_count(
+        task,
+        effect_type="world_change",
+        names=("planted_crop",),
+    ) == 2
 
 
 def test_completion_requires_inventory_delta_from_baseline() -> None:

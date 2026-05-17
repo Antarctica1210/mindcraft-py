@@ -88,21 +88,28 @@ def task_effect_count(
     effect_type: str,
     names: tuple[str, ...],
 ) -> int:
+    effects = getattr(task, "effects", None)
     count = effect_count(
-        getattr(task, "effects", None),
+        effects,
         effect_type=effect_type,
         names=names,
     )
 
     # Backward-compatible fallback for tests or older events created before
-    # structured effects existed.
+    # structured effects existed.  Do not add both sources for the same effect;
+    # modern task loops record a structured effect and an action_result event for
+    # each command, so summing them would double planting progress.  Taking the
+    # larger count preserves legacy-only progress without duplicating mirrored
+    # structured/event evidence.
     if effect_type == "world_change" and "planted_crop" in set(names):
+        legacy_count = 0
         for event in getattr(task, "events", None) or []:
             if event.kind != "action_result" or event.ok is not True:
                 continue
             lower = event.message.lower()
             if "tillandsow" in lower and "failed:" not in lower and "planted" in lower:
-                count += 1
+                legacy_count += 1
+        count = max(count, legacy_count)
     return count
 
 
