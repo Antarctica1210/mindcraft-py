@@ -460,6 +460,31 @@ def _player_requested_stop(message: str) -> bool:
     return bool(re.search(r"\b(stop|cancel|halt|pause)\b|停下|停止|别动", text))
 
 
+def _player_requested_come_here(message: str) -> bool:
+    text = message.strip().lower()
+    return bool(re.fullmatch(
+        r"(come\s+to\s+me|come\s+here|get\s+over\s+here|come|"
+        r"过来|来我这里|来我这|到我这里|到我这)",
+        text,
+    ))
+
+
+def _player_requested_follow_me(message: str) -> bool:
+    text = message.strip().lower()
+    return bool(re.fullmatch(
+        r"(follow\s+me|follow|escort\s+me|跟我来|跟着我|跟随我)",
+        text,
+    ))
+
+
+def _player_requested_task_interrupt(message: str) -> bool:
+    return (
+        _player_requested_stop(message)
+        or _player_requested_come_here(message)
+        or _player_requested_follow_me(message)
+    )
+
+
 def _memory_record_is_failed_task(record: Any) -> bool:
     tags = {str(tag).lower() for tag in getattr(record, "tags", []) or []}
     if "task_failed" in tags:
@@ -1012,6 +1037,11 @@ class Agent:
         logger.info(">>> %s: %s", source, message)
         self._turn_id += 1
         turn_id = self._turn_id
+
+        if self._active_task_stack_busy() and not _player_requested_task_interrupt(message):
+            await self._reject_message_while_busy(source, message)
+            return False
+
         self._last_message = message
 
         # Auto-unmute: !stfu suppresses chatty narration mid-task, not
@@ -1065,18 +1095,17 @@ class Agent:
             ConversationTurn(role="user", content=f"{source}: {message}"),
         )
         self._last_sender = source
-        if intent == InputIntent.ACTION_COMMAND:
-            if _player_requested_stop(message):
-                await self._finish_active_task(
-                    "cancelled",
-                    reason=f"{source} asked me to stop.",
-                )
-            else:
-                await self._replace_active_task(
-                    source,
-                    message,
-                    planning_strategy=planning_strategy,
-                )
+        if _player_requested_stop(message):
+            await self._finish_active_task(
+                "cancelled",
+                reason=f"{source} asked me to stop.",
+            )
+        elif intent == InputIntent.ACTION_COMMAND:
+            await self._replace_active_task(
+                source,
+                message,
+                planning_strategy=planning_strategy,
+            )
 
         if _player_requested_stop(message):
             direct_result = await self._try_direct_action_command()
@@ -1524,11 +1553,11 @@ class Agent:
         kwargs: dict[str, Any] = {}
         preface = ""
 
-        if re.fullmatch(r"(come\s+to\s+me|come\s+here|get\s+over\s+here|come)", text):
+        if _player_requested_come_here(text):
             command = "goToPlayer"
             kwargs = {"player_name": self._last_sender, "closeness": 3}
             preface = "On my way."
-        elif re.fullmatch(r"(follow\s+me|follow|escort\s+me)", text):
+        elif _player_requested_follow_me(text):
             command = "followPlayer"
             kwargs = {"player_name": self._last_sender, "follow_dist": 4}
             preface = "I'll follow you."
@@ -1578,6 +1607,31 @@ class Agent:
             reason=str(result or ""),
         )
         return True
+
+    def _active_task_stack_busy(self) -> bool:
+        return any(task.status == "running" for task in self._active_task_stack)
+
+    async def _reject_message_while_busy(self, source: str, message: str) -> None:
+        task = self._active_task or self._task_manager.active
+        task_label = task.original_message if task is not None else "current task"
+        logger.info(
+            "Rejected new command while task stack is busy: source=%s message=%r active=%s",
+            source,
+            message,
+            task.id if task is not None else None,
+        )
+        await self._record_event("task_rejected_while_busy", {
+            "source": source,
+            "message": message,
+            "active_task_id": task.id if task is not None else None,
+            "active_task": task_label,
+            "stack_depth": len(self._active_task_stack),
+        })
+        await self._send_chat(
+            "I'm still working on the current task: "
+            f"{task_label}. Say stop, come here, or follow me to interrupt. "
+            "I'll tell you when I can accept a new command."
+        )
 
     def _queue_direct_shortcut_llm_retry(self, reason: str) -> None:
         """Let the normal planner recover once after a direct shortcut fails."""
@@ -3827,17 +3881,21 @@ class Agent:
             return 0.10
         return 0.40
 
-    async def _report_failed_task_to_player(
+    async def _report_finished_task_to_player(
         self,
         task: ActiveTask,
         *,
+        status: str,
         reason: str = "",
     ) -> None:
-        """Move near the requester before giving a concise failure report."""
+        """Move near the requester before giving a concise final task report."""
         requester = task.requester or self._last_sender
         moved = False
         move_result: Any = None
-        if requester:
+        should_move = requester and not (
+            status == "succeeded" and _player_requested_follow_me(task.original_message)
+        )
+        if should_move:
             try:
                 command_run = await self._run_agent_command(
                     "goToPlayer",
@@ -3871,11 +3929,17 @@ class Agent:
                     ok=False,
                 ))
 
-        detail = reason.strip() or task.summary or f"Task failed: {task.original_message}"
-        prefix = "Task failed"
-        if requester and not moved:
-            prefix = "Task failed; I could not reach you"
-        await self._send_chat(f"{prefix}: {detail}")
+        detail = reason.strip() or task.summary or task.original_message
+        detail = _log_preview(detail, limit=90)
+        if status == "succeeded":
+            prefix = "Task complete"
+        else:
+            prefix = "Task failed"
+            if requester and not moved:
+                prefix = "Task failed; I could not reach you"
+        await self._send_chat(
+            f"{prefix}: {detail}. I can accept a new command now."
+        )
 
     async def _finish_active_task(self, status: str, *, reason: str = "") -> None:
         """Summarise, write memory, then clear the current active task."""
@@ -3909,8 +3973,12 @@ class Agent:
         if reason:
             task.events.append(ActiveTaskEvent(kind="finish_reason", message=reason, ok=None))
         task.summary = await self._summarize_active_task(task)
-        if task.status == "failed":
-            await self._report_failed_task_to_player(task, reason=reason)
+        if task.status in {"succeeded", "failed"}:
+            await self._report_finished_task_to_player(
+                task,
+                status=task.status,
+                reason=reason,
+            )
         logger.info(
             "ActiveTask finish: id=%s status=%s attempts=%d failures=%d summary=%s",
             task.id,

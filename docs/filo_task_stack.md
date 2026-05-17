@@ -80,3 +80,22 @@ bot 每轮只看 `TaskStack[-1]`，也就是最新任务。任务完成、失败
 - prompt 中如果当前栈顶是 subgoal，会显示 parent task 和 resume command，提醒 LLM 不要把 subgoal 当成新的玩家任务。
 
 暂时没有把开放式目标做成 subgoal，例如“探索矿洞”“找更多资源”“长期种田”。这些仍交给主 task 的 normal/recovery loop，否则 stack 很容易再次膨胀和串扰。
+
+## Phase 3 实现状态：Busy Gate 与任务收尾反馈
+
+已增加任务栈忙碌保护：
+
+- 只要 task stack 中仍有 `running` task，普通新指令会被拒收，不会写入当前任务历史，也不会更新 `_last_message`。
+- 忙碌时允许三类强制打断：
+  - `stop` / `cancel` / `停下`
+  - `come here` / `come to me` / `过来`
+  - `follow me` / `跟我来`
+- 被拒收时，bot 会在游戏内提示当前正在执行的任务，并说明只有上述强制打断命令会生效。
+
+任务完成/失败时也增加统一收尾：
+
+- `succeeded` 和 `failed` 都会先回到 requester 附近。
+- 然后用简短聊天反馈最终状态。
+- 反馈中会明确说明：`I can accept a new command now.`
+
+这样玩家可以用一句话判断 bot 是否仍在忙，避免在 task 未结束时连续塞入新目标导致任务串扰。

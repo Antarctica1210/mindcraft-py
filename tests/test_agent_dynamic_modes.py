@@ -168,8 +168,79 @@ async def test_failed_active_task_reports_after_returning_to_player() -> None:
     assert ("go_to_player", "Wilson", 3) in bridge.calls
     assert any(
         chat.startswith("Task failed:") and "Need stone_pickaxe" in chat
+        and "accept a new command" in chat
         for chat in bridge.chats
     )
+    assert agent._active_task is None
+
+
+async def test_successful_active_task_reports_ready_for_next_command() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._last_sender = "Wilson"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    await agent._replace_active_task("Wilson", "种16块田")
+    await agent._finish_active_task("succeeded", reason="Planted requested fields")
+
+    assert ("go_to_player", "Wilson", 3) in bridge.calls
+    assert any(
+        chat.startswith("Task complete:") and "accept a new command" in chat
+        for chat in bridge.chats
+    )
+    assert agent._active_task is None
+
+
+async def test_busy_task_rejects_new_regular_command_without_polluting_task() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._prompter = object()  # type: ignore[assignment]
+    agent._last_message = "种16块田"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "种16块田")
+    active_id = agent._active_task.id
+
+    async def fail_plan(*_args: object, **_kwargs: object) -> LLMOutput:
+        raise AssertionError("LLM should not be called while task stack is busy")
+
+    agent.plan = fail_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "帮我做两把铁镐")
+
+    assert used_command is False
+    assert agent._active_task is not None
+    assert agent._active_task.id == active_id
+    assert agent._last_message == "种16块田"
+    assert not any(call[0] == "craft_recipe" for call in bridge.calls)
+    assert any("still working on the current task" in chat for chat in bridge.chats)
+
+
+async def test_busy_task_allows_come_here_to_interrupt() -> None:
+    bridge = FakeBridge()
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._running = True
+    agent._prompter = object()  # type: ignore[assignment]
+    agent._last_message = "种16块田"
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+    await agent._replace_active_task("Wilson", "种16块田")
+
+    async def fail_plan(*_args: object, **_kwargs: object) -> LLMOutput:
+        raise AssertionError("LLM should not be called for interrupt come here")
+
+    agent.plan = fail_plan  # type: ignore[method-assign]
+
+    used_command = await agent.handle_message("Wilson", "come here")
+
+    assert used_command is True
+    assert ("go_to_player", "Wilson", 3) in bridge.calls
     assert agent._active_task is None
 
 
