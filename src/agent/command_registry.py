@@ -77,6 +77,7 @@ COMMAND_COMPLETION_KINDS: dict[str, str] = {
     "breakNearbyBlocks": "world_change",
     "breedAnimals": "world_change",
     "breedAnimalsBatch": "world_change",
+    "breedAnimalsInPenBatch": "world_change",
     "useOn": "world_change",
     "clearFurnace": "world_change",
     "tradeWithVillager": "world_change",
@@ -99,6 +100,7 @@ ALWAYS_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
     "activateBlock",
     "breedAnimals",
     "breedAnimalsBatch",
+    "breedAnimalsInPenBatch",
     "goToBed",
     "placeHere",
     "plantSeedsNearPlayer",
@@ -118,6 +120,7 @@ CONDITIONAL_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
 WORLD_CHANGE_EVIDENCE_FALLBACK_COMMANDS: frozenset[str] = frozenset({
     "breedAnimals",
     "breakNearbyBlocks",
+    "breedAnimalsInPenBatch",
     "placeHere",
     "plantSeedsNearPlayer",
     "tillAndSow",
@@ -148,6 +151,7 @@ PRE_ACTION_OBSERVE_COMMANDS: frozenset[str] = frozenset({
     "mineOreWithTool",
     "plantSeedsNearPlayer",
     "breedAnimalsBatch",
+    "breedAnimalsInPenBatch",
 })
 DIRECT_SHORTCUT_COMMANDS: frozenset[str] = frozenset({
     "followPlayer",
@@ -162,6 +166,7 @@ DIRECT_SHORTCUT_ROUTES: frozenset[str] = frozenset({
     "skill",
 })
 PREFLIGHT_HOOKS: dict[str, tuple[str, ...]] = {
+    "breedAnimalsInPenBatch": ("known_home_shelter_location",),
     "collectBlocks": ("knowledge_tool_requirement",),
     "mineOreWithTool": ("knowledge_tool_requirement",),
     "craftRecipe": ("skip_nearby_furnace", "bed_dye_misconception", "missing_materials"),
@@ -541,6 +546,34 @@ def command_defs() -> dict[str, CommandDef]:
                 "range": {
                     "type": "float",
                     "description": "Search radius for matching animals, max 64",
+                },
+            },
+        ),
+        "breedAnimalsInPenBatch": CommandDef(
+            name="breedAnimalsInPenBatch",
+            description=(
+                "Batch breed animals in a nearby fenced pen. This first checks for "
+                "fence/fence_gate blocks nearby, then repeatedly feeds matching animals "
+                "within a small pen radius. Only use this at a player-marked home, base, "
+                "or shelter location."
+            ),
+            params={
+                "animal_type": {
+                    "type": "string",
+                    "description": "Animal type inside the pen, e.g. chicken, cow, sheep, pig",
+                },
+                "pairs": {"type": "int", "description": "Number of breeding pairs"},
+                "breeding_item": {
+                    "type": "string",
+                    "description": "Food item to feed; optional if known for the animal",
+                },
+                "range": {
+                    "type": "float",
+                    "description": "Small pen search radius, default 8, max 16",
+                },
+                "player_name": {
+                    "type": "string",
+                    "description": "Optional player/pen owner to return near before breeding",
                 },
             },
         ),

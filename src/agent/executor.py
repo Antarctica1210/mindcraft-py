@@ -175,6 +175,15 @@ def _is_wood_log(name: str) -> bool:
     return lowered.endswith("_log") or lowered.endswith("_stem") or lowered.endswith("_hyphae")
 
 
+def _is_fence_block(name: str) -> bool:
+    lowered = name.strip().lower()
+    return (
+        lowered.endswith("_fence")
+        or lowered.endswith("_fence_gate")
+        or lowered in {"nether_brick_fence"}
+    )
+
+
 def _wood_family_from_log(name: str) -> str | None:
     lowered = name.strip().lower()
     if lowered.startswith("stripped_"):
@@ -929,6 +938,50 @@ class ActionExecutor:
         ])
 
     @staticmethod
+    async def _breed_animals_in_pen_batch(
+        bridge: Any,
+        animal_type: str,
+        pairs: int = 1,
+        breeding_item: str | None = None,
+        range_val: float = 8,
+        player_name: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        if "range" in kwargs:
+            range_val = kwargs["range"]
+        wanted = max(1, int(pairs or 1))
+        search_range = max(2.0, min(16.0, float(range_val or 8)))
+        notes: list[str] = []
+        if player_name:
+            notes.append(str(await bridge.go_to_player(player_name, 3)))
+
+        nearby = await bridge.get_nearby_blocks(int(max(8, search_range)))
+        fence_blocks = sorted({str(name) for name in nearby or [] if _is_fence_block(str(name))})
+        if not fence_blocks:
+            raise RuntimeError(
+                "No nearby fence or fence_gate found. Move into/next to the animal pen first, "
+                "or build a fenced pen before using breedAnimalsInPenBatch."
+            )
+
+        bred = 0
+        for _idx in range(wanted):
+            try:
+                result = await bridge.breed_animals(animal_type, breeding_item, search_range)
+            except Exception as exc:
+                if bred == 0:
+                    raise
+                notes.append(f"Stopped after {bred}/{wanted} pen pairs: {exc}")
+                break
+            bred += 1
+            notes.append(str(result))
+
+        return "\n".join([
+            f"Bred {bred} animal pairs of {animal_type} in nearby fenced pen.",
+            f"Fence evidence: {', '.join(fence_blocks[:5])}.",
+            *notes[-6:],
+        ])
+
+    @staticmethod
     async def _use_door(
         bridge: Any, x: float | None = None, y: float | None = None, z: float | None = None,
     ) -> Any:
@@ -1080,6 +1133,7 @@ class ActionExecutor:
             "mineOreWithTool": self._mine_ore_with_tool,
             "craftWithDependencies": self._craft_with_dependencies,
             "breedAnimalsBatch": self._breed_animals_batch,
+            "breedAnimalsInPenBatch": self._breed_animals_in_pen_batch,
             "useDoor": self._use_door,
             "getCraftingPlan": self._get_crafting_plan,
             "searchWiki": self._search_wiki,

@@ -117,6 +117,34 @@ _DELIVERY_PRIMARY_WEIGHT = 0.70
 _DELIVERY_SMALL_MODEL_WEIGHT = 0.30
 _DELIVERY_DECISION_THRESHOLD = 0.50
 _SEED_GRASS_BLOCKS: frozenset[str] = frozenset({"grass", "short_grass", "tall_grass"})
+_HOME_SHELTER_KEYWORDS: tuple[str, ...] = (
+    "home",
+    "base",
+    "shelter",
+    "house",
+    "safehouse",
+    "safe_house",
+    "camp",
+    "家",
+    "基地",
+    "庇护所",
+    "避难所",
+    "住所",
+    "住处",
+    "营地",
+)
+_HOME_SHELTER_RADIUS_BLOCKS = 32.0
+_POSITION_TUPLE_RE = re.compile(
+    r"\(\s*(?P<x>-?\d+(?:\.\d+)?)\s*,\s*"
+    r"(?P<y>-?\d+(?:\.\d+)?)\s*,\s*"
+    r"(?P<z>-?\d+(?:\.\d+)?)\s*\)"
+)
+_POSITION_XYZ_RE = re.compile(
+    r"\bx\s*[:=]\s*(?P<x>-?\d+(?:\.\d+)?)"
+    r".{0,40}?\by\s*[:=]\s*(?P<y>-?\d+(?:\.\d+)?)"
+    r".{0,40}?\bz\s*[:=]\s*(?P<z>-?\d+(?:\.\d+)?)",
+    re.IGNORECASE | re.DOTALL,
+)
 _WOOD_TYPES: tuple[str, ...] = (
     "oak",
     "spruce",
@@ -355,6 +383,37 @@ def _memory_record_matches_task(record: MemoryRecord, message: str) -> bool:
         r"跟|过来|重生点|坐标|位置|地点|基地|家",
         haystack,
     ))
+
+
+def _memory_record_text(record: MemoryRecord) -> str:
+    return " ".join((
+        record.name,
+        record.description or "",
+        " ".join(record.tags or []),
+        record.body or "",
+    ))
+
+
+def _memory_record_is_home_shelter_place(record: MemoryRecord) -> bool:
+    if record.type != MemoryType.PLACE:
+        return False
+    haystack = _memory_record_text(record).lower()
+    return any(keyword in haystack for keyword in _HOME_SHELTER_KEYWORDS)
+
+
+def _position_from_place_memory(record: MemoryRecord) -> Position | None:
+    text = _memory_record_text(record)
+    match = _POSITION_TUPLE_RE.search(text) or _POSITION_XYZ_RE.search(text)
+    if match is None:
+        return None
+    try:
+        return Position(
+            x=float(match.group("x")),
+            y=float(match.group("y")),
+            z=float(match.group("z")),
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _inventory_log_count_from_state(state: BotState) -> int:
@@ -2736,6 +2795,14 @@ class Agent:
             return "FAILED: observe() failed before action."
 
         nearby = set(state.nearby_block_types)
+        if "known_home_shelter_location" in hooks:
+            location_preflight = await self._known_home_shelter_location_preflight(
+                command_name,
+                state,
+            )
+            if location_preflight is not None:
+                return location_preflight
+
         if "skip_reusable_workstation" in hooks:
             block_type = str((kwargs or {}).get("block_type", args[0] if args else "")).strip()
             if block_type in _REUSABLE_WORKSTATIONS and block_type in nearby:
@@ -2795,6 +2862,77 @@ class Agent:
                 )
 
         return None
+
+    async def _known_home_shelter_location_preflight(
+        self,
+        command_name: str,
+        state: BotState,
+    ) -> str | None:
+        """Require location-sensitive pen work to happen at a marked safe place."""
+        if self._memory is None:
+            return (
+                f"FAILED: {command_name} is restricted to a remembered home/base/shelter "
+                "location. Ask the player to mark this place first, for example: "
+                "'remember here as base'."
+            )
+
+        try:
+            results = await self._memory.recall(MemoryQuery(
+                type=MemoryType.PLACE,
+                scope=Scope.WORLD,
+                keywords=list(_HOME_SHELTER_KEYWORDS),
+                min_confidence=0.5,
+                limit=10,
+            ))
+        except Exception:
+            logger.exception("Memory home/shelter preflight failed")
+            return (
+                f"FAILED: Could not verify a remembered home/base/shelter before "
+                f"{command_name}. Retry after memory is available."
+            )
+
+        candidates = [
+            result.record
+            for result in results
+            if _memory_record_is_home_shelter_place(result.record)
+        ]
+        closest: tuple[MemoryRecord, Position, float] | None = None
+        missing_position: list[str] = []
+        for record in candidates:
+            place_pos = _position_from_place_memory(record)
+            if place_pos is None:
+                missing_position.append(record.name)
+                continue
+            distance = state.position.distance_to(place_pos)
+            if closest is None or distance < closest[2]:
+                closest = (record, place_pos, distance)
+            if distance <= _HOME_SHELTER_RADIUS_BLOCKS:
+                logger.info(
+                    "Known home/shelter preflight passed: command=%s place=%s distance=%.1f",
+                    command_name,
+                    record.name,
+                    distance,
+                )
+                return None
+
+        if closest is not None:
+            record, place_pos, distance = closest
+            return (
+                f"FAILED: {command_name} is restricted to a remembered home/base/shelter "
+                f"pen. Current position is {distance:.1f} blocks from '{record.name}' "
+                f"at ({place_pos.x:.0f}, {place_pos.y:.0f}, {place_pos.z:.0f}); "
+                "go there first, or ask the player to mark this place as home/base/shelter."
+            )
+        if missing_position:
+            return (
+                f"FAILED: {command_name} found home/base/shelter memories, but none had "
+                "usable coordinates. Ask the player to mark the location again here."
+            )
+        return (
+            f"FAILED: {command_name} is restricted to a remembered home/base/shelter "
+            "location. Ask the player to mark this place first, for example: "
+            "'remember here as base'."
+        )
 
     def _smelt_item_preflight_hint(
         self,

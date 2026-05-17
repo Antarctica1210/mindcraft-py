@@ -61,7 +61,7 @@ def action_effects_from_result(command_name: str, result: Any) -> list[ActionEff
 
     if name == "breedAnimals" and ("bred" in lower or "breed" in lower):
         effects.append(ActionEffect(type="interaction", name="animal_bred", count=1))
-    if name == "breedAnimalsBatch":
+    if name in {"breedAnimalsBatch", "breedAnimalsInPenBatch"}:
         match = _BRED_BATCH_EFFECT_RE.search(text)
         count = int(match.group("count")) if match is not None else 1
         effects.append(ActionEffect(type="interaction", name="animal_bred", count=count))

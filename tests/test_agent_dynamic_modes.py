@@ -11,6 +11,7 @@ from agent.modes import BehaviorMode, ModeEvaluator
 from llm.dispatch_gate import DispatchDecision
 from llm.message_builder import ConversationTurn, MessageBuilder
 from llm.prompter import LLMInput, LLMOutput, ToolCallFunction, ToolCallOutput
+from memory.models import MemoryQuery, MemoryRecord, MemoryResult, MemoryType, Scope
 
 
 class FakePrompter:
@@ -41,6 +42,23 @@ class FakeTaskMemory:
     async def remember(self, record: Any, *, is_player_requested: bool = False) -> str:
         self.records.append(record)
         return record.name
+
+    async def recall(self, query: MemoryQuery) -> list[MemoryResult]:
+        return []
+
+
+class FakeRecallMemory(FakeTaskMemory):
+    def __init__(self, records: list[MemoryRecord]) -> None:
+        super().__init__()
+        self.recall_queries: list[MemoryQuery] = []
+        self._records = records
+
+    async def recall(self, query: MemoryQuery) -> list[MemoryResult]:
+        self.recall_queries.append(query)
+        return [
+            MemoryResult(record=record, score=1.0, matched_on="test")
+            for record in self._records
+        ]
 
 
 def test_all_commands_have_completion_kind() -> None:
@@ -1863,6 +1881,58 @@ async def test_collect_blocks_preflight_reports_missing_required_tool() -> None:
     assert result is not None
     assert "Need a stone_pickaxe to mine iron_ore" in result
     assert not any(call[0] == "collect_blocks" for call in bridge.calls)
+
+
+async def test_breed_animals_in_pen_requires_remembered_home_or_shelter() -> None:
+    bridge = FakeBridge()
+    bridge.nearby_blocks = ["oak_fence", "oak_fence_gate", "grass_block"]
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._memory = FakeRecallMemory([])
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command(
+        "breedAnimalsInPenBatch",
+        [],
+        {"animal_type": "cow", "pairs": 1, "breeding_item": "wheat"},
+    )
+
+    assert result is not None
+    assert result.startswith(
+        "FAILED: breedAnimalsInPenBatch is restricted to a remembered home/base/shelter"
+    )
+    assert not any(call[0] == "breed_animals" for call in bridge.calls)
+
+
+async def test_breed_animals_in_pen_allows_marked_home_location() -> None:
+    bridge = FakeBridge()
+    bridge.position = {"x": 8.0, "y": 64.0, "z": 6.0}
+    bridge.nearby_blocks = ["oak_fence", "oak_fence_gate", "grass_block"]
+    home = MemoryRecord(
+        name="base",
+        description="Main home base",
+        type=MemoryType.PLACE,
+        scope=Scope.WORLD,
+        confidence=0.95,
+        tags=["home", "player_marked"],
+        body="Position: (0, 64, 0)",
+    )
+    agent = Agent(AgentConfig(name="bot", max_commands=1))
+    agent._bridge = bridge
+    agent._memory = FakeRecallMemory([home])
+    agent._executor.set_bridge(bridge)
+    agent._executor._register_builtins()
+
+    result = await agent._execute_agent_command(
+        "breedAnimalsInPenBatch",
+        [],
+        {"animal_type": "cow", "pairs": 1, "breeding_item": "wheat"},
+    )
+
+    assert result is not None
+    assert "Bred 1 animal pairs of cow in nearby fenced pen" in result
+    assert ("breed_animals", "cow", "wheat", 8.0) in bridge.calls
 
 
 async def test_bed_crafting_rejects_wool_to_dye_misconception() -> None:

@@ -126,12 +126,19 @@ def test_effect_extractor_counts_batch_planting_and_breeding() -> None:
         "breedAnimalsBatch",
         "Bred 3 animal pairs of chicken.",
     )
+    fenced_breeding = action_effects_from_result(
+        "breedAnimalsInPenBatch",
+        "Bred 4 animal pairs of cow in nearby fenced pen.",
+    )
 
     assert planting == [
         ActionEffect(type="world_change", name="planted_crop", count=5),
     ]
     assert breeding == [
         ActionEffect(type="interaction", name="animal_bred", count=3),
+    ]
+    assert fenced_breeding == [
+        ActionEffect(type="interaction", name="animal_bred", count=4),
     ]
 
 
@@ -242,6 +249,10 @@ def test_command_meta_centralizes_terminal_and_navigation_policy() -> None:
     assert command_meta("collectAnyWood").completion_kind == "inventory"
     assert command_meta("mineOreWithTool").completion_kind == "inventory"
     assert command_meta("breedAnimalsBatch").completion_kind == "world_change"
+    assert command_meta("breedAnimalsInPenBatch").completion_kind == "world_change"
+    assert "known_home_shelter_location" in command_meta(
+        "breedAnimalsInPenBatch"
+    ).preflight_hooks
     assert "missing_materials" in command_meta("craftRecipe").preflight_hooks
     assert "knowledge_tool_requirement" in command_meta("collectBlocks").preflight_hooks
     assert command_meta("goToPlayer").direct_shortcut is True
@@ -256,6 +267,7 @@ def test_command_registry_owns_command_docs() -> None:
     assert "mineOreWithTool" in defs
     assert "craftWithDependencies" in defs
     assert "breedAnimalsBatch" in defs
+    assert "breedAnimalsInPenBatch" in defs
     assert defs["craftRecipe"].completion_kind == "inventory"
     assert "Always use getCraftingPlan" in defs["craftRecipe"].description
     assert defs["plantSeedsNearPlayer"].completion_kind == "world_change"
@@ -309,14 +321,46 @@ async def test_batch_skill_commands_compose_existing_bridge_actions() -> None:
         [],
         {"animal_type": "chicken", "pairs": 2, "breeding_item": "wheat_seeds"},
     )
+    bridge.nearby_blocks = ["oak_fence", "oak_fence_gate", "grass_block"]
+    pen_bred = await executor.execute(
+        "breedAnimalsInPenBatch",
+        [],
+        {
+            "animal_type": "cow",
+            "pairs": 2,
+            "breeding_item": "wheat",
+            "range": 7,
+            "player_name": "Wilson",
+        },
+    )
 
     assert wood is not None and "spruce_log" in wood
     assert planted is not None and "Planted 3x wheat_seeds" in planted
     assert bred is not None and "Bred 2 animal pairs of chicken" in bred
+    assert pen_bred is not None and "Bred 2 animal pairs of cow in nearby fenced pen" in pen_bred
+    assert "Fence evidence: oak_fence, oak_fence_gate" in pen_bred
     assert ("collect_blocks", "spruce_log", 4) in bridge.calls
     assert ("go_to_player", "Wilson", 3) in bridge.calls
     assert bridge.method_call_count("till_and_sow") == 3
-    assert bridge.method_call_count("breed_animals") == 2
+    assert bridge.method_call_count("breed_animals") == 4
+    assert ("breed_animals", "cow", "wheat", 7.0) in bridge.calls
+
+
+async def test_breed_animals_in_pen_requires_fence_evidence() -> None:
+    bridge = FakeBridge()
+    bridge.nearby_blocks = ["grass_block", "dirt"]
+    executor = ActionExecutor(bridge)
+    executor._register_builtins()
+
+    result = await executor.execute(
+        "breedAnimalsInPenBatch",
+        [],
+        {"animal_type": "cow", "pairs": 1, "breeding_item": "wheat"},
+    )
+
+    assert result is not None
+    assert result.startswith("FAILED: No nearby fence or fence_gate found")
+    assert not any(call[0] == "breed_animals" for call in bridge.calls)
 
 
 async def test_mine_ore_with_tool_crafts_missing_stone_pickaxe() -> None:
