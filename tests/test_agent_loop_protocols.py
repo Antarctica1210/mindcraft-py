@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from conftest import FakeBridge
+
 from agent.action_result import ActionResult
 from agent.command_registry import (
     command_defs,
@@ -18,6 +20,7 @@ from agent.completion import (
     task_effect_count,
 )
 from agent.effects import ActionEffect, action_effects_from_result
+from agent.executor import ActionExecutor
 from agent.failures import classify_failure, is_hard_failure, parse_missing_counts
 from agent.models import BotState, InventoryItem
 from agent.planner_loop import PlannerLoop
@@ -112,6 +115,24 @@ def test_effect_extractor_counts_planting_without_task_specific_code() -> None:
     state = BotState(inventory=[])
 
     assert completion_spec_satisfied(task, state) is True
+
+
+def test_effect_extractor_counts_batch_planting_and_breeding() -> None:
+    planting = action_effects_from_result(
+        "plantSeedsNearPlayer",
+        "Planted 5x wheat_seeds near Wilson.",
+    )
+    breeding = action_effects_from_result(
+        "breedAnimalsBatch",
+        "Bred 3 animal pairs of chicken.",
+    )
+
+    assert planting == [
+        ActionEffect(type="world_change", name="planted_crop", count=5),
+    ]
+    assert breeding == [
+        ActionEffect(type="interaction", name="animal_bred", count=3),
+    ]
 
 
 def test_task_effect_count_prefers_structured_effects_over_legacy_events() -> None:
@@ -214,7 +235,13 @@ def test_command_meta_centralizes_terminal_and_navigation_policy() -> None:
     assert command_meta("searchForBlock").allowed_in_navigation_task is False
     assert command_meta("inventory").allowed_in_navigation_task is True
     assert command_meta("craftRecipe").inventory_prep is True
+    assert command_meta("craftWithDependencies").inventory_prep is True
     assert command_meta("craftRecipe").requires_pre_action_observe is True
+    assert command_meta("plantSeedsNearPlayer").completion_kind == "world_change"
+    assert command_meta("plantSeedsNearPlayer").terminal_by_default is True
+    assert command_meta("collectAnyWood").completion_kind == "inventory"
+    assert command_meta("mineOreWithTool").completion_kind == "inventory"
+    assert command_meta("breedAnimalsBatch").completion_kind == "world_change"
     assert "missing_materials" in command_meta("craftRecipe").preflight_hooks
     assert "knowledge_tool_requirement" in command_meta("collectBlocks").preflight_hooks
     assert command_meta("goToPlayer").direct_shortcut is True
@@ -224,8 +251,14 @@ def test_command_registry_owns_command_docs() -> None:
     defs = command_defs()
 
     assert "craftRecipe" in defs
+    assert "plantSeedsNearPlayer" in defs
+    assert "collectAnyWood" in defs
+    assert "mineOreWithTool" in defs
+    assert "craftWithDependencies" in defs
+    assert "breedAnimalsBatch" in defs
     assert defs["craftRecipe"].completion_kind == "inventory"
     assert "Always use getCraftingPlan" in defs["craftRecipe"].description
+    assert defs["plantSeedsNearPlayer"].completion_kind == "world_change"
     assert defs["breedAnimals"].params["breeding_item"]["description"]
 
 
@@ -254,8 +287,60 @@ async def test_command_runner_wraps_legacy_executor_output() -> None:
     assert run.elapsed_ms >= 0
 
 
+async def test_batch_skill_commands_compose_existing_bridge_actions() -> None:
+    bridge = FakeBridge()
+    bridge.nearby_blocks = ["spruce_log", "grass_block"]
+    bridge.inventory = [
+        {"name": "oak_log", "count": 2},
+        {"name": "cobblestone", "count": 3},
+        {"name": "stick", "count": 2},
+    ]
+    executor = ActionExecutor(bridge)
+    executor._register_builtins()
+
+    wood = await executor.execute("collectAnyWood", [], {"count": 4})
+    planted = await executor.execute(
+        "plantSeedsNearPlayer",
+        [],
+        {"count": 3, "seed_type": "wheat_seeds", "player_name": "Wilson", "range": 2},
+    )
+    bred = await executor.execute(
+        "breedAnimalsBatch",
+        [],
+        {"animal_type": "chicken", "pairs": 2, "breeding_item": "wheat_seeds"},
+    )
+
+    assert wood is not None and "spruce_log" in wood
+    assert planted is not None and "Planted 3x wheat_seeds" in planted
+    assert bred is not None and "Bred 2 animal pairs of chicken" in bred
+    assert ("collect_blocks", "spruce_log", 4) in bridge.calls
+    assert ("go_to_player", "Wilson", 3) in bridge.calls
+    assert bridge.method_call_count("till_and_sow") == 3
+    assert bridge.method_call_count("breed_animals") == 2
+
+
+async def test_mine_ore_with_tool_crafts_missing_stone_pickaxe() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [
+        {"name": "oak_log", "count": 2},
+        {"name": "cobblestone", "count": 3},
+    ]
+    executor = ActionExecutor(bridge)
+    executor._register_builtins()
+
+    result = await executor.execute("mineOreWithTool", [], {"ore_type": "iron", "count": 2})
+
+    assert result is not None
+    assert "Mined 2x iron_ore" in result
+    assert ("craft_recipe", "crafting_table", 1) in bridge.calls
+    assert ("craft_recipe", "stick", 1) in bridge.calls
+    assert ("craft_recipe", "stone_pickaxe", 1) in bridge.calls
+    assert ("collect_blocks", "iron_ore", 2) in bridge.calls
+
+
 def test_world_change_completion_policy_lives_in_command_registry() -> None:
     assert world_change_command_can_complete("tillAndSow", "种1块田") is True
+    assert world_change_command_can_complete("plantSeedsNearPlayer", "种16块田") is True
     assert world_change_command_can_complete("breakNearbyBlocks", "种16块田") is False
     assert world_change_command_can_complete("breakNearbyBlocks", "清理草") is True
     assert world_change_command_can_complete("digDown", "帮我做两把铁镐") is False

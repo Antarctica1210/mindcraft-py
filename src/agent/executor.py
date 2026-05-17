@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import re
 import time
 from collections.abc import Callable
@@ -59,6 +60,188 @@ def _failure_hint(command_name: str, error: str) -> str | None:
 def _preview(value: Any, *, limit: int = 300) -> str:
     text = str(value)
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+WOOD_LOG_FALLBACKS: tuple[str, ...] = (
+    "oak_log",
+    "spruce_log",
+    "birch_log",
+    "jungle_log",
+    "acacia_log",
+    "dark_oak_log",
+    "mangrove_log",
+    "cherry_log",
+    "pale_oak_log",
+    "crimson_stem",
+    "warped_stem",
+)
+PICKAXE_TIERS: tuple[str, ...] = (
+    "wooden_pickaxe",
+    "stone_pickaxe",
+    "iron_pickaxe",
+    "diamond_pickaxe",
+    "netherite_pickaxe",
+)
+ORE_BLOCK_ALIASES: dict[str, str] = {
+    "coal": "coal_ore",
+    "iron": "iron_ore",
+    "raw_iron": "iron_ore",
+    "copper": "copper_ore",
+    "raw_copper": "copper_ore",
+    "gold": "gold_ore",
+    "raw_gold": "gold_ore",
+    "redstone": "redstone_ore",
+    "diamond": "diamond_ore",
+    "emerald": "emerald_ore",
+    "lapis": "lapis_ore",
+    "lapis_lazuli": "lapis_ore",
+}
+ORE_MIN_PICKAXE: dict[str, str] = {
+    "iron_ore": "stone_pickaxe",
+    "deepslate_iron_ore": "stone_pickaxe",
+    "copper_ore": "stone_pickaxe",
+    "deepslate_copper_ore": "stone_pickaxe",
+    "lapis_ore": "stone_pickaxe",
+    "deepslate_lapis_ore": "stone_pickaxe",
+    "gold_ore": "iron_pickaxe",
+    "deepslate_gold_ore": "iron_pickaxe",
+    "redstone_ore": "iron_pickaxe",
+    "deepslate_redstone_ore": "iron_pickaxe",
+    "diamond_ore": "iron_pickaxe",
+    "deepslate_diamond_ore": "iron_pickaxe",
+    "emerald_ore": "iron_pickaxe",
+    "deepslate_emerald_ore": "iron_pickaxe",
+}
+TOOL_MATERIAL_COUNTS: dict[str, int] = {
+    "sword": 2,
+    "pickaxe": 3,
+    "axe": 3,
+    "shovel": 1,
+    "hoe": 2,
+}
+TOOL_STICK_COUNTS: dict[str, int] = {
+    "sword": 1,
+    "pickaxe": 2,
+    "axe": 2,
+    "shovel": 2,
+    "hoe": 2,
+}
+TOOL_MATERIAL_ITEMS: dict[str, str] = {
+    "wood": "oak_planks",
+    "wooden": "oak_planks",
+    "stone": "cobblestone",
+    "iron": "iron_ingot",
+    "gold": "gold_ingot",
+    "golden": "gold_ingot",
+    "diamond": "diamond",
+}
+WOOD_FAMILIES: tuple[str, ...] = (
+    "oak",
+    "spruce",
+    "birch",
+    "jungle",
+    "acacia",
+    "dark_oak",
+    "mangrove",
+    "cherry",
+    "pale_oak",
+    "crimson",
+    "warped",
+)
+WOOD_PLANK_ITEMS: frozenset[str] = frozenset({
+    *(f"{family}_planks" for family in WOOD_FAMILIES),
+    "bamboo_planks",
+})
+
+
+def _inventory_counts(items: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items or []:
+        if isinstance(item, dict):
+            name = str(item.get("name", ""))
+            count = int(item.get("count", 0) or 0)
+        else:
+            name = str(getattr(item, "name", ""))
+            count = int(getattr(item, "count", 0) or 0)
+        if name and count > 0:
+            counts[name] = counts.get(name, 0) + count
+    return counts
+
+
+def _is_wood_log(name: str) -> bool:
+    lowered = name.strip().lower()
+    if lowered.startswith("stripped_"):
+        lowered = lowered.removeprefix("stripped_")
+    return lowered.endswith("_log") or lowered.endswith("_stem") or lowered.endswith("_hyphae")
+
+
+def _wood_family_from_log(name: str) -> str | None:
+    lowered = name.strip().lower()
+    if lowered.startswith("stripped_"):
+        lowered = lowered.removeprefix("stripped_")
+    for suffix in ("_log", "_stem", "_hyphae"):
+        if lowered.endswith(suffix):
+            return lowered.removesuffix(suffix)
+    return None
+
+
+def _planks_for_family(family: str) -> str:
+    return f"{family}_planks"
+
+
+def _tool_parts(tool_name: str) -> tuple[str, str] | None:
+    name = tool_name.strip().lower()
+    for family in TOOL_MATERIAL_COUNTS:
+        suffix = f"_{family}"
+        if name.endswith(suffix):
+            material = name[:-len(suffix)]
+            if material:
+                return material, family
+    return None
+
+
+def _has_any(counts: dict[str, int], items: tuple[str, ...], count: int = 1) -> bool:
+    return any(counts.get(item, 0) >= count for item in items)
+
+
+def _pickaxe_satisfies(have: str, required: str) -> bool:
+    try:
+        return PICKAXE_TIERS.index(have) >= PICKAXE_TIERS.index(required)
+    except ValueError:
+        return False
+
+
+def _normalize_ore_block(ore_type: str) -> str:
+    name = ore_type.strip().lower()
+    if name in ORE_BLOCK_ALIASES:
+        return ORE_BLOCK_ALIASES[name]
+    if name.endswith("_ore") or name.startswith("deepslate_"):
+        return name
+    return f"{name}_ore"
+
+
+def _candidate_plant_positions(
+    x: float,
+    y: float,
+    z: float,
+    *,
+    search_range: int,
+) -> list[tuple[int, int, int]]:
+    base_x = math.floor(x)
+    base_y = math.floor(y) - 1
+    base_z = math.floor(z)
+    offsets = [
+        (dx, dz)
+        for dx in range(-search_range, search_range + 1)
+        for dz in range(-search_range, search_range + 1)
+    ]
+    offsets.sort(
+        key=lambda item: (
+            abs(item[0]) + abs(item[1]),
+            item[0] * item[0] + item[1] * item[1],
+        ),
+    )
+    return [(base_x + dx, base_y, base_z + dz) for dx, dz in offsets]
 
 
 class ActionExecutor:
@@ -487,6 +670,265 @@ class ActionExecutor:
         return await bridge.till_and_sow(x, y, z, seed_type)
 
     @staticmethod
+    async def _plant_seeds_near_player(
+        bridge: Any,
+        count: int = 8,
+        seed_type: str = "wheat_seeds",
+        player_name: str | None = None,
+        range_val: float = 8,
+        **kwargs: Any,
+    ) -> str:
+        if "range" in kwargs:
+            range_val = kwargs["range"]
+        wanted = max(1, int(count or 1))
+        search_range = max(1, min(16, int(range_val or 8)))
+        notes: list[str] = []
+        if player_name:
+            notes.append(str(await bridge.go_to_player(player_name, 3)))
+        state = await bridge.observe()
+        pos = state.get("position", {}) if isinstance(state, dict) else {}
+        x = float(pos.get("x", 0.0))
+        y = float(pos.get("y", 64.0))
+        z = float(pos.get("z", 0.0))
+
+        planted = 0
+        skipped: list[str] = []
+        for px, py, pz in _candidate_plant_positions(
+            x,
+            y,
+            z,
+            search_range=search_range,
+        ):
+            if planted >= wanted:
+                break
+            try:
+                result = await bridge.till_and_sow(px, py, pz, seed_type)
+            except Exception as exc:
+                if len(skipped) < 5:
+                    skipped.append(f"({px},{py},{pz}): {exc}")
+                continue
+            text = str(result)
+            lower = text.lower()
+            if (
+                "failed:" in lower
+                or "cannot till" in lower
+                or ("no " in lower and "to plant" in lower)
+            ):
+                if len(skipped) < 5:
+                    skipped.append(f"({px},{py},{pz}): {text}")
+                continue
+            planted += 1
+            notes.append(text)
+
+        if planted <= 0:
+            detail = "; ".join(skipped) if skipped else "no valid nearby planting spots"
+            raise RuntimeError(f"Batch planting failed: {detail}")
+        prefix = (
+            f"Planted {planted}x {seed_type} near "
+            f"{player_name or 'current position'}."
+        )
+        if planted < wanted:
+            prefix += f" Requested {wanted}; stopped after reachable spots/seeds ran out."
+        return "\n".join([prefix, *notes[-5:]])
+
+    @staticmethod
+    async def _collect_any_wood(
+        bridge: Any,
+        count: int = 8,
+        range_val: float = 16,
+        **kwargs: Any,
+    ) -> str:
+        if "range" in kwargs:
+            range_val = kwargs["range"]
+        wanted = max(1, int(count or 1))
+        search_range = max(1, min(64, int(range_val or 16)))
+        nearby = await bridge.get_nearby_blocks(search_range)
+        nearby_logs = [
+            str(name)
+            for name in nearby or []
+            if _is_wood_log(str(name))
+        ]
+        candidates = list(dict.fromkeys([*nearby_logs, *WOOD_LOG_FALLBACKS]))
+        errors: list[str] = []
+        for block_type in candidates:
+            try:
+                result = await bridge.collect_blocks(block_type, wanted)
+                return f"Collected wood using {block_type}.\n{result}"
+            except Exception as exc:
+                if len(errors) < 6:
+                    errors.append(f"{block_type}: {exc}")
+        raise RuntimeError(
+            "Could not collect any wood. Tried: "
+            + ("; ".join(errors) if errors else ", ".join(candidates))
+        )
+
+    @staticmethod
+    async def _mine_ore_with_tool(
+        bridge: Any,
+        ore_type: str,
+        count: int = 8,
+    ) -> str:
+        wanted = max(1, int(count or 1))
+        ore_block = _normalize_ore_block(ore_type)
+        required_tool = ORE_MIN_PICKAXE.get(ore_block, "stone_pickaxe")
+        counts = _inventory_counts(await bridge.get_inventory())
+        if not any(
+            _pickaxe_satisfies(item, required_tool) and qty > 0
+            for item, qty in counts.items()
+        ):
+            await ActionExecutor._craft_with_dependencies(
+                bridge,
+                recipe_name=required_tool,
+                num=1,
+            )
+        result = await bridge.collect_blocks(ore_block, wanted)
+        return f"Mined {wanted}x {ore_block} with required tool support.\n{result}"
+
+    @staticmethod
+    async def _craft_with_dependencies(
+        bridge: Any,
+        recipe_name: str,
+        num: int = 1,
+    ) -> str:
+        target = recipe_name.strip().lower()
+        wanted = max(1, int(num or 1))
+        notes: list[str] = []
+
+        async def counts() -> dict[str, int]:
+            return _inventory_counts(await bridge.get_inventory())
+
+        async def refresh_after(result: Any) -> dict[str, int]:
+            notes.append(str(result))
+            return await counts()
+
+        async def ensure_planks(required: int) -> dict[str, int]:
+            inv = await counts()
+            if sum(inv.get(item, 0) for item in WOOD_PLANK_ITEMS) >= required:
+                return inv
+            log_items = [
+                (name, count)
+                for name, count in inv.items()
+                if count > 0 and _wood_family_from_log(name) is not None
+            ]
+            if not log_items:
+                notes.append(await ActionExecutor._collect_any_wood(
+                    bridge,
+                    count=max(1, math.ceil(required / 4)),
+                ))
+                inv = await counts()
+                log_items = [
+                    (name, count)
+                    for name, count in inv.items()
+                    if count > 0 and _wood_family_from_log(name) is not None
+                ]
+            if not log_items:
+                raise RuntimeError(f"Need logs to craft planks for {target}.")
+            log_name, _log_count = max(log_items, key=lambda item: item[1])
+            family = _wood_family_from_log(log_name) or "oak"
+            planks = _planks_for_family(family)
+            current = sum(inv.get(item, 0) for item in WOOD_PLANK_ITEMS)
+            crafts = max(1, math.ceil(max(0, required - current) / 4))
+            return await refresh_after(await bridge.craft_recipe(planks, crafts))
+
+        async def ensure_sticks(required: int) -> dict[str, int]:
+            inv = await counts()
+            if inv.get("stick", 0) >= required:
+                return inv
+            missing = required - inv.get("stick", 0)
+            stick_crafts = max(1, math.ceil(missing / 4))
+            await ensure_planks(stick_crafts * 2)
+            return await refresh_after(await bridge.craft_recipe("stick", stick_crafts))
+
+        async def ensure_crafting_table() -> dict[str, int]:
+            inv = await counts()
+            if inv.get("crafting_table", 0) > 0:
+                return inv
+            nearby = set(str(name) for name in await bridge.get_nearby_blocks(16))
+            if "crafting_table" in nearby:
+                return inv
+            await ensure_planks(4)
+            return await refresh_after(await bridge.craft_recipe("crafting_table", 1))
+
+        async def ensure_cobblestone(required: int) -> dict[str, int]:
+            inv = await counts()
+            if inv.get("cobblestone", 0) >= required:
+                return inv
+            missing = required - inv.get("cobblestone", 0)
+            return await refresh_after(await bridge.collect_blocks("cobblestone", missing))
+
+        async def ensure_material(item_name: str, required: int) -> dict[str, int]:
+            inv = await counts()
+            if inv.get(item_name, 0) >= required:
+                return inv
+            if item_name == "cobblestone":
+                return await ensure_cobblestone(required)
+            if item_name == "iron_ingot" and inv.get("raw_iron", 0) >= required:
+                return await refresh_after(await bridge.smelt_item("raw_iron", required))
+            if item_name == "gold_ingot" and inv.get("raw_gold", 0) >= required:
+                return await refresh_after(await bridge.smelt_item("raw_gold", required))
+            if item_name in WOOD_PLANK_ITEMS:
+                return await ensure_planks(required)
+            raise RuntimeError(
+                f"Missing {item_name} x{required} for {target}; cannot prepare it automatically."
+            )
+
+        if target == "stick":
+            await ensure_sticks(wanted)
+        elif target in WOOD_PLANK_ITEMS or target.endswith("_planks"):
+            await ensure_planks(wanted)
+        elif target == "crafting_table":
+            await ensure_crafting_table()
+        elif target == "furnace":
+            await ensure_cobblestone(8 * wanted)
+        else:
+            parts = _tool_parts(target)
+            if parts is not None:
+                material, family = parts
+                await ensure_crafting_table()
+                await ensure_sticks(TOOL_STICK_COUNTS[family] * wanted)
+                material_item = TOOL_MATERIAL_ITEMS.get(material)
+                if material in {"wood", "wooden"}:
+                    await ensure_planks(TOOL_MATERIAL_COUNTS[family] * wanted)
+                elif material_item is not None:
+                    await ensure_material(material_item, TOOL_MATERIAL_COUNTS[family] * wanted)
+
+        result = await bridge.craft_recipe(target, wanted)
+        return "\n".join([
+            f"Crafted {wanted}x {target} with dependency preparation.",
+            *notes[-8:],
+            str(result),
+        ])
+
+    @staticmethod
+    async def _breed_animals_batch(
+        bridge: Any,
+        animal_type: str,
+        pairs: int = 1,
+        breeding_item: str | None = None,
+        range_val: float = 16,
+        **kwargs: Any,
+    ) -> str:
+        if "range" in kwargs:
+            range_val = kwargs["range"]
+        wanted = max(1, int(pairs or 1))
+        bred = 0
+        notes: list[str] = []
+        for _idx in range(wanted):
+            try:
+                result = await bridge.breed_animals(animal_type, breeding_item, range_val)
+            except Exception as exc:
+                if bred == 0:
+                    raise
+                notes.append(f"Stopped after {bred}/{wanted} pairs: {exc}")
+                break
+            bred += 1
+            notes.append(str(result))
+        return "\n".join([
+            f"Bred {bred} animal pairs of {animal_type}.",
+            *notes[-6:],
+        ])
+
+    @staticmethod
     async def _use_door(
         bridge: Any, x: float | None = None, y: float | None = None, z: float | None = None,
     ) -> Any:
@@ -633,6 +1075,11 @@ class ActionExecutor:
             # Skills
             "pickupNearbyItems": self._pickup_nearby_items,
             "tillAndSow": self._till_and_sow,
+            "plantSeedsNearPlayer": self._plant_seeds_near_player,
+            "collectAnyWood": self._collect_any_wood,
+            "mineOreWithTool": self._mine_ore_with_tool,
+            "craftWithDependencies": self._craft_with_dependencies,
+            "breedAnimalsBatch": self._breed_animals_batch,
             "useDoor": self._use_door,
             "getCraftingPlan": self._get_crafting_plan,
             "searchWiki": self._search_wiki,

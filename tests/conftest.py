@@ -175,6 +175,16 @@ class FakeBridge:
         self.calls.append(("pickup_nearby_items", distance))
         return f"picked up items within {distance}"
 
+    async def till_and_sow(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        seed_type: str | None = None,
+    ) -> str:
+        self.calls.append(("till_and_sow", x, y, z, seed_type))
+        return f"Tilled and planted {seed_type or 'wheat_seeds'} at ({int(x)}, {int(y)}, {int(z)})."
+
     async def get_crafting_plan(self, target_item: str, quantity: int = 1) -> str:
         self.calls.append(("get_crafting_plan", target_item, quantity))
         return f"plan for {quantity} {target_item}"

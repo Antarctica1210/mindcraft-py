@@ -9,6 +9,14 @@ _DELIVERY_EFFECT_RE = re.compile(
     r"\bGave\s+(?P<count>\d+)x\s+(?P<item>[A-Za-z0-9_]+)",
     re.IGNORECASE,
 )
+_PLANTED_EFFECT_RE = re.compile(
+    r"\bPlanted\s+(?P<count>\d+)x?\b",
+    re.IGNORECASE,
+)
+_BRED_BATCH_EFFECT_RE = re.compile(
+    r"\bBred\s+(?P<count>\d+)\s+animal\s+pairs?\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -46,9 +54,17 @@ def action_effects_from_result(command_name: str, result: Any) -> list[ActionEff
 
     if name == "tillAndSow" and ("tilled" in lower or "planted" in lower):
         effects.append(ActionEffect(type="world_change", name="planted_crop", count=1))
+    if name == "plantSeedsNearPlayer":
+        match = _PLANTED_EFFECT_RE.search(text)
+        count = int(match.group("count")) if match is not None else 1
+        effects.append(ActionEffect(type="world_change", name="planted_crop", count=count))
 
     if name == "breedAnimals" and ("bred" in lower or "breed" in lower):
         effects.append(ActionEffect(type="interaction", name="animal_bred", count=1))
+    if name == "breedAnimalsBatch":
+        match = _BRED_BATCH_EFFECT_RE.search(text)
+        count = int(match.group("count")) if match is not None else 1
+        effects.append(ActionEffect(type="interaction", name="animal_bred", count=count))
 
     if name == "givePlayer":
         match = _DELIVERY_EFFECT_RE.search(text)

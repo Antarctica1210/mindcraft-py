@@ -61,7 +61,10 @@ COMMAND_COMPLETION_KINDS: dict[str, str] = {
     "discard": "inventory",
     "givePlayer": "delivery",
     "collectBlocks": "inventory",
+    "collectAnyWood": "inventory",
+    "mineOreWithTool": "inventory",
     "craftRecipe": "inventory",
+    "craftWithDependencies": "inventory",
     "smeltItem": "inventory",
     "pickupNearbyItems": "inventory",
     "putInChest": "inventory",
@@ -73,12 +76,14 @@ COMMAND_COMPLETION_KINDS: dict[str, str] = {
     "activateBlock": "world_change",
     "breakNearbyBlocks": "world_change",
     "breedAnimals": "world_change",
+    "breedAnimalsBatch": "world_change",
     "useOn": "world_change",
     "clearFurnace": "world_change",
     "tradeWithVillager": "world_change",
     "goToBed": "world_change",
     "digDown": "world_change",
     "tillAndSow": "world_change",
+    "plantSeedsNearPlayer": "world_change",
     "useDoor": "world_change",
     "newAction": "custom_action",
     "startConversation": "conversation",
@@ -93,8 +98,10 @@ TERMINAL_COMPLETION_KINDS: frozenset[str] = frozenset({
 ALWAYS_TERMINAL_WORLD_CHANGE_COMMANDS: frozenset[str] = frozenset({
     "activateBlock",
     "breedAnimals",
+    "breedAnimalsBatch",
     "goToBed",
     "placeHere",
+    "plantSeedsNearPlayer",
     "tillAndSow",
     "tradeWithVillager",
     "useDoor",
@@ -112,6 +119,7 @@ WORLD_CHANGE_EVIDENCE_FALLBACK_COMMANDS: frozenset[str] = frozenset({
     "breedAnimals",
     "breakNearbyBlocks",
     "placeHere",
+    "plantSeedsNearPlayer",
     "tillAndSow",
 })
 QUERY_COMMANDS: frozenset[str] = frozenset(
@@ -122,7 +130,9 @@ PRE_ACTION_OBSERVE_COMMANDS: frozenset[str] = frozenset({
     "breakNearbyBlocks",
     "breedAnimals",
     "collectBlocks",
+    "collectAnyWood",
     "consume",
+    "craftWithDependencies",
     "craftRecipe",
     "discard",
     "equip",
@@ -135,6 +145,9 @@ PRE_ACTION_OBSERVE_COMMANDS: frozenset[str] = frozenset({
     "searchForBlock",
     "searchForEntity",
     "smeltItem",
+    "mineOreWithTool",
+    "plantSeedsNearPlayer",
+    "breedAnimalsBatch",
 })
 DIRECT_SHORTCUT_COMMANDS: frozenset[str] = frozenset({
     "followPlayer",
@@ -150,7 +163,9 @@ DIRECT_SHORTCUT_ROUTES: frozenset[str] = frozenset({
 })
 PREFLIGHT_HOOKS: dict[str, tuple[str, ...]] = {
     "collectBlocks": ("knowledge_tool_requirement",),
+    "mineOreWithTool": ("knowledge_tool_requirement",),
     "craftRecipe": ("skip_nearby_furnace", "bed_dye_misconception", "missing_materials"),
+    "craftWithDependencies": ("skip_nearby_furnace", "bed_dye_misconception"),
     "goToCoordinates": ("coordinate_validation",),
     "givePlayer": ("delivery_preposition",),
     "moveTo": ("coordinate_validation",),
@@ -160,6 +175,7 @@ PREFLIGHT_HOOKS: dict[str, tuple[str, ...]] = {
 
 INVENTORY_PREP_COMMANDS: frozenset[str] = frozenset({
     "craftRecipe",
+    "craftWithDependencies",
     "getCraftingPlan",
     "equip",
     "searchWiki",
@@ -438,6 +454,35 @@ def command_defs() -> dict[str, CommandDef]:
                 "count": {"type": "int", "description": "Number to collect (default 8)"},
             },
         ),
+        "collectAnyWood": CommandDef(
+            name="collectAnyWood",
+            description=(
+                "Batch collect any nearby/available log or stem type. Use this for generic "
+                "wood requests instead of forcing oak_log."
+            ),
+            params={
+                "count": {"type": "int", "description": "Number of logs/stems to collect"},
+                "range": {
+                    "type": "float",
+                    "description": "Nearby block scan radius before fallback searches",
+                },
+            },
+        ),
+        "mineOreWithTool": CommandDef(
+            name="mineOreWithTool",
+            description=(
+                "Batch mine ore while preparing the required pickaxe first when possible. "
+                "Use this for ore collection tasks like iron, coal, copper, redstone, "
+                "diamond, emerald, lapis, or gold."
+            ),
+            params={
+                "ore_type": {
+                    "type": "string",
+                    "description": "Ore or block name, e.g. iron, iron_ore, coal_ore",
+                },
+                "count": {"type": "int", "description": "Number of ore blocks to mine"},
+            },
+        ),
         "breakNearbyBlocks": CommandDef(
             name="breakNearbyBlocks",
             description=(
@@ -473,6 +518,29 @@ def command_defs() -> dict[str, CommandDef]:
                 "range": {
                     "type": "float",
                     "description": "Search radius for two matching animals, max 64 (default 16)",
+                },
+            },
+        ),
+        "breedAnimalsBatch": CommandDef(
+            name="breedAnimalsBatch",
+            description=(
+                "Breed multiple pairs of nearby animals by repeatedly feeding two adults. "
+                "Use this for requests to breed several pairs instead of calling "
+                "breedAnimals one pair at a time."
+            ),
+            params={
+                "animal_type": {
+                    "type": "string",
+                    "description": "Animal type, e.g. chicken, cow, sheep, pig",
+                },
+                "pairs": {"type": "int", "description": "Number of breeding pairs"},
+                "breeding_item": {
+                    "type": "string",
+                    "description": "Food item to feed; optional if known for the animal",
+                },
+                "range": {
+                    "type": "float",
+                    "description": "Search radius for matching animals, max 64",
                 },
             },
         ),
@@ -518,6 +586,18 @@ def command_defs() -> dict[str, CommandDef]:
             "Always use getCraftingPlan before crafting complex items.",
             params={
                 "recipe_name": {"type": "string", "description": "Item to craft, e.g. stick"},
+                "num": {"type": "int", "description": "Number to craft (default 1)"},
+            },
+        ),
+        "craftWithDependencies": CommandDef(
+            name="craftWithDependencies",
+            description=(
+                "Batch craft an item after preparing common dependencies such as planks, "
+                "sticks, crafting_table, furnace, cobblestone, and basic tools. Prefer "
+                "this over manual multi-step crafting for tools and workstations."
+            ),
+            params={
+                "recipe_name": {"type": "string", "description": "Item to craft"},
                 "num": {"type": "int", "description": "Number to craft (default 1)"},
             },
         ),
@@ -623,6 +703,26 @@ def command_defs() -> dict[str, CommandDef]:
                     "type": "string",
                     "description": "Seed type to plant, e.g. wheat_seeds (optional)",
                 },
+            },
+        ),
+        "plantSeedsNearPlayer": CommandDef(
+            name="plantSeedsNearPlayer",
+            description=(
+                "Batch till and plant multiple nearby plots around the bot or a player. "
+                "Use this for planting requests instead of calling tillAndSow one block "
+                "at a time."
+            ),
+            params={
+                "count": {"type": "int", "description": "Number of seeds/plots to plant"},
+                "seed_type": {
+                    "type": "string",
+                    "description": "Seed item to plant, e.g. wheat_seeds",
+                },
+                "player_name": {
+                    "type": "string",
+                    "description": "Optional player to return near before planting",
+                },
+                "range": {"type": "float", "description": "Local planting radius"},
             },
         ),
         "useDoor": CommandDef(
