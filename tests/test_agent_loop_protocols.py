@@ -77,6 +77,17 @@ def test_failure_classifier_parses_missing_material_counts() -> None:
     assert cause.target == "torch"
     assert cause.missing == {"stick": 2, "coal": 1}
 
+    fuel_cause = classify_failure("FAILED: No fuel to smelt raw_iron.")
+    assert fuel_cause is not None
+    assert fuel_cause.kind == "missing_materials"
+    assert fuel_cause.target == "smeltItem"
+    assert fuel_cause.missing == {"coal": 1}
+
+    input_cause = classify_failure("FAILED: Not enough raw_iron (have 1, need 3).")
+    assert input_cause is not None
+    assert input_cause.kind == "missing_materials"
+    assert input_cause.missing == {"raw_iron": 2}
+
 
 def test_failure_classifier_distinguishes_timeout_from_bridge_failure() -> None:
     timeout = classify_failure("FAILED: Request 'collect_blocks' timed out after 120s")
@@ -140,6 +151,94 @@ def test_effect_extractor_counts_batch_planting_and_breeding() -> None:
     assert fenced_breeding == [
         ActionEffect(type="interaction", name="animal_bred", count=4),
     ]
+
+
+def test_effect_extractor_emits_generic_gathering_inventory_effects() -> None:
+    collected = action_effects_from_result(
+        "collectBlocks",
+        "Collected 8x iron_ore.",
+    )
+    mined = action_effects_from_result(
+        "mineOreWithTool",
+        "Mined 6x coal_ore with required tool support.\nCollected 6x coal_ore.",
+    )
+    wood = action_effects_from_result(
+        "collectAnyWood",
+        "Collected wood using spruce_log.\ncollected 4 spruce_log",
+    )
+
+    assert ActionEffect(type="inventory", name="iron_ore", item="iron_ore", count=8) in collected
+    assert ActionEffect(
+        type="gathering",
+        name="collected_block",
+        item="iron_ore",
+        count=8,
+    ) in collected
+    assert ActionEffect(type="inventory", name="coal_ore", item="coal_ore", count=6) in mined
+    assert ActionEffect(type="gathering", name="mined_ore", item="coal_ore", count=6) in mined
+    assert ActionEffect(type="inventory", name="spruce_log", item="spruce_log", count=4) in wood
+    assert ActionEffect(
+        type="gathering",
+        name="collected_wood",
+        item="spruce_log",
+        count=4,
+    ) in wood
+
+
+def test_effect_extractor_classifies_generic_crafting_tools_and_weapons() -> None:
+    tool = action_effects_from_result(
+        "craftWithDependencies",
+        "Crafted 1x iron_pickaxe with dependency preparation.\nCrafted 1x iron_pickaxe.",
+    )
+    weapon = action_effects_from_result(
+        "craftRecipe",
+        "Crafted 2x diamond_sword.",
+    )
+    generic = action_effects_from_result(
+        "craftRecipe",
+        "crafted torch",
+    )
+
+    assert ActionEffect(
+        type="inventory",
+        name="iron_pickaxe",
+        item="iron_pickaxe",
+        count=1,
+    ) in tool
+    assert ActionEffect(
+        type="crafting",
+        name="crafted_tool",
+        item="iron_pickaxe",
+        count=1,
+    ) in tool
+    assert ActionEffect(
+        type="crafting",
+        name="crafted_weapon",
+        item="diamond_sword",
+        count=2,
+    ) in weapon
+    assert ActionEffect(type="inventory", name="torch", item="torch", count=1) in generic
+    assert ActionEffect(
+        type="crafting",
+        name="crafted_item",
+        item="torch",
+        count=1,
+    ) in generic
+
+
+def test_effect_extractor_emits_generic_smelting_inventory_effects() -> None:
+    smelted = action_effects_from_result(
+        "smeltItem",
+        "Smelted 3x raw_iron.",
+    )
+
+    assert ActionEffect(type="inventory", name="raw_iron", item="raw_iron", count=3) in smelted
+    assert ActionEffect(
+        type="smelting",
+        name="smelted_item",
+        item="raw_iron",
+        count=3,
+    ) in smelted
 
 
 def test_task_effect_count_prefers_structured_effects_over_legacy_events() -> None:
@@ -382,6 +481,52 @@ async def test_mine_ore_with_tool_crafts_missing_stone_pickaxe() -> None:
     assert ("collect_blocks", "iron_ore", 2) in bridge.calls
 
 
+async def test_craft_with_dependencies_bootstraps_cobblestone_toolchain() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [{"name": "oak_log", "count": 2}]
+    executor = ActionExecutor(bridge)
+    executor._register_builtins()
+
+    result = await executor.execute(
+        "craftWithDependencies",
+        [],
+        {"recipe_name": "stone_pickaxe", "num": 1},
+    )
+
+    assert result is not None
+    assert "Crafted 1x stone_pickaxe with dependency preparation" in result
+    assert ("craft_recipe", "wooden_pickaxe", 1) in bridge.calls
+    assert ("collect_blocks", "cobblestone", 3) in bridge.calls
+    assert ("craft_recipe", "stone_pickaxe", 1) in bridge.calls
+
+
+async def test_craft_with_dependencies_places_furnace_and_smelts_raw_ingots() -> None:
+    bridge = FakeBridge()
+    bridge.inventory = [
+        {"name": "oak_log", "count": 2},
+        {"name": "cobblestone", "count": 8},
+        {"name": "coal", "count": 1},
+        {"name": "raw_iron", "count": 3},
+    ]
+    executor = ActionExecutor(bridge)
+    executor._register_builtins()
+
+    result = await executor.execute(
+        "craftWithDependencies",
+        [],
+        {"recipe_name": "iron_pickaxe", "num": 1},
+    )
+
+    assert result is not None
+    assert "Crafted 1x iron_pickaxe with dependency preparation" in result
+    assert ("craft_recipe", "crafting_table", 1) in bridge.calls
+    assert ("place_block", "crafting_table") in bridge.calls
+    assert ("craft_recipe", "furnace", 1) in bridge.calls
+    assert ("place_block", "furnace") in bridge.calls
+    assert ("smelt_item", "raw_iron", 3) in bridge.calls
+    assert ("craft_recipe", "iron_pickaxe", 1) in bridge.calls
+
+
 def test_world_change_completion_policy_lives_in_command_registry() -> None:
     assert world_change_command_can_complete("tillAndSow", "种1块田") is True
     assert world_change_command_can_complete("plantSeedsNearPlayer", "种16块田") is True
@@ -460,13 +605,52 @@ def test_recovery_manager_limits_dependency_subgoals_to_simple_repairs() -> None
     furnace_cause = classify_failure("FAILED: Missing materials for smeltItem: furnace x1.")
 
     assert manager.plan(command_name="collectBlocks", cause=hoe_cause, state=state) is None
-    assert manager.plan(command_name="craftRecipe", cause=coal_cause, state=state) is None
+    coal_plan = manager.plan(command_name="craftRecipe", cause=coal_cause, state=state)
+    assert coal_plan is not None
+    assert coal_plan.subgoal_kind == "missing_materials"
+    assert [(step.command, step.kwargs_dict()) for step in coal_plan.steps] == [
+        ("craftWithDependencies", {"recipe_name": "wooden_pickaxe", "num": 1}),
+        ("collectBlocks", {"block_type": "coal_ore", "count": 1}),
+    ]
 
     furnace_plan = manager.plan(command_name="smeltItem", cause=furnace_cause, state=state)
 
     assert furnace_plan is not None
     assert furnace_plan.subgoal_kind == "missing_materials"
     assert furnace_plan.subgoal_message == "Prepare furnace x1 for smeltitem"
+
+
+def test_recovery_manager_plans_wood_and_station_fallbacks() -> None:
+    manager = RecoveryManager()
+    empty_wood_state = BotState(inventory=[], nearby_block_types=[])
+    cobble_state = BotState(inventory=[], nearby_block_types=[])
+
+    stick_cause = classify_failure("FAILED: Missing materials for torch: stick x2.")
+    furnace_cause = classify_failure("FAILED: Missing materials for smeltItem: furnace x1.")
+
+    stick_plan = manager.plan(
+        command_name="craftRecipe",
+        cause=stick_cause,
+        state=empty_wood_state,
+    )
+    furnace_plan = manager.plan(
+        command_name="smeltItem",
+        cause=furnace_cause,
+        state=cobble_state,
+    )
+
+    assert stick_plan is not None
+    assert [(step.command, step.kwargs_dict()) for step in stick_plan.steps] == [
+        ("collectAnyWood", {"count": 1}),
+        ("craftWithDependencies", {"recipe_name": "stick", "num": 1}),
+    ]
+    assert furnace_plan is not None
+    assert [(step.command, step.kwargs_dict()) for step in furnace_plan.steps] == [
+        ("craftWithDependencies", {"recipe_name": "wooden_pickaxe", "num": 1}),
+        ("collectBlocks", {"block_type": "cobblestone", "count": 8}),
+        ("craftRecipe", {"recipe_name": "furnace", "num": 1}),
+        ("placeHere", {"block_type": "furnace"}),
+    ]
 
 
 def test_recovery_manager_plans_timeout_as_replan_without_retry() -> None:

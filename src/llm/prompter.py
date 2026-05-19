@@ -310,6 +310,20 @@ def _safe_preview(value: Any, *, limit: int = 1200) -> str:
     return text[:limit]
 
 
+def _is_deepseek_endpoint(
+    llm: LLMSettings,
+    original_model_name: str,
+    normalized_model_name: str,
+) -> bool:
+    """Return True when a ChatOpenAI config targets DeepSeek's official API."""
+    candidates = (
+        original_model_name,
+        normalized_model_name,
+        llm.base_url,
+    )
+    return any("deepseek" in str(candidate).lower() for candidate in candidates)
+
+
 def _to_jsonable(value: Any) -> Any:
     """Convert LangChain/Pydantic objects into JSON-serializable data."""
     if hasattr(value, "model_dump"):
@@ -489,7 +503,8 @@ class Prompter:
 
         # Strip LiteLLM provider prefix so old .env files are compatible
         # (e.g. "openai/qwen/qwen3.6-35b-a3b" → "qwen/qwen3.6-35b-a3b")
-        model_name = llm.model
+        original_model_name = llm.model
+        model_name = original_model_name
         for prefix in ("openai/", "anthropic/", "deepseek/"):
             if model_name.startswith(prefix):
                 model_name = model_name[len(prefix) :]
@@ -497,18 +512,21 @@ class Prompter:
 
         model_kwargs: dict[str, Any] = {}
         if llm.disable_thinking:
-            model_kwargs["reasoning_effort"] = llm.reasoning_effort or "none"
-            model_kwargs["extra_body"] = {
-                "enable_thinking": False,
-                "enableThinking": False,
-                "chat_template_kwargs": {
+            if _is_deepseek_endpoint(llm, original_model_name, model_name):
+                model_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            else:
+                model_kwargs["reasoning_effort"] = llm.reasoning_effort or "none"
+                model_kwargs["extra_body"] = {
                     "enable_thinking": False,
                     "enableThinking": False,
-                },
-            }
+                    "chat_template_kwargs": {
+                        "enable_thinking": False,
+                        "enableThinking": False,
+                    },
+                }
             logger.info(
-                "LLM thinking disabled (reasoning_effort=%s)",
-                model_kwargs["reasoning_effort"],
+                "LLM thinking disabled (payload=%s)",
+                _safe_preview(model_kwargs["extra_body"]),
             )
 
         self._model = ChatOpenAI(  # type: ignore[call-arg]

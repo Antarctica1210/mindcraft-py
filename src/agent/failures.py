@@ -13,6 +13,15 @@ MISSING_MATERIALS_RE = re.compile(
     r"Missing materials for (?P<target>[A-Za-z0-9_]+): (?P<missing>.+?)(?:\.|\n|$)",
     re.IGNORECASE,
 )
+NO_FUEL_RE = re.compile(
+    r"\bNo fuel to smelt (?P<target>[A-Za-z0-9_]+)",
+    re.IGNORECASE,
+)
+NOT_ENOUGH_RE = re.compile(
+    r"\bNot enough (?P<item>[A-Za-z0-9_]+)\s+"
+    r"\(have\s+(?P<have>\d+),\s+need\s+(?P<need>\d+)\)",
+    re.IGNORECASE,
+)
 NEARBY_MISS_RE = re.compile(
     r"\bNo\s+(?P<target>[A-Za-z0-9_]+)\s+nearby\b|"
     r"\bNo\s+breakable\s+(?P<breakable>[A-Za-z0-9_]+)\s+within\b",
@@ -94,6 +103,27 @@ def classify_failure(result: Any) -> FailureCause | None:
             kind="missing_materials",
             target=material_match.group("target").lower(),
             missing=missing,
+            message=text,
+        )
+
+    fuel_match = NO_FUEL_RE.search(text)
+    if fuel_match is not None:
+        return FailureCause(
+            kind="missing_materials",
+            target="smeltItem",
+            missing={"coal": 1},
+            message=text,
+        )
+
+    not_enough_match = NOT_ENOUGH_RE.search(text)
+    if not_enough_match is not None:
+        item = not_enough_match.group("item").lower()
+        have = int(not_enough_match.group("have"))
+        need = int(not_enough_match.group("need"))
+        return FailureCause(
+            kind="missing_materials",
+            target=item,
+            missing={item: max(1, need - have)},
             message=text,
         )
 

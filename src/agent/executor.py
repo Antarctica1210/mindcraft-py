@@ -220,6 +220,23 @@ def _pickaxe_satisfies(have: str, required: str) -> bool:
         return False
 
 
+def _fuel_capacity(item_name: str) -> float:
+    name = item_name.strip().lower()
+    if name in {"coal", "charcoal"}:
+        return 8.0
+    if name in WOOD_PLANK_ITEMS or name.endswith("_log") or name.endswith("_stem"):
+        return 1.5
+    if name == "stick":
+        return 0.5
+    if name.startswith("wooden_"):
+        return 1.0
+    return 0.0
+
+
+def _inventory_fuel_capacity(counts: dict[str, int]) -> float:
+    return sum(_fuel_capacity(name) * count for name, count in counts.items())
+
+
 def _normalize_ore_block(ore_type: str) -> str:
     name = ore_type.strip().lower()
     if name in ORE_BLOCK_ALIASES:
@@ -850,20 +867,72 @@ class ActionExecutor:
 
         async def ensure_crafting_table() -> dict[str, int]:
             inv = await counts()
-            if inv.get("crafting_table", 0) > 0:
-                return inv
             nearby = set(str(name) for name in await bridge.get_nearby_blocks(16))
             if "crafting_table" in nearby:
                 return inv
+            if inv.get("crafting_table", 0) > 0:
+                return await refresh_after(await bridge.place_block("crafting_table"))
             await ensure_planks(4)
-            return await refresh_after(await bridge.craft_recipe("crafting_table", 1))
+            inv = await refresh_after(await bridge.craft_recipe("crafting_table", 1))
+            return await refresh_after(await bridge.place_block("crafting_table"))
+
+        async def ensure_basic_pickaxe() -> dict[str, int]:
+            inv = await counts()
+            if any(
+                qty > 0 and _pickaxe_satisfies(item, "wooden_pickaxe")
+                for item, qty in inv.items()
+            ):
+                return inv
+            await ActionExecutor._craft_with_dependencies(
+                bridge,
+                recipe_name="wooden_pickaxe",
+                num=1,
+            )
+            return await counts()
 
         async def ensure_cobblestone(required: int) -> dict[str, int]:
             inv = await counts()
             if inv.get("cobblestone", 0) >= required:
                 return inv
+            await ensure_basic_pickaxe()
+            inv = await counts()
             missing = required - inv.get("cobblestone", 0)
             return await refresh_after(await bridge.collect_blocks("cobblestone", missing))
+
+        async def ensure_furnace() -> dict[str, int]:
+            inv = await counts()
+            nearby = set(str(name) for name in await bridge.get_nearby_blocks(16))
+            if "furnace" in nearby:
+                return inv
+            if inv.get("furnace", 0) > 0:
+                return await refresh_after(await bridge.place_block("furnace"))
+            await ensure_cobblestone(8)
+            inv = await refresh_after(await bridge.craft_recipe("furnace", 1))
+            return await refresh_after(await bridge.place_block("furnace"))
+
+        async def ensure_fuel(items_to_smelt: int) -> dict[str, int]:
+            inv = await counts()
+            if _inventory_fuel_capacity(inv) >= items_to_smelt:
+                return inv
+
+            has_existing_wood = any(
+                qty > 0 and (
+                    name in WOOD_PLANK_ITEMS or _wood_family_from_log(name) is not None
+                )
+                for name, qty in inv.items()
+            )
+            if has_existing_wood:
+                needed_capacity = max(0.0, items_to_smelt - _inventory_fuel_capacity(inv))
+                await ensure_planks(max(1, math.ceil(needed_capacity / 1.5)))
+                inv = await counts()
+                if _inventory_fuel_capacity(inv) >= items_to_smelt:
+                    return inv
+
+            await ensure_basic_pickaxe()
+            inv = await counts()
+            missing_capacity = max(1.0, items_to_smelt - _inventory_fuel_capacity(inv))
+            coal_count = max(1, math.ceil(missing_capacity / 8))
+            return await refresh_after(await bridge.collect_blocks("coal_ore", coal_count))
 
         async def ensure_material(item_name: str, required: int) -> dict[str, int]:
             inv = await counts()
@@ -872,8 +941,12 @@ class ActionExecutor:
             if item_name == "cobblestone":
                 return await ensure_cobblestone(required)
             if item_name == "iron_ingot" and inv.get("raw_iron", 0) >= required:
+                await ensure_furnace()
+                await ensure_fuel(required)
                 return await refresh_after(await bridge.smelt_item("raw_iron", required))
             if item_name == "gold_ingot" and inv.get("raw_gold", 0) >= required:
+                await ensure_furnace()
+                await ensure_fuel(required)
                 return await refresh_after(await bridge.smelt_item("raw_gold", required))
             if item_name in WOOD_PLANK_ITEMS:
                 return await ensure_planks(required)
@@ -886,7 +959,7 @@ class ActionExecutor:
         elif target in WOOD_PLANK_ITEMS or target.endswith("_planks"):
             await ensure_planks(wanted)
         elif target == "crafting_table":
-            await ensure_crafting_table()
+            await ensure_planks(4 * wanted)
         elif target == "furnace":
             await ensure_cobblestone(8 * wanted)
         else:

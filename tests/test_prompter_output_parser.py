@@ -156,3 +156,20 @@ def test_prompter_disables_thinking_in_chat_model_payload() -> None:
     assert payload["reasoning_effort"] == "none"
     assert payload["extra_body"]["enable_thinking"] is False
     assert payload["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_prompter_disables_deepseek_thinking_with_official_payload() -> None:
+    prompter = Prompter(
+        LLMSettings(
+            model="deepseek/deepseek-v4-pro",
+            base_url="https://api.deepseek.com",
+            api_key="test",
+            disable_thinking=True,
+            reasoning_effort="none",
+        )
+    )
+
+    payload = prompter._model._get_request_payload([])  # type: ignore[attr-defined]
+
+    assert payload["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in payload
