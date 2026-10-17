@@ -1,0 +1,282 @@
+[
+  {
+    "id": 857,
+    "name": "apple",
+    "displayName": "Apple",
+    "foodPoints": 4,
+    "saturation": 19.2
+  },
+  {
+    "id": 906,
+    "name": "mushroom_stew",
+    "displayName": "Mushroom Stew",
+    "foodPoints": 6,
+    "saturation": 86.4
+  },
+  {
+    "id": 912,
+    "name": "bread",
+    "displayName": "Bread",
+    "foodPoints": 5,
+    "saturation": 60
+  },
+  {
+    "id": 938,
+    "name": "porkchop",
+    "displayName": "Raw Porkchop",
+    "foodPoints": 3,
+    "saturation": 10.8
+  },
+  {
+    "id": 939,
+    "name": "cooked_porkchop",
+    "displayName": "Cooked Porkchop",
+    "foodPoints": 8,
+    "saturation": 204.8
+  },
+  {
+    "id": 941,
+    "name": "golden_apple",
+    "displayName": "Golden Apple",
+    "foodPoints": 4,
+    "saturation": 76.8
+  },
+  {
+    "id": 942,
+    "name": "enchanted_golden_apple",
+    "displayName": "Enchanted Golden Apple",
+    "foodPoints": 4,
+    "saturation": 76.8
+  },
+  {
+    "id": 1012,
+    "name": "cod",
+    "displayName": "Raw Cod",
+    "foodPoints": 2,
+    "saturation": 1.6
+  },
+  {
+    "id": 1013,
+    "name": "salmon",
+    "displayName": "Raw Salmon",
+    "foodPoints": 2,
+    "saturation": 1.6
+  },
+  {
+    "id": 1014,
+    "name": "tropical_fish",
+    "displayName": "Tropical Fish",
+    "foodPoints": 1,
+    "saturation": 0.4
+  },
+  {
+    "id": 1015,
+    "name": "pufferfish",
+    "displayName": "Pufferfish",
+    "foodPoints": 1,
+    "saturation": 0.4
+  },
+  {
+    "id": 1016,
+    "name": "cooked_cod",
+    "displayName": "Cooked Cod",
+    "foodPoints": 5,
+    "saturation": 60
+  },
+  {
+    "id": 1017,
+    "name": "cooked_salmon",
+    "displayName": "Cooked Salmon",
+    "foodPoints": 6,
+    "saturation": 115.200005
+  },
+  {
+    "id": 1057,
+    "name": "cookie",
+    "displayName": "Cookie",
+    "foodPoints": 2,
+    "saturation": 1.6
+  },
+  {
+    "id": 1061,
+    "name": "melon_slice",
+    "displayName": "Melon Slice",
+    "foodPoints": 2,
+    "saturation": 4.8
+  },
+  {
+    "id": 1062,
+    "name": "dried_kelp",
+    "displayName": "Dried Kelp",
+    "foodPoints": 1,
+    "saturation": 1.2
+  },
+  {
+    "id": 1065,
+    "name": "beef",
+    "displayName": "Raw Beef",
+    "foodPoints": 3,
+    "saturation": 10.8
+  },
+  {
+    "id": 1066,
+    "name": "cooked_beef",
+    "displayName": "Steak",
+    "foodPoints": 8,
+    "saturation": 204.8
+  },
+  {
+    "id": 1067,
+    "name": "chicken",
+    "displayName": "Raw Chicken",
+    "foodPoints": 2,
+    "saturation": 4.8
+  },
+  {
+    "id": 1068,
+    "name": "cooked_chicken",
+    "displayName": "Cooked Chicken",
+    "foodPoints": 6,
+    "saturation": 86.4
+  },
+  {
+    "id": 1069,
+    "name": "rotten_flesh",
+    "displayName": "Rotten Flesh",
+    "foodPoints": 4,
+    "saturation": 6.4
+  },
+  {
+    "id": 1077,
+    "name": "spider_eye",
+    "displayName": "Spider Eye",
+    "foodPoints": 2,
+    "saturation": 12.8
+  },
+  {
+    "id": 1177,
+    "name": "carrot",
+    "displayName": "Carrot",
+    "foodPoints": 3,
+    "saturation": 21.6
+  },
+  {
+    "id": 1178,
+    "name": "potato",
+    "displayName": "Potato",
+    "foodPoints": 1,
+    "saturation": 1.2
+  },
+  {
+    "id": 1179,
+    "name": "baked_potato",
+    "displayName": "Baked Potato",
+    "foodPoints": 5,
+    "saturation": 60
+  },
+  {
+    "id": 1180,
+    "name": "poisonous_potato",
+    "displayName": "Poisonous Potato",
+    "foodPoints": 2,
+    "saturation": 4.8
+  },
+  {
+    "id": 1182,
+    "name": "golden_carrot",
+    "displayName": "Golden Carrot",
+    "foodPoints": 6,
+    "saturation": 172.8
+  },
+  {
+    "id": 1191,
+    "name": "pumpkin_pie",
+    "displayName": "Pumpkin Pie",
+    "foodPoints": 8,
+    "saturation": 76.8
+  },
+  {
+    "id": 1199,
+    "name": "rabbit",
+    "displayName": "Raw Rabbit",
+    "foodPoints": 3,
+    "saturation": 10.8
+  },
+  {
+    "id": 1200,
+    "name": "cooked_rabbit",
+    "displayName": "Cooked Rabbit",
+    "foodPoints": 5,
+    "saturation": 60
+  },
+  {
+    "id": 1201,
+    "name": "rabbit_stew",
+    "displayName": "Rabbit Stew",
+    "foodPoints": 10,
+    "saturation": 240
+  },
+  {
+    "id": 1212,
+    "name": "mutton",
+    "displayName": "Raw Mutton",
+    "foodPoints": 2,
+    "saturation": 4.8
+  },
+  {
+    "id": 1213,
+    "name": "cooked_mutton",
+    "displayName": "Cooked Mutton",
+    "foodPoints": 6,
+    "saturation": 115.200005
+  },
+  {
+    "id": 1231,
+    "name": "chorus_fruit",
+    "displayName": "Chorus Fruit",
+    "foodPoints": 4,
+    "saturation": 19.2
+  },
+  {
+    "id": 1235,
+    "name": "beetroot",
+    "displayName": "Beetroot",
+    "foodPoints": 1,
+    "saturation": 2.4
+  },
+  {
+    "id": 1237,
+    "name": "beetroot_soup",
+    "displayName": "Beetroot Soup",
+    "foodPoints": 6,
+    "saturation": 86.4
+  },
+  {
+    "id": 1274,
+    "name": "suspicious_stew",
+    "displayName": "Suspicious Stew",
+    "foodPoints": 6,
+    "saturation": 86.4
+  },
+  {
+    "id": 1299,
+    "name": "sweet_berries",
+    "displayName": "Sweet Berries",
+    "foodPoints": 2,
+    "saturation": 1.6
+  },
+  {
+    "id": 1300,
+    "name": "glow_berries",
+    "displayName": "Glow Berries",
+    "foodPoints": 2,
+    "saturation": 1.6
+  },
+  {
+    "id": 1307,
+    "name": "honey_bottle",
+    "displayName": "Honey Bottle",
+    "foodPoints": 6,
+    "saturation": 14.400001
+  }
+]

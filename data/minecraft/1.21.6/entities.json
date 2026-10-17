@@ -1,0 +1,1361 @@
+[
+  {
+    "id": 0,
+    "name": "acacia_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 1,
+    "name": "acacia_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 2,
+    "name": "allay",
+    "internalName": "",
+    "type": "mob",
+    "category": "Passive mobs",
+    "width": 0.35,
+    "height": 0.6
+  },
+  {
+    "id": 3,
+    "name": "area_effect_cloud",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 6,
+    "height": 0.5
+  },
+  {
+    "id": 4,
+    "name": "armadillo",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.7,
+    "height": 0.65
+  },
+  {
+    "id": 5,
+    "name": "armor_stand",
+    "internalName": "",
+    "type": "living",
+    "category": "Immobile",
+    "width": 0.5,
+    "height": 1.975
+  },
+  {
+    "id": 6,
+    "name": "arrow",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.5,
+    "height": 0.5
+  },
+  {
+    "id": 7,
+    "name": "axolotl",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.75,
+    "height": 0.42
+  },
+  {
+    "id": 8,
+    "name": "bamboo_chest_raft",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 9,
+    "name": "bamboo_raft",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 10,
+    "name": "bat",
+    "internalName": "",
+    "type": "ambient",
+    "category": "Passive mobs",
+    "width": 0.5,
+    "height": 0.9
+  },
+  {
+    "id": 11,
+    "name": "bee",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.7,
+    "height": 0.6
+  },
+  {
+    "id": 12,
+    "name": "birch_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 13,
+    "name": "birch_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 14,
+    "name": "blaze",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.8
+  },
+  {
+    "id": 15,
+    "name": "block_display",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 0,
+    "height": 0
+  },
+  {
+    "id": 16,
+    "name": "bogged",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.99
+  },
+  {
+    "id": 17,
+    "name": "breeze",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.77
+  },
+  {
+    "id": 18,
+    "name": "breeze_wind_charge",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.3125,
+    "height": 0.3125
+  },
+  {
+    "id": 19,
+    "name": "camel",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 1.7,
+    "height": 2.375
+  },
+  {
+    "id": 20,
+    "name": "cat",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.6,
+    "height": 0.7
+  },
+  {
+    "id": 21,
+    "name": "cave_spider",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.7,
+    "height": 0.5
+  },
+  {
+    "id": 22,
+    "name": "cherry_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 23,
+    "name": "cherry_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 24,
+    "name": "chest_minecart",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 0.98,
+    "height": 0.7
+  },
+  {
+    "id": 25,
+    "name": "chicken",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.4,
+    "height": 0.7
+  },
+  {
+    "id": 26,
+    "name": "cod",
+    "internalName": "",
+    "type": "water_creature",
+    "category": "Passive mobs",
+    "width": 0.5,
+    "height": 0.3
+  },
+  {
+    "id": 27,
+    "name": "command_block_minecart",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 0.98,
+    "height": 0.7
+  },
+  {
+    "id": 28,
+    "name": "cow",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 1.4
+  },
+  {
+    "id": 29,
+    "name": "creaking",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.9,
+    "height": 2.7
+  },
+  {
+    "id": 30,
+    "name": "creeper",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.7
+  },
+  {
+    "id": 31,
+    "name": "dark_oak_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 32,
+    "name": "dark_oak_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 33,
+    "name": "dolphin",
+    "internalName": "",
+    "type": "passive",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 0.6
+  },
+  {
+    "id": 34,
+    "name": "donkey",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 1.3964844,
+    "height": 1.5
+  },
+  {
+    "id": 35,
+    "name": "dragon_fireball",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 1,
+    "height": 1
+  },
+  {
+    "id": 36,
+    "name": "drowned",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 37,
+    "name": "egg",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 38,
+    "name": "elder_guardian",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 1.9975,
+    "height": 1.9975
+  },
+  {
+    "id": 39,
+    "name": "enderman",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 2.9
+  },
+  {
+    "id": 40,
+    "name": "endermite",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.4,
+    "height": 0.3
+  },
+  {
+    "id": 41,
+    "name": "ender_dragon",
+    "internalName": "",
+    "type": "mob",
+    "category": "Hostile mobs",
+    "width": 16,
+    "height": 8
+  },
+  {
+    "id": 42,
+    "name": "ender_pearl",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 43,
+    "name": "end_crystal",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 2,
+    "height": 2
+  },
+  {
+    "id": 44,
+    "name": "evoker",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 45,
+    "name": "evoker_fangs",
+    "internalName": "",
+    "type": "other",
+    "category": "Hostile mobs",
+    "width": 0.5,
+    "height": 0.8
+  },
+  {
+    "id": 46,
+    "name": "experience_bottle",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 47,
+    "name": "experience_orb",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 0.5,
+    "height": 0.5
+  },
+  {
+    "id": 48,
+    "name": "eye_of_ender",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 49,
+    "name": "falling_block",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 0.98,
+    "height": 0.98
+  },
+  {
+    "id": 50,
+    "name": "fireball",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 1,
+    "height": 1
+  },
+  {
+    "id": 51,
+    "name": "firework_rocket",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 52,
+    "name": "fox",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.6,
+    "height": 0.7
+  },
+  {
+    "id": 53,
+    "name": "frog",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.5,
+    "height": 0.5
+  },
+  {
+    "id": 54,
+    "name": "furnace_minecart",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 0.98,
+    "height": 0.7
+  },
+  {
+    "id": 55,
+    "name": "ghast",
+    "internalName": "",
+    "type": "mob",
+    "category": "Hostile mobs",
+    "width": 4,
+    "height": 4
+  },
+  {
+    "id": 56,
+    "name": "happy_ghast",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 4,
+    "height": 4
+  },
+  {
+    "id": 57,
+    "name": "giant",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 3.6,
+    "height": 12
+  },
+  {
+    "id": 58,
+    "name": "glow_item_frame",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 0.5,
+    "height": 0.5
+  },
+  {
+    "id": 59,
+    "name": "glow_squid",
+    "internalName": "",
+    "type": "passive",
+    "category": "Passive mobs",
+    "width": 0.8,
+    "height": 0.8
+  },
+  {
+    "id": 60,
+    "name": "goat",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 1.3
+  },
+  {
+    "id": 61,
+    "name": "guardian",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.85,
+    "height": 0.85
+  },
+  {
+    "id": 62,
+    "name": "hoglin",
+    "internalName": "",
+    "type": "animal",
+    "category": "Hostile mobs",
+    "width": 1.3964844,
+    "height": 1.4
+  },
+  {
+    "id": 63,
+    "name": "hopper_minecart",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 0.98,
+    "height": 0.7
+  },
+  {
+    "id": 64,
+    "name": "horse",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 1.3964844,
+    "height": 1.6
+  },
+  {
+    "id": 65,
+    "name": "husk",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 66,
+    "name": "illusioner",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 67,
+    "name": "interaction",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 0,
+    "height": 0
+  },
+  {
+    "id": 68,
+    "name": "iron_golem",
+    "internalName": "",
+    "type": "mob",
+    "category": "Passive mobs",
+    "width": 1.4,
+    "height": 2.7
+  },
+  {
+    "id": 69,
+    "name": "item",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 70,
+    "name": "item_display",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 0,
+    "height": 0
+  },
+  {
+    "id": 71,
+    "name": "item_frame",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 0.5,
+    "height": 0.5
+  },
+  {
+    "id": 72,
+    "name": "jungle_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 73,
+    "name": "jungle_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 74,
+    "name": "leash_knot",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 0.375,
+    "height": 0.5
+  },
+  {
+    "id": 75,
+    "name": "lightning_bolt",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 0,
+    "height": 0
+  },
+  {
+    "id": 76,
+    "name": "llama",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 1.87
+  },
+  {
+    "id": 77,
+    "name": "llama_spit",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 78,
+    "name": "magma_cube",
+    "internalName": "",
+    "type": "mob",
+    "category": "Hostile mobs",
+    "width": 0.52,
+    "height": 0.52
+  },
+  {
+    "id": 79,
+    "name": "mangrove_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 80,
+    "name": "mangrove_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 81,
+    "name": "marker",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 0,
+    "height": 0
+  },
+  {
+    "id": 82,
+    "name": "minecart",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 0.98,
+    "height": 0.7
+  },
+  {
+    "id": 83,
+    "name": "mooshroom",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 1.4
+  },
+  {
+    "id": 84,
+    "name": "mule",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 1.3964844,
+    "height": 1.6
+  },
+  {
+    "id": 85,
+    "name": "oak_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 86,
+    "name": "oak_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 87,
+    "name": "ocelot",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.6,
+    "height": 0.7
+  },
+  {
+    "id": 88,
+    "name": "ominous_item_spawner",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 89,
+    "name": "painting",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 0.5,
+    "height": 0.5
+  },
+  {
+    "id": 90,
+    "name": "pale_oak_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 91,
+    "name": "pale_oak_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 92,
+    "name": "panda",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 1.3,
+    "height": 1.25
+  },
+  {
+    "id": 93,
+    "name": "parrot",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.5,
+    "height": 0.9
+  },
+  {
+    "id": 94,
+    "name": "phantom",
+    "internalName": "",
+    "type": "mob",
+    "category": "Hostile mobs",
+    "width": 0.9,
+    "height": 0.5
+  },
+  {
+    "id": 95,
+    "name": "pig",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 0.9
+  },
+  {
+    "id": 96,
+    "name": "piglin",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 97,
+    "name": "piglin_brute",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 98,
+    "name": "pillager",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 99,
+    "name": "polar_bear",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 1.4,
+    "height": 1.4
+  },
+  {
+    "id": 100,
+    "name": "splash_potion",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 101,
+    "name": "lingering_potion",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 102,
+    "name": "pufferfish",
+    "internalName": "",
+    "type": "water_creature",
+    "category": "Passive mobs",
+    "width": 0.7,
+    "height": 0.7
+  },
+  {
+    "id": 103,
+    "name": "rabbit",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.4,
+    "height": 0.5
+  },
+  {
+    "id": 104,
+    "name": "ravager",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 1.95,
+    "height": 2.2
+  },
+  {
+    "id": 105,
+    "name": "salmon",
+    "internalName": "",
+    "type": "water_creature",
+    "category": "Passive mobs",
+    "width": 0.7,
+    "height": 0.4
+  },
+  {
+    "id": 106,
+    "name": "sheep",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 1.3
+  },
+  {
+    "id": 107,
+    "name": "shulker",
+    "internalName": "",
+    "type": "mob",
+    "category": "Hostile mobs",
+    "width": 1,
+    "height": 1
+  },
+  {
+    "id": 108,
+    "name": "shulker_bullet",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.3125,
+    "height": 0.3125
+  },
+  {
+    "id": 109,
+    "name": "silverfish",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.4,
+    "height": 0.3
+  },
+  {
+    "id": 110,
+    "name": "skeleton",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.99
+  },
+  {
+    "id": 111,
+    "name": "skeleton_horse",
+    "internalName": "",
+    "type": "animal",
+    "category": "Hostile mobs",
+    "width": 1.3964844,
+    "height": 1.6
+  },
+  {
+    "id": 112,
+    "name": "slime",
+    "internalName": "",
+    "type": "mob",
+    "category": "Hostile mobs",
+    "width": 0.52,
+    "height": 0.52
+  },
+  {
+    "id": 113,
+    "name": "small_fireball",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.3125,
+    "height": 0.3125
+  },
+  {
+    "id": 114,
+    "name": "sniffer",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 1.9,
+    "height": 1.75
+  },
+  {
+    "id": 115,
+    "name": "snowball",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  },
+  {
+    "id": 116,
+    "name": "snow_golem",
+    "internalName": "",
+    "type": "mob",
+    "category": "Passive mobs",
+    "width": 0.7,
+    "height": 1.9
+  },
+  {
+    "id": 117,
+    "name": "spawner_minecart",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 0.98,
+    "height": 0.7
+  },
+  {
+    "id": 118,
+    "name": "spectral_arrow",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.5,
+    "height": 0.5
+  },
+  {
+    "id": 119,
+    "name": "spider",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 1.4,
+    "height": 0.9
+  },
+  {
+    "id": 120,
+    "name": "spruce_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 121,
+    "name": "spruce_chest_boat",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 1.375,
+    "height": 0.5625
+  },
+  {
+    "id": 122,
+    "name": "squid",
+    "internalName": "",
+    "type": "passive",
+    "category": "Passive mobs",
+    "width": 0.8,
+    "height": 0.8
+  },
+  {
+    "id": 123,
+    "name": "stray",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.99
+  },
+  {
+    "id": 124,
+    "name": "strider",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 1.7
+  },
+  {
+    "id": 125,
+    "name": "tadpole",
+    "internalName": "",
+    "type": "water_creature",
+    "category": "Passive mobs",
+    "width": 0.4,
+    "height": 0.3
+  },
+  {
+    "id": 126,
+    "name": "text_display",
+    "internalName": "",
+    "type": "other",
+    "category": "Immobile",
+    "width": 0,
+    "height": 0
+  },
+  {
+    "id": 127,
+    "name": "tnt",
+    "internalName": "",
+    "type": "other",
+    "category": "UNKNOWN",
+    "width": 0.98,
+    "height": 0.98
+  },
+  {
+    "id": 128,
+    "name": "tnt_minecart",
+    "internalName": "",
+    "type": "other",
+    "category": "Vehicles",
+    "width": 0.98,
+    "height": 0.7
+  },
+  {
+    "id": 129,
+    "name": "trader_llama",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.9,
+    "height": 1.87
+  },
+  {
+    "id": 130,
+    "name": "trident",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.5,
+    "height": 0.5
+  },
+  {
+    "id": 131,
+    "name": "tropical_fish",
+    "internalName": "",
+    "type": "water_creature",
+    "category": "Passive mobs",
+    "width": 0.5,
+    "height": 0.4
+  },
+  {
+    "id": 132,
+    "name": "turtle",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 1.2,
+    "height": 0.4
+  },
+  {
+    "id": 133,
+    "name": "vex",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.4,
+    "height": 0.8
+  },
+  {
+    "id": 134,
+    "name": "villager",
+    "internalName": "",
+    "type": "passive",
+    "category": "Passive mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 135,
+    "name": "vindicator",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 136,
+    "name": "wandering_trader",
+    "internalName": "",
+    "type": "passive",
+    "category": "Passive mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 137,
+    "name": "warden",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.9,
+    "height": 2.9
+  },
+  {
+    "id": 138,
+    "name": "wind_charge",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.3125,
+    "height": 0.3125
+  },
+  {
+    "id": 139,
+    "name": "witch",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 140,
+    "name": "wither",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.9,
+    "height": 3.5
+  },
+  {
+    "id": 141,
+    "name": "wither_skeleton",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.7,
+    "height": 2.4
+  },
+  {
+    "id": 142,
+    "name": "wither_skull",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.3125,
+    "height": 0.3125
+  },
+  {
+    "id": 143,
+    "name": "wolf",
+    "internalName": "",
+    "type": "animal",
+    "category": "Passive mobs",
+    "width": 0.6,
+    "height": 0.85
+  },
+  {
+    "id": 144,
+    "name": "zoglin",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 1.3964844,
+    "height": 1.4
+  },
+  {
+    "id": 145,
+    "name": "zombie",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 146,
+    "name": "zombie_horse",
+    "internalName": "",
+    "type": "animal",
+    "category": "Hostile mobs",
+    "width": 1.3964844,
+    "height": 1.6
+  },
+  {
+    "id": 147,
+    "name": "zombie_villager",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 148,
+    "name": "zombified_piglin",
+    "internalName": "",
+    "type": "hostile",
+    "category": "Hostile mobs",
+    "width": 0.6,
+    "height": 1.95
+  },
+  {
+    "id": 149,
+    "name": "player",
+    "internalName": "",
+    "type": "player",
+    "category": "UNKNOWN",
+    "width": 0.6,
+    "height": 1.8
+  },
+  {
+    "id": 150,
+    "name": "fishing_bobber",
+    "internalName": "",
+    "type": "projectile",
+    "category": "Projectiles",
+    "width": 0.25,
+    "height": 0.25
+  }
+]

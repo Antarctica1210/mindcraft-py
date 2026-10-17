@@ -1,0 +1,283 @@
+{
+  "_description": "Regression test cases for the Minecraft bot. Each case maps to docs/bot-manual-test-commands.md IDs plus extra coverage for recently-fixed bugs.",
+  "cases": [
+    {
+      "id": "B01",
+      "description": "inventory query returns items",
+      "message": "inventory",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "oak_log", "count": 5},
+          {"name": "stick", "count": 12}
+        ]
+      },
+      "expect": {
+        "response_contains": ["oak_log", "stick"],
+        "method_called": "get_inventory"
+      }
+    },
+    {
+      "id": "B02",
+      "description": "stats (observe) returns position and health",
+      "message": "stats",
+      "llm": false,
+      "setup": {
+        "position": {"x": 100, "y": 64, "z": 200},
+        "health": 18,
+        "food": 14
+      },
+      "expect": {
+        "response_contains": ["health", "food", "position"],
+        "method_called": "observe"
+      }
+    },
+    {
+      "id": "B03",
+      "description": "nearbyBlocks returns block list",
+      "message": "what blocks are nearby?",
+      "llm": false,
+      "setup": {
+        "nearby_blocks": ["grass_block", "dirt", "stone", "oak_log"]
+      },
+      "expect": {
+        "response_contains": ["grass_block", "dirt", "stone", "oak_log"],
+        "method_called": "get_nearby_blocks"
+      }
+    },
+    {
+      "id": "B06",
+      "description": "stop cancels movement and following",
+      "message": "stop",
+      "llm": false,
+      "setup": {},
+      "expect": {
+        "method_called": "stop"
+      }
+    },
+    {
+      "id": "M01",
+      "description": "searchForBlock finds oak_log within 64",
+      "message": "find an oak log",
+      "llm": false,
+      "setup": {
+        "nearby_blocks": ["oak_log", "grass_block"]
+      },
+      "expect": {
+        "method_called": "search_for_block",
+        "response_contains": ["oak_log"],
+        "response_not_contains": ["search_range exceeded 64", "unknown block"]
+      }
+    },
+    {
+      "id": "M02",
+      "description": "searchForBlock finds nearby crafting_table",
+      "message": "find a crafting table",
+      "llm": false,
+      "setup": {
+        "nearby_blocks": ["crafting_table", "oak_planks"]
+      },
+      "expect": {
+        "method_called": "search_for_block",
+        "response_contains": ["crafting_table"]
+      }
+    },
+    {
+      "id": "M03",
+      "description": "searchForBlock finds nearby furnace",
+      "message": "find a furnace",
+      "llm": false,
+      "setup": {
+        "nearby_blocks": ["furnace", "stone", "granite"]
+      },
+      "expect": {
+        "method_called": "search_for_block",
+        "response_contains": ["furnace"]
+      }
+    },
+    {
+      "id": "G02",
+      "description": "collectBlocks stone without pickaxe gives tool error",
+      "message": "collect 8 cobblestone",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "wooden_axe", "count": 1},
+          {"name": "wooden_shovel", "count": 1},
+          {"name": "oak_planks", "count": 11},
+          {"name": "stick", "count": 27}
+        ],
+        "nearby_blocks": ["stone", "granite", "andesite", "crafting_table"]
+      },
+      "expect": {
+        "response_contains": ["pickaxe"],
+        "response_contains_any": ["Need a", "FAILED"]
+      }
+    },
+    {
+      "id": "C01",
+      "description": "craft oak_planks (simple 2x2 craft)",
+      "message": "craft oak planks",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "oak_log", "count": 4}
+        ]
+      },
+      "expect": {
+        "method_called": "get_crafting_plan",
+        "response_contains_any": ["Can craft", "Crafting"]
+      }
+    },
+    {
+      "id": "R01",
+      "description": "craft wooden_shovel with nearby crafting_table reuses it",
+      "message": "craft a wooden shovel",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "oak_planks", "count": 6},
+          {"name": "stick", "count": 12}
+        ],
+        "nearby_blocks": ["crafting_table", "grass_block"]
+      },
+      "expect": {
+        "method_called": "get_crafting_plan",
+        "method_not_called": "place_here",
+        "method_not_called_any": ["place_block"],
+        "response_contains_any": ["Can craft", "Crafting"],
+        "response_not_contains": ["placeHere crafting_table"]
+      }
+    },
+    {
+      "id": "S01",
+      "description": "cook pork with nearby furnace reuses it",
+      "message": "cook some pork",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "porkchop", "count": 2},
+          {"name": "stick", "count": 10}
+        ],
+        "nearby_blocks": ["furnace", "stone", "granite"]
+      },
+      "expect": {
+        "method_called": "smelt_item",
+        "method_not_called_any": ["craft_recipe", "place_here", "place_block"],
+        "response_contains": ["Smelted"],
+        "response_not_contains": ["No furnace nearby", "craft furnace"],
+        "log_must_not_contain": ["Gave 0x"]
+      }
+    },
+    {
+      "id": "C05",
+      "description": "craft furnace when already nearby skips placement",
+      "message": "craft a furnace",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "cobblestone", "count": 64}
+        ],
+        "nearby_blocks": ["furnace", "stone", "dirt"]
+      },
+      "expect": {
+        "response_contains": ["furnace"],
+        "method_called": "search_for_block",
+        "method_not_called": "place_here"
+      }
+    },
+    {
+      "id": "D01",
+      "description": "givePlayer dirt with 1 dirt in inventory delivers exactly 1",
+      "message": "give me 1 dirt",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "dirt", "count": 3}
+        ],
+        "nearby_blocks": ["dirt", "grass_block"]
+      },
+      "expect": {
+        "method_called": "give_to_player",
+        "response_contains": ["Gave 1x dirt"],
+        "response_not_contains": ["Gave 0x"]
+      }
+    },
+    {
+      "id": "D03",
+      "description": "givePlayer 99 diamonds when none in inventory fails gracefully",
+      "message": "give me 99 diamonds",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "dirt", "count": 3}
+        ]
+      },
+      "expect": {
+        "response_not_contains": ["Gave 99"],
+        "response_contains_any": ["FAILED", "Could not", "No requested item", "don't have"]
+      }
+    },
+    {
+      "id": "F02",
+      "description": "craft saddle has no recipe and fails cleanly",
+      "message": "craft a saddle",
+      "llm": false,
+      "setup": {
+        "inventory": [
+          {"name": "leather", "count": 10},
+          {"name": "iron_ingot", "count": 5}
+        ]
+      },
+      "expect": {
+        "response_contains_any": ["No recipe", "no recipe", "cannot craft", "can't craft", "unavailable"]
+      }
+    },
+    {
+      "id": "WIKI_RAG_CHICKEN_01",
+      "description": "in-game Wiki RAG smoke test: use Chicken page knowledge to breed chickens",
+      "message": "Use the wiki knowledge about chickens, then breed two nearby chickens with the right seed.",
+      "llm": true,
+      "manual_only": true,
+      "setup": {
+        "env": {
+          "WIKI_RAG_ENABLED": "true",
+          "WIKI_RAG_INDEX_DIR": "data/wiki-test/chicken",
+          "WIKI_RAG_EMBED_MODEL": "models/BAAI/bge-m3",
+          "WIKI_RAG_RERANK_MODEL": "models/BAAI/bge-reranker-v2-m3",
+          "WIKI_RAG_DEVICE": "cpu",
+          "WIKI_RAG_USE_FP16": "false"
+        },
+        "world": [
+          "Keep the player and bot near two adult chickens.",
+          "Give the bot at least 2 wheat_seeds.",
+          "Run in a safe daytime area so pathfinding is not interrupted."
+        ]
+      },
+      "expect": {
+        "log_must_contain": [
+          "Wiki RAG loaded from data/wiki-test/chicken",
+          "searchWiki",
+          "Chicken",
+          "wheat_seeds",
+          "breedAnimals"
+        ],
+        "response_contains_any": ["breed", "chicken", "seeds", "繁殖", "鸡", "种子"],
+        "response_not_contains": ["No chicken nearby", "wheat_seeds is not", "Gave 0x"],
+        "success_condition": "Two chickens enter love mode and produce a baby chicken, or the bot fails clearly because chickens/seeds are unavailable."
+      }
+    },
+    {
+      "id": "F05",
+      "description": "find ancient_debris returns within 64 range",
+      "message": "find ancient_debris",
+      "llm": false,
+      "setup": {},
+      "expect": {
+        "method_called": "search_for_block",
+        "response_contains": ["64"],
+        "response_not_contains": ["range 128", "search_range 128"]
+      }
+    }
+  ]
+}

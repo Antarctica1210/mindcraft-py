@@ -1,14 +1,7 @@
 import minecraftData from 'minecraft-data';
-import settings from '../agent/settings.js';
-import { createBot } from 'mineflayer';
 import prismarine_items from 'prismarine-item';
-import { pathfinder } from 'mineflayer-pathfinder';
-import { plugin as pvp } from 'mineflayer-pvp';
-import { plugin as collectblock } from 'mineflayer-collectblock';
-import { plugin as autoEat } from 'mineflayer-auto-eat';
-import plugin from 'mineflayer-armor-manager';
-const armorManager = plugin;
-let mc_version = settings.minecraft_version;
+
+let mc_version = process.env.MINECRAFT_VERSION || "1.21.6";
 let mcdata = null;
 let Item = null;
 
@@ -51,86 +44,32 @@ export const WOOL_COLORS = [
     'black'
 ]
 
-
-export function initBot(username) {
-    const options = {
-        username: username,
-        host: settings.host,
-        port: settings.port,
-        auth: settings.auth,
-        version: mc_version,
-        checkTimeoutInterval: 60000,  // 60s keep-alive check (default 30s) — reduces disconnects on slow servers
+export function initMinecraftData(version = null) {
+    const resolvedVersion = version || mc_version;
+    if (!resolvedVersion || resolvedVersion === "auto") {
+        if (mcdata) return mcdata;
+        throw new Error("Minecraft data version is not initialized yet.");
     }
-    if (!mc_version || mc_version === "auto") {
-        delete options.version;
+    if (mcdata && mc_version === resolvedVersion && Item) {
+        return mcdata;
     }
-
-    const bot = createBot(options);
-
-    // Throttle position packets to avoid kicks on Paper/Spigot servers
-    // Paper enforces stricter packet rate limits than vanilla, causing ECONNRESET
-    // when mineflayer sends position updates faster than 50ms apart
-    let lastPositionUpdate = 0;
-    let pendingPositionPacket = null;
-    const POSITION_THROTTLE_MS = 50;
-    const originalWrite = bot._client.write.bind(bot._client);
-    bot._client.write = function(name, data) {
-        if (name === 'position' || name === 'position_look' || name === 'look') {
-            const now = Date.now();
-            if (now - lastPositionUpdate < POSITION_THROTTLE_MS) {
-                // Queue this packet so the last position update is never lost
-                if (!pendingPositionPacket) {
-                    pendingPositionPacket = setTimeout(() => {
-                        pendingPositionPacket = null;
-                        lastPositionUpdate = Date.now();
-                        originalWrite(name, data);
-                    }, POSITION_THROTTLE_MS - (now - lastPositionUpdate));
-                }
-                return;
-            }
-            lastPositionUpdate = now;
-            if (pendingPositionPacket) {
-                clearTimeout(pendingPositionPacket);
-                pendingPositionPacket = null;
-            }
-        }
-        return originalWrite(name, data);
-    };
-
-    // Suppress PartialReadError for non-critical packets
-    // Paper servers sometimes send packets that node-minecraft-protocol
-    // can't fully parse (scoreboard, resource_pack, custom_payload, etc.)
-    // These errors crash the bot but the packets aren't needed for gameplay
-    const originalEmit = bot._client.emit.bind(bot._client);
-    bot._client.emit = function(event, ...args) {
-        if (event === 'error' && args[0]) {
-            const err = args[0];
-            const errStr = err instanceof Error ? err.message : String(err);
-            if (errStr.includes('PartialReadError')) {
-                console.warn('[mcdata] Suppressed PartialReadError:', errStr.substring(0, 120));
-                return true; // Swallow the error
-            }
-        }
-        return originalEmit(event, ...args);
-    };
-
-    bot.loadPlugin(pathfinder);
-    bot.loadPlugin(pvp);
-    bot.loadPlugin(collectblock);
-    bot.loadPlugin(autoEat);
-    bot.loadPlugin(armorManager); // auto equip armor
-    bot.once('resourcePack', () => {
-        bot.acceptResourcePack();
-    });
-
-    bot.once('login', () => {
-        mc_version = bot.version;
-        mcdata = minecraftData(mc_version);
-        Item = prismarine_items(mc_version);
-    });
-
-    return bot;
+    mc_version = resolvedVersion;
+    mcdata = minecraftData(mc_version);
+    Item = prismarine_items(mc_version);
+    return mcdata;
 }
+
+export function ensureMinecraftData(version = null) {
+    if (!mcdata || !Item || (version && version !== mc_version)) {
+        return initMinecraftData(version);
+    }
+    return mcdata;
+}
+
+export function getMinecraftData(version = null) {
+    return ensureMinecraftData(version);
+}
+
 
 export function isHuntable(mob) {
     if (!mob || !mob.name) return false;
@@ -154,14 +93,82 @@ export function mustCollectManually(blockName) {
 }
 
 export function getItemId(itemName) {
+    ensureMinecraftData();
     let item = mcdata.itemsByName[itemName];
     if (item) {
         return item.id;
     }
+    // Fuzzy fallback — handles LLM-guessed names like "oak_bed" → "red_bed"
+    const fuzzyName = fuzzyFindItem(itemName);
+    if (fuzzyName) {
+        console.warn(`[mcdata] Fuzzy matched "${itemName}" → "${fuzzyName}"`);
+        return mcdata.itemsByName[fuzzyName].id;
+    }
     return null;
 }
 
+/**
+ * Find the closest matching item name using token-based fuzzy matching.
+ * For example, "oak_bed" matches "red_bed" (they share the "bed" token),
+ * and "bed" matches a bed variant.
+ */
+export function fuzzyFindItem(itemName) {
+    ensureMinecraftData();
+    if (!mcdata || !mcdata.itemsByName) return null;
+    return _fuzzyFind(itemName, Object.keys(mcdata.itemsByName));
+}
+
+export function fuzzyFindBlock(blockName) {
+    ensureMinecraftData();
+    if (!mcdata || !mcdata.blocksByName) return null;
+    return _fuzzyFind(blockName, Object.keys(mcdata.blocksByName));
+}
+
+function _fuzzyFind(name, candidates) {
+    const target = name.toLowerCase();
+    const tokens = target.split('_').filter(t => t.length > 1);
+    if (!tokens.length) return null;
+
+    // Score each candidate: whole-token matches dominate edit-distance ratio.
+    // This ensures "bed" matches "red_bed" (shared "bed" token) over "bedrock"
+    // (substring match only).
+    let best = null, bestScore = -Infinity;
+    for (const key of candidates) {
+        const keyTokens = new Set(key.split('_'));
+        const tokenHits = tokens.filter(t => keyTokens.has(t)).length;
+        const maxLen = Math.max(target.length, key.length);
+        const distRatio = 1 - _levenshtein(target, key) / maxLen;  // 0..1
+        const score = tokenHits + distRatio;  // whole-token hits dominate
+        if (score > bestScore) {
+            bestScore = score;
+            best = key;
+        }
+    }
+
+    if (best && bestScore > 0.4) return best;
+    return null;
+}
+
+function _levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = new Array(m + 1);
+    for (let i = 0; i <= m; i++) {
+        dp[i] = new Array(n + 1);
+        dp[i][0] = i;
+    }
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] = a[i - 1] === b[j - 1]
+                ? dp[i - 1][j - 1]
+                : Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]) + 1;
+        }
+    }
+    return dp[m][n];
+}
+
 export function getItemName(itemId) {
+    if (!itemId || itemId <= 0) return null;  // 0 / negative / falsy = empty crafting slot
     let item = mcdata.items[itemId]
     if (item) {
         return item.name;
@@ -173,6 +180,11 @@ export function getBlockId(blockName) {
     let block = mcdata.blocksByName[blockName];
     if (block) {
         return block.id;
+    }
+    const fuzzyName = fuzzyFindBlock(blockName);
+    if (fuzzyName) {
+        console.warn(`[mcdata] Fuzzy matched "${blockName}" → "${fuzzyName}"`);
+        return mcdata.blocksByName[fuzzyName].id;
     }
     return null;
 }
@@ -259,6 +271,7 @@ export function getItemCraftingRecipes(itemName) {
             ingredients = r.inShape.flat();
         }
         for (let ingredient of ingredients) {
+            if (!ingredient || ingredient <= 0) continue;  // empty crafting slot
             let ingredientName = getItemName(ingredient);
             if (ingredientName === null) continue;
             if (!recipe[ingredientName])

@@ -1,0 +1,75 @@
+# InputRouter keyword tables — Phase 1 design.
+#
+# Hot-loadable. If this file is missing or pyyaml is not installed,
+# InputRouter falls back to the built-in defaults in input_router.py.
+#
+# Match order (first hit wins, highest priority first):
+#   1. meta_command   → MemoryService write candidate (skips main LLM)
+#   2. feedback       → feedback candidate + recent action trace
+#   3. question       → main LLM, tool_choice="none"
+#   4. action_verb    → main LLM, tool_choice="auto"
+#   5. chitchat       → main LLM, tool_choice="none"
+#   6. ambiguous (default fallback for short tokenless input)
+#
+# All patterns are matched case-insensitively. The "en" / "zh" split is
+# for readability; both lists are merged at load time.
+
+meta_command:
+  en:
+    - "\\bremember\\b"
+    - "\\bforget\\b"
+    - "\\bunforget\\b"
+    - "\\bsave\\s+skill\\b"
+    - "\\bsave\\s+route\\b"
+    - "\\bprefer\\b"
+    - "\\bavoid\\b"
+    - "\\bmark\\s+(this|that|here)\\b"
+  zh:
+    - "记住"
+    - "忘记"
+    - "记得"
+    - "别忘"
+    - "保存技能"
+    - "保存路线"
+    - "标记"
+    - "偏好"
+
+feedback:
+  en:
+    - "\\bwrong\\b"
+    - "\\bdon'?t\\b"
+    - "\\btoo risky\\b"
+    - "\\btoo dangerous\\b"
+    - "\\bnever\\b"
+    - "\\bstop doing\\b"
+    - "\\bbad idea\\b"
+    - "\\bnot like that\\b"
+  zh:
+    - "不对"
+    - "错了"
+    - "别这样"
+    - "太冒险"
+    - "太危险"
+    - "不要那样"
+    - "不要这样"
+
+question:
+  en:
+    - "\\?"
+    - "^(what|where|when|why|how|who|which)\\b"
+    - "^(is|are|can|do|does|will|could|would|should|did)\\b"
+  zh:
+    - "？"
+    - "(什么|哪里|哪儿|何时|为什么|怎么|谁|哪个)"
+    - "(是不是|有没有|能否|是吗|吗\\?|吗$)"
+
+action_verb:
+  en:
+    - "^\\s*(?:i\\s+)?(?:want|need|would\\s+like)\\s+(?:to\\s+)?(?:go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|smelt|cook|farm|plant|sow|till|harvest|breed|feed|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b"
+    - "^\\s*(go|move|come|collect|gather|get|bring|fetch|mine|dig|break|craft|build|make|attack|kill|fight|equip|wear|use|eat|drink|consume|smelt|cook|farm|plant|sow|till|harvest|breed|feed|place|put|drop|follow|escort|find|search|give|hand|take|grab|stop|stay|wait|sleep|rest)\\b"
+  zh:
+    - "^(去|走到|过来|跟我来|采集|拾取|开采|破坏|合成|制作|建造|攻击|装备|跟随|跟着|护送|寻找|搜索|放置|停下|不动|休息|种植|播种|耕地|收获|养|繁殖|喂)"
+    # Single-char verbs followed by quantity/object: 挖10个橡木 / 采5朵花
+    - "^(挖|采|砍|捡|打|杀|拿|放|找|搜|看|说|给|做|建|造|烧|喂|种|养|吃|喝)"
+
+# Chitchat patterns are hard-coded in input_router.py — too noisy for YAML.

@@ -1,0 +1,16 @@
+{
+    "name": "lmbot",
+
+    "model": {
+        "model": "lmstudio/qwen/qwen3.6-35b-a3b",
+        "url": "http://192.168.50.91:1235/v1",
+        "apiKey": "sk-lm-7gmijO4b:COc1MvwS3l342vCQOyrT"
+    },
+
+    "embedding": {
+        "api": "lmstudio",
+        "model": "lmstudio/qwen/qwen3.6-35b-a3b",
+        "url": "http://192.168.50.91:1235/v1",
+        "apiKey": "sk-lm-7gmijO4b:COc1MvwS3l342vCQOyrT"
+    }
+}
